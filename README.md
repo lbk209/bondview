@@ -31,6 +31,8 @@ This is a research and decision-support tool. It is designed to help organize in
 
 It is not intended to be a fully automated trading system.
 
+This repository is currently in its initial setup stage.
+
 ## Disclaimer
 
 This project is for personal research and educational purposes only.
