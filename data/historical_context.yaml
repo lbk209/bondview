@@ -1,0 +1,275 @@
+historical_context:
+  events:
+    - context_id: dotcom_bust_2000
+      start: 2000-03-01
+      end: 2002-10-31
+      context_type: crisis
+      description: Dot-com crash and equity bear market
+      reference: Equity collapse and Fed easing cycle
+      validation_confidence: medium
+      use_for_validation: true
+      notes: Useful for duration and credit stress review; less precise for curve-specific review
+
+    - context_id: global_financial_crisis_2008
+      start: 2007-08-01
+      end: 2009-06-30
+      context_type: crisis
+      description: Global financial crisis and severe credit stress
+      reference: Credit spread widening, Fed easing, and safe-haven Treasury demand
+      validation_confidence: high
+      use_for_validation: true
+      notes: Core stress validation event for duration and credit behavior
+
+    - context_id: covid_shock_2020
+      start: 2020-02-15
+      end: 2020-06-30
+      context_type: crisis
+      description: COVID shock and emergency policy response
+      reference: Pandemic recession, credit stress, and policy easing
+      validation_confidence: high
+      use_for_validation: true
+      notes: Short but severe crisis event
+
+    - context_id: inflation_reopening_2021
+      start: 2021-01-01
+      end: 2021-12-31
+      context_type: inflation
+      description: Reopening inflation pressure before realized Fed hiking
+      reference: CPI acceleration and early long-rate repricing
+      validation_confidence: medium
+      use_for_validation: true
+      notes: Useful for inflation pressure and duration review; realized policy may lag because formal policy uses FEDFUNDS
+
+    - context_id: fed_hiking_2022
+      start: 2022-03-01
+      end: 2022-12-31
+      context_type: tightening
+      description: Aggressive Fed hiking cycle
+      reference: Inflation fight and curve flattening
+      validation_confidence: high
+      use_for_validation: true
+      notes: Core tightening validation event
+
+    - context_id: disinflation_rally_2023
+      start: 2023-11-01
+      end: 2023-12-31
+      context_type: easing_expectation
+      description: Late-2023 disinflation and rate rally
+      reference: Falling yields as markets priced lower inflation and eventual easing
+      validation_confidence: medium
+      use_for_validation: true
+      notes: Useful for duration review over a short window; realized policy component may not show easing yet
+
+    - context_id: credit_spread_window_2024
+      start: 2024-04-01
+      end: 2024-06-30
+      context_type: credit
+      description: Event-only credit spread review window
+      reference: Saved date window for target-vs-input plotting without expectation rows
+      validation_confidence: low
+      use_for_validation: false
+      notes: Event-only context used for saved-window plotting; no historical expectation rows are defined
+
+    - context_id: custom_period_20200101_20220101
+      start: 2020-01-01
+      end: 2022-01-01
+      description: period for testing credit spread score
+
+  expectations:
+    # Dot-com bust: duration-positive, credit-negative, policy-easing context.
+    - context_id: dotcom_bust_2000
+      target: duration_preference
+      level: component
+      expected_label: duration_favorable
+      relevance: high
+      notes: Falling yields and Fed easing should make the duration component positive
+
+    - context_id: dotcom_bust_2000
+      target: duration
+      level: stance
+      expected_label: duration_positive
+      expected_strength: moderate
+      relevance: medium
+      notes: Equity crash and Fed easing should generally support duration exposure
+
+    - context_id: dotcom_bust_2000
+      target: credit_spread_change
+      level: component
+      expected_label: credit_spread_widening
+      relevance: high
+      notes: Risk-off conditions and corporate stress should make the credit component negative
+
+    - context_id: dotcom_bust_2000
+      target: credit_stance
+      level: stance
+      expected_label: credit_negative
+      expected_strength: moderate
+      relevance: medium
+      notes: Corporate credit stress should weigh on credit exposure
+
+    - context_id: dotcom_bust_2000
+      target: policy_stance
+      level: component
+      expected_label: policy_easing
+      relevance: medium
+      notes: Fed easing should be visible in the realized policy component
+
+    # Global financial crisis: core duration-positive and credit-negative stress event.
+    - context_id: global_financial_crisis_2008
+      target: duration_preference
+      level: component
+      expected_label: duration_favorable
+      relevance: high
+      notes: Safe-haven Treasury rally and falling yields should make the duration component positive
+
+    - context_id: global_financial_crisis_2008
+      target: duration
+      level: stance
+      expected_label: duration_positive
+      expected_strength: strong
+      relevance: high
+      notes: Crisis and Fed easing should favor duration exposure
+
+    - context_id: global_financial_crisis_2008
+      target: credit_spread_change
+      level: component
+      expected_label: credit_spread_widening
+      relevance: high
+      notes: Severe credit-spread widening should make the credit component negative
+
+    - context_id: global_financial_crisis_2008
+      target: credit_stance
+      level: stance
+      expected_label: credit_negative
+      expected_strength: strong
+      relevance: high
+      notes: Severe spread stress should be negative for credit exposure
+
+    - context_id: global_financial_crisis_2008
+      target: policy_stance
+      level: component
+      expected_label: policy_easing
+      relevance: high
+      notes: Realized Fed cuts should be visible in the policy component
+
+    # COVID shock: severe but short crisis event.
+    - context_id: covid_shock_2020
+      target: duration_preference
+      level: component
+      expected_label: duration_favorable
+      relevance: high
+      notes: Emergency cuts and falling Treasury yields should make the duration component positive
+
+    - context_id: covid_shock_2020
+      target: duration
+      level: stance
+      expected_label: duration_positive
+      expected_strength: strong
+      relevance: high
+      notes: Emergency cuts and Treasury rally should support duration exposure
+
+    - context_id: covid_shock_2020
+      target: credit_spread_change
+      level: component
+      expected_label: credit_spread_widening
+      relevance: high
+      notes: Pandemic spread widening should make the credit component negative
+
+    - context_id: covid_shock_2020
+      target: credit_stance
+      level: stance
+      expected_label: credit_negative
+      expected_strength: strong
+      relevance: high
+      notes: Pandemic spread widening should pressure credit exposure
+
+    - context_id: covid_shock_2020
+      target: policy_stance
+      level: component
+      expected_label: policy_easing
+      relevance: high
+      notes: Emergency policy easing should be visible
+
+    # 2021 reopening inflation: inflation and rate-repricing review.
+    - context_id: inflation_reopening_2021
+      target: inflation_pressure
+      level: component
+      expected_label: inflation_rising
+      relevance: high
+      notes: CPI acceleration should show rising inflation pressure
+
+    - context_id: inflation_reopening_2021
+      target: duration_preference
+      level: component
+      expected_label: duration_unfavorable
+      relevance: high
+      notes: Rising yields during reopening should make the duration component negative
+
+    - context_id: inflation_reopening_2021
+      target: duration
+      level: stance
+      expected_label: duration_negative
+      expected_strength: moderate
+      relevance: medium
+      notes: Rising inflation and rate repricing should pressure duration exposure
+
+    # 2022 hiking: core tightening event.
+    - context_id: fed_hiking_2022
+      target: duration_preference
+      level: component
+      expected_label: duration_unfavorable
+      relevance: high
+      notes: Rising yields during the Fed hiking cycle should make the duration component negative
+
+    - context_id: fed_hiking_2022
+      target: duration
+      level: stance
+      expected_label: duration_negative
+      expected_strength: strong
+      relevance: high
+      notes: Duration stance should be strongly negative
+
+    - context_id: fed_hiking_2022
+      target: policy_stance
+      level: component
+      expected_label: policy_tightening
+      relevance: high
+      notes: Realized Fed hiking should be visible
+
+    - context_id: fed_hiking_2022
+      target: inflation_pressure
+      level: component
+      expected_label: inflation_rising
+      relevance: high
+      notes: Inflation pressure remained elevated during the hiking cycle
+
+    - context_id: fed_hiking_2022
+      target: curve_positioning
+      level: stance
+      expected_label: short_end
+      expected_strength: moderate
+      relevance: medium
+      notes: Hiking and curve inversion should tend toward short-end positioning
+
+    # Late-2023 disinflation rally: duration-positive but short-window event.
+    - context_id: disinflation_rally_2023
+      target: duration_preference
+      level: component
+      expected_label: duration_favorable
+      relevance: high
+      notes: Falling yields during the late-2023 rally should make the duration component positive
+
+    - context_id: disinflation_rally_2023
+      target: duration
+      level: stance
+      expected_label: duration_positive
+      expected_strength: moderate
+      relevance: medium
+      notes: Falling yields should generally support duration exposure
+
+    - context_id: disinflation_rally_2023
+      target: inflation_pressure
+      level: component
+      expected_label: inflation_falling
+      relevance: medium
+      notes: Disinflation should appear as falling inflation pressure if the inflation component is responsive enough
