@@ -1,0 +1,6 @@
+pandas
+matplotlib
+PyYAML
+python-dotenv
+fredapi
+tqdm
