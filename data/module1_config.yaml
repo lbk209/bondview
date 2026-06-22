@@ -1,0 +1,1038 @@
+horizons:
+  rates: 126
+  ultra_long_rates: 126
+  duration_rate_shock: 20
+  curve: 126
+  long_end_curve: 126
+  credit: 63
+  fx: 63
+  normalization: 252
+  normalization_monthly: 36
+  score_smoothing: 30
+  score_smoothing_monthly: 3
+  daily_macro_input_smoothing: 30
+  inflation_yoy: 12
+  inflation_change: 3
+  policy_realized: 6
+
+model_metadata:
+  target_groups:
+    duration:
+      component:
+        - duration_preference
+        - duration_rate_shock
+      stance:
+        - duration
+    credit:
+      component:
+        - credit_spread_change
+      stance:
+        - credit
+    curve:
+      component:
+        - curve_change
+        - curve_state
+        - curve_move_driver
+      stance:
+        - curve_positioning
+    inflation:
+      component:
+        - inflation_pressure
+      stance: []
+    policy:
+      component:
+        - policy_stance
+      stance: []
+    fx:
+      component:
+        - fx_condition
+      stance: []
+  diagnostics: {}
+
+features:
+  # ------------------------------------------------------------
+  # Rate / duration features
+  # ------------------------------------------------------------
+
+  dgs2_change:
+    description: "Change in 2Y Treasury yield over the rates horizon."
+    method: change
+    input: dgs2
+    horizon: rates
+    frequency: daily
+
+  dgs10_change:
+    description: "Change in 10Y Treasury yield over the rates horizon."
+    method: change
+    input: dgs10
+    horizon: rates
+    frequency: daily
+
+  dgs30_change:
+    description: "Change in 30Y Treasury yield over the ultra-long rates horizon."
+    method: change
+    input: dgs30
+    horizon: ultra_long_rates
+    frequency: daily
+
+  dgs10_change_short:
+    description: "Change in 10Y Treasury yield over the duration rate shock horizon."
+    method: change
+    input: dgs10
+    horizon: duration_rate_shock
+    frequency: daily
+
+  dgs30_change_short:
+    description: "Change in 30Y Treasury yield over the duration rate shock horizon."
+    method: change
+    input: dgs30
+    horizon: duration_rate_shock
+    frequency: daily
+
+  # ------------------------------------------------------------
+  # Curve features
+  # ------------------------------------------------------------
+
+  curve_10y2y_level:
+    description: "10Y minus 2Y Treasury yield spread."
+    method: spread
+    inputs:
+      - dgs10
+      - dgs2
+    frequency: daily
+
+  curve_10y2y_change:
+    description: "Change in 10Y-2Y Treasury curve spread over the curve horizon."
+    method: change
+    input: curve_10y2y_level
+    horizon: curve
+    frequency: daily
+
+  curve_30y10y_level:
+    description: "30Y minus 10Y Treasury yield spread."
+    method: spread
+    inputs:
+      - dgs30
+      - dgs10
+    frequency: daily
+
+  curve_30y10y_change:
+    description: "Change in 30Y-10Y Treasury curve spread over the long-end curve horizon."
+    method: change
+    input: curve_30y10y_level
+    horizon: long_end_curve
+    frequency: daily
+
+  # ------------------------------------------------------------
+  # Credit features
+  # ------------------------------------------------------------
+
+  baa10y_change:
+    description: "Change in Moody's Baa spread over 10Y Treasury over the credit horizon."
+    method: change
+    input: baa10y
+    horizon: credit
+    frequency: daily
+
+  baa10y_level:
+    description: "Moody's Baa spread over 10Y Treasury level."
+    method: level
+    input: baa10y
+    frequency: daily
+
+  # ------------------------------------------------------------
+  # Inflation features
+  # ------------------------------------------------------------
+
+  cpi_yoy:
+    description: "Year-over-year percentage change in CPI."
+    method: pct_change
+    input: cpiaucsl
+    horizon: inflation_yoy
+    frequency: monthly
+
+  cpi_yoy_change:
+    description: "Change in CPI YoY inflation over the inflation-change horizon."
+    method: change
+    input: cpi_yoy
+    horizon: inflation_change
+    frequency: monthly
+
+  # ------------------------------------------------------------
+  # Policy features
+  # ------------------------------------------------------------
+
+  fedfunds_change:
+    description: "Change in the effective federal funds rate over the realized-policy horizon."
+    method: change
+    input: fedfunds
+    horizon: policy_realized
+    frequency: monthly
+
+  # ------------------------------------------------------------
+  # FX features
+  # ------------------------------------------------------------
+
+  dexkous_change:
+    description: "Change in USD/KRW over the FX horizon."
+    method: change
+    input: dexkous
+    horizon: fx
+    frequency: daily
+
+  dexkous_pct_change:
+    description: "Percentage change in USD/KRW over the FX horizon."
+    method: pct_change
+    input: dexkous
+    horizon: fx
+    frequency: daily
+
+components:
+  # ------------------------------------------------------------
+  # Duration preference
+  # ------------------------------------------------------------
+
+  duration_preference:
+    description: "Measures whether duration exposure is theoretically favored."
+    score:
+      output: duration_preference_score
+      function: weighted_feature_score
+      inputs:
+        - feature: dgs10_change
+          weight: -0.5
+        - feature: dgs30_change
+          weight: -0.5
+      normalization: rolling_zscore
+      smoothing: score_smoothing
+      clip:
+        min: -3.0
+        max: 3.0
+    label:
+      mode: threshold
+      output: duration_label
+      source: duration_preference_score
+      thresholds:
+        positive: 0.5
+        negative: -0.5
+      labels:
+        positive: duration_favorable
+        neutral: duration_neutral
+        negative: duration_unfavorable
+
+  # ------------------------------------------------------------
+  # Duration rate shock
+  # ------------------------------------------------------------
+
+  duration_rate_shock:
+    description: "Detects abrupt short-horizon Treasury yield repricing relevant to duration exposure."
+    score:
+      output: duration_rate_shock_score
+      function: weighted_feature_score
+      inputs:
+        - feature: dgs10_change_short
+          weight: -0.5
+        - feature: dgs30_change_short
+          weight: -0.5
+      normalization: rolling_zscore
+      clip:
+        min: -3.0
+        max: 3.0
+    label:
+      mode: threshold
+      output: duration_rate_shock_label
+      source: duration_rate_shock_score
+      thresholds:
+        positive: 0.5
+        negative: -0.5
+      labels:
+        positive: duration_bullish_shock
+        neutral: duration_no_shock
+        negative: duration_bearish_shock
+
+  # ------------------------------------------------------------
+  # Credit spread change
+  # ------------------------------------------------------------
+
+  credit_spread_change:
+    description: "Measures whether credit spreads are tightening, stable, or widening."
+    score:
+      output: credit_spread_change_score
+      function: single_feature_score
+      input: baa10y_change
+      sign: inverse
+      input_preparation:
+        smoothing: daily_macro_input_smoothing
+      normalization: rolling_zscore
+      normalization_horizon: normalization
+      clip:
+        min: -2.0
+        max: 2.0
+    diagnostics:
+      prepared_inputs:
+        enabled: true
+    label:
+      mode: threshold
+      output: credit_spread_change_label
+      source: credit_spread_change_score
+      thresholds:
+        positive: 0.5
+        negative: -0.5
+      labels:
+        positive: credit_spread_tightening
+        neutral: credit_spread_stable
+        negative: credit_spread_widening
+
+  # ------------------------------------------------------------
+  # Credit spread state
+  # ------------------------------------------------------------
+
+  credit_spread_state:
+    description: "Measures whether the current credit spread state is wide, normal, or tight."
+    score:
+      output: credit_spread_state_score
+      function: single_feature_score
+      input: baa10y_level
+      state_transform: fixed_anchor
+      anchors:
+        negative: 1.5
+        neutral: 2.5
+        positive: 3.5
+      sign: direct
+      input_preparation:
+        smoothing: daily_macro_input_smoothing
+      clip:
+        min: -2.0
+        max: 2.0
+    diagnostics:
+      prepared_inputs:
+        enabled: true
+    label:
+      mode: threshold
+      output: credit_spread_state_label
+      source: credit_spread_state_score
+      thresholds:
+        positive: 0.5
+        negative: -0.5
+      labels:
+        positive: credit_spread_wide
+        neutral: credit_spread_normal
+        negative: credit_spread_tight
+
+  # ------------------------------------------------------------
+  # Inflation pressure
+  # ------------------------------------------------------------
+
+  inflation_pressure:
+    description: "Measures whether inflation pressure is rising, stable, or falling."
+    score:
+      output: inflation_pressure_score
+      function: single_feature_score
+      input: cpi_yoy_change
+      sign: direct
+      normalization: rolling_zscore
+      normalization_horizon: normalization_monthly
+      smoothing: score_smoothing_monthly
+      clip:
+        min: -3.0
+        max: 3.0
+    label:
+      mode: threshold
+      output: inflation_label
+      source: inflation_pressure_score
+      thresholds:
+        positive: 0.5
+        negative: -0.5
+      labels:
+        positive: inflation_rising
+        neutral: inflation_stable
+        negative: inflation_falling
+
+  # ------------------------------------------------------------
+  # Policy stance
+  # ------------------------------------------------------------
+
+  policy_stance:
+    description: "Measures whether realized policy stance is tightening, stable, or easing."
+    score:
+      output: policy_stance_score
+      function: single_feature_score
+      input: fedfunds_change
+      sign: direct
+      normalization: rolling_zscore
+      normalization_horizon: normalization_monthly
+      smoothing: score_smoothing_monthly
+      clip:
+        min: -3.0
+        max: 3.0
+    label:
+      mode: threshold
+      output: policy_label
+      source: policy_stance_score
+      thresholds:
+        positive: 0.5
+        negative: -0.5
+      labels:
+        positive: policy_tightening
+        neutral: policy_stable
+        negative: policy_easing
+
+  # ------------------------------------------------------------
+  # FX condition
+  # ------------------------------------------------------------
+
+  fx_condition:
+    description: "Measures whether USD exposure is supported by USD/KRW movement."
+    score:
+      output: fx_score
+      function: single_feature_score
+      input: dexkous_pct_change
+      sign: direct
+      normalization: rolling_zscore
+      smoothing: score_smoothing
+      clip:
+        min: -3.0
+        max: 3.0
+    label:
+      mode: threshold
+      output: fx_label
+      source: fx_score
+      thresholds:
+        positive: 0.5
+        negative: -0.5
+      labels:
+        positive: usd_exposure_favorable
+        neutral: usd_exposure_neutral
+        negative: usd_exposure_unfavorable
+
+  # ------------------------------------------------------------
+  # Curve change
+  # ------------------------------------------------------------
+
+  curve_change:
+    description: "Measures whether the Treasury curve is steepening, stable, or flattening."
+    score:
+      output: curve_change_score
+      function: weighted_feature_score
+      inputs:
+        - feature: curve_10y2y_change
+          weight: 1.0
+      input_preparation:
+        smoothing: daily_macro_input_smoothing
+      normalization: rolling_zscore
+      clip:
+        min: -3.0
+        max: 3.0
+      buckets:
+        steepening:
+          min: 0.5
+        flattening:
+          max: -0.5
+        stable:
+          default: true
+    diagnostics:
+      prepared_inputs:
+        enabled: true
+    label:
+      mode: bucket
+      output: curve_change_label
+      source: curve_change_score
+      thresholds:
+        positive: 0.5
+        negative: -0.5
+      labels:
+        positive: curve_steepening
+        neutral: curve_stable
+        negative: curve_flattening
+      bucket_labels:
+        steepening: positive
+        stable: neutral
+        flattening: negative
+
+  # ------------------------------------------------------------
+  # Curve state
+  # ------------------------------------------------------------
+
+  curve_state:
+    description: "Measures whether the 10Y-2Y Treasury curve level is steep, normal, flat, or inverted."
+    score:
+      output: curve_state_score
+      function: weighted_feature_score
+      state_transform: fixed_anchor
+      inputs:
+        - feature: curve_10y2y_level
+          anchors:
+            negative: 0.0
+            neutral: 0.5
+            positive: 1.5
+      input_preparation:
+        smoothing: daily_macro_input_smoothing
+      sign: direct
+      clip:
+        min: -3.0
+        max: 3.0
+      buckets:
+        inverted:
+          max: -1.0
+        flat:
+          min_exclusive: -1.0
+          max_exclusive: 0.5
+        normal:
+          min: 0.5
+          max_exclusive: 1.0
+        steep:
+          min: 1.0
+    diagnostics:
+      prepared_inputs:
+        enabled: true
+    label:
+      mode: bucket
+      output: curve_state_label
+      source: curve_state_score
+      thresholds:
+        positive: 0.5
+        negative: -0.5
+      labels:
+        positive: curve_normal
+        neutral: curve_flat
+        negative: curve_inverted
+        inverted: curve_inverted
+        flat: curve_flat
+        normal: curve_normal
+        steep: curve_steep
+      bucket_labels:
+        inverted: inverted
+        flat: flat
+        normal: normal
+        steep: steep
+
+  # ------------------------------------------------------------
+  # Curve yield-move driver
+  # ------------------------------------------------------------
+
+  curve_move_driver:
+    description: "Measures whether the 2Y and 10Y yield move direction is bull, bear, or mixed."
+    score:
+      output: curve_move_driver_score
+      function: curve_move_driver_score
+      inputs:
+        - feature: dgs2_change
+        - feature: dgs10_change
+      input_preparation:
+        smoothing: daily_macro_input_smoothing
+        min_abs_value: 0.05
+      clip:
+        min: -1.0
+        max: 1.0
+      buckets:
+        bull_parallel:
+          score: 1.0
+        bear_parallel:
+          score: -1.0
+        front_end_down_long_end_up:
+          score: 0.5
+        front_end_up_long_end_down:
+          score: -0.5
+        mixed_or_unclear:
+          score: 0.0
+          default: true
+    diagnostics:
+      prepared_inputs:
+        enabled: true
+        input_roles:
+          dgs2_change: front_end
+          dgs10_change: long_end
+    label:
+      mode: bucket
+      output: curve_move_driver_label
+      source: curve_move_driver_score
+      thresholds:
+        positive: 0.5
+        negative: -0.5
+      labels:
+        positive: bull
+        neutral: mixed_or_unclear
+        negative: bear
+      bucket_labels:
+        bull_parallel: positive
+        front_end_down_long_end_up: positive
+        mixed_or_unclear: neutral
+        bear_parallel: negative
+        front_end_up_long_end_down: negative
+
+stance_label_rules:
+  direction_thresholds:
+    positive_min: 0.5
+    negative_max: -0.5
+
+  strength_thresholds:
+    weak_max_abs: 0.5
+    moderate_max_abs: 1.0
+    strong_min_abs: 1.0
+
+  neutral_strength: weak
+
+exposure_stances:
+  duration:
+    description: "Macro stance toward duration exposure."
+    score_output: duration_rule_stance_score
+    stance_output: duration_rule_stance
+    strength_output: duration_rule_stance_strength
+    function: duration_rule_stance
+    rule_state_components:
+      - duration_preference
+      - duration_rate_shock
+      - inflation
+      - policy
+    state_thresholds:
+      positive: 0.25
+      negative: -0.25
+    state_buckets: &duration_rule_state_buckets
+      duration_preference:
+        positive: favorable
+        neutral: neutral
+        negative: unfavorable
+      duration_rate_shock:
+        positive: bullish_shock
+        neutral: no_shock
+        negative: bearish_shock
+      inflation:
+        positive: inflation_rising
+        neutral: inflation_stable
+        negative: inflation_falling
+      policy:
+        positive: policy_tightening
+        neutral: policy_stable
+        negative: policy_easing
+    state_stabilization: &duration_rule_state_stabilization
+      duration_preference:
+        hysteresis_buffer: 0.05
+        min_state_persistence: 2
+      duration_rate_shock:
+        hysteresis_buffer: 0.05
+        min_state_persistence: 1
+      inflation:
+        hysteresis_buffer: 0.05
+        min_state_persistence: 2
+      policy:
+        hysteresis_buffer: 0.05
+        min_state_persistence: 2
+    rule_scores: &duration_rule_scores
+      favorable|bullish_shock|inflation_falling|policy_easing: 1.00
+      favorable|bullish_shock|inflation_falling|policy_stable: 0.85
+      favorable|bullish_shock|inflation_falling|policy_tightening: 0.70
+      favorable|bullish_shock|inflation_stable|policy_easing: 0.85
+      favorable|bullish_shock|inflation_stable|policy_stable: 0.70
+      favorable|bullish_shock|inflation_stable|policy_tightening: 0.55
+      favorable|bullish_shock|inflation_rising|policy_easing: 0.70
+      favorable|bullish_shock|inflation_rising|policy_stable: 0.55
+      favorable|bullish_shock|inflation_rising|policy_tightening: 0.40
+      favorable|no_shock|inflation_falling|policy_easing: 0.75
+      favorable|no_shock|inflation_falling|policy_stable: 0.60
+      favorable|no_shock|inflation_falling|policy_tightening: 0.45
+      favorable|no_shock|inflation_stable|policy_easing: 0.60
+      favorable|no_shock|inflation_stable|policy_stable: 0.45
+      favorable|no_shock|inflation_stable|policy_tightening: 0.30
+      favorable|no_shock|inflation_rising|policy_easing: 0.45
+      favorable|no_shock|inflation_rising|policy_stable: 0.30
+      favorable|no_shock|inflation_rising|policy_tightening: 0.15
+      favorable|bearish_shock|inflation_falling|policy_easing: 0.50
+      favorable|bearish_shock|inflation_falling|policy_stable: 0.35
+      favorable|bearish_shock|inflation_falling|policy_tightening: 0.20
+      favorable|bearish_shock|inflation_stable|policy_easing: 0.35
+      favorable|bearish_shock|inflation_stable|policy_stable: 0.20
+      favorable|bearish_shock|inflation_stable|policy_tightening: 0.05
+      favorable|bearish_shock|inflation_rising|policy_easing: 0.20
+      favorable|bearish_shock|inflation_rising|policy_stable: 0.05
+      favorable|bearish_shock|inflation_rising|policy_tightening: -0.10
+      neutral|bullish_shock|inflation_falling|policy_easing: 0.55
+      neutral|bullish_shock|inflation_falling|policy_stable: 0.40
+      neutral|bullish_shock|inflation_falling|policy_tightening: 0.25
+      neutral|bullish_shock|inflation_stable|policy_easing: 0.40
+      neutral|bullish_shock|inflation_stable|policy_stable: 0.25
+      neutral|bullish_shock|inflation_stable|policy_tightening: 0.10
+      neutral|bullish_shock|inflation_rising|policy_easing: 0.25
+      neutral|bullish_shock|inflation_rising|policy_stable: 0.10
+      neutral|bullish_shock|inflation_rising|policy_tightening: -0.05
+      neutral|no_shock|inflation_falling|policy_easing: 0.30
+      neutral|no_shock|inflation_falling|policy_stable: 0.15
+      neutral|no_shock|inflation_falling|policy_tightening: 0.00
+      neutral|no_shock|inflation_stable|policy_easing: 0.15
+      neutral|no_shock|inflation_stable|policy_stable: 0.00
+      neutral|no_shock|inflation_stable|policy_tightening: -0.15
+      neutral|no_shock|inflation_rising|policy_easing: 0.00
+      neutral|no_shock|inflation_rising|policy_stable: -0.15
+      neutral|no_shock|inflation_rising|policy_tightening: -0.30
+      neutral|bearish_shock|inflation_falling|policy_easing: 0.05
+      neutral|bearish_shock|inflation_falling|policy_stable: -0.10
+      neutral|bearish_shock|inflation_falling|policy_tightening: -0.25
+      neutral|bearish_shock|inflation_stable|policy_easing: -0.10
+      neutral|bearish_shock|inflation_stable|policy_stable: -0.25
+      neutral|bearish_shock|inflation_stable|policy_tightening: -0.40
+      neutral|bearish_shock|inflation_rising|policy_easing: -0.25
+      neutral|bearish_shock|inflation_rising|policy_stable: -0.40
+      neutral|bearish_shock|inflation_rising|policy_tightening: -0.55
+      unfavorable|bullish_shock|inflation_falling|policy_easing: 0.10
+      unfavorable|bullish_shock|inflation_falling|policy_stable: -0.05
+      unfavorable|bullish_shock|inflation_falling|policy_tightening: -0.20
+      unfavorable|bullish_shock|inflation_stable|policy_easing: -0.05
+      unfavorable|bullish_shock|inflation_stable|policy_stable: -0.20
+      unfavorable|bullish_shock|inflation_stable|policy_tightening: -0.35
+      unfavorable|bullish_shock|inflation_rising|policy_easing: -0.20
+      unfavorable|bullish_shock|inflation_rising|policy_stable: -0.35
+      unfavorable|bullish_shock|inflation_rising|policy_tightening: -0.50
+      unfavorable|no_shock|inflation_falling|policy_easing: -0.15
+      unfavorable|no_shock|inflation_falling|policy_stable: -0.30
+      unfavorable|no_shock|inflation_falling|policy_tightening: -0.45
+      unfavorable|no_shock|inflation_stable|policy_easing: -0.30
+      unfavorable|no_shock|inflation_stable|policy_stable: -0.45
+      unfavorable|no_shock|inflation_stable|policy_tightening: -0.60
+      unfavorable|no_shock|inflation_rising|policy_easing: -0.45
+      unfavorable|no_shock|inflation_rising|policy_stable: -0.60
+      unfavorable|no_shock|inflation_rising|policy_tightening: -0.75
+      unfavorable|bearish_shock|inflation_falling|policy_easing: -0.40
+      unfavorable|bearish_shock|inflation_falling|policy_stable: -0.55
+      unfavorable|bearish_shock|inflation_falling|policy_tightening: -0.70
+      unfavorable|bearish_shock|inflation_stable|policy_easing: -0.55
+      unfavorable|bearish_shock|inflation_stable|policy_stable: -0.70
+      unfavorable|bearish_shock|inflation_stable|policy_tightening: -0.85
+      unfavorable|bearish_shock|inflation_rising|policy_easing: -0.70
+      unfavorable|bearish_shock|inflation_rising|policy_stable: -0.85
+      unfavorable|bearish_shock|inflation_rising|policy_tightening: -1.00
+    rule_mapped:
+      function: rule_mapped_stance
+      state_inputs:
+        - name: duration_preference
+          source_score: duration_preference_score
+          classification: threshold_state
+          raw_output: duration_preference_state_raw
+          stabilized_output: duration_preference_state
+          stabilization_changed_output: state_stabilization_changed_duration_preference
+          state_buckets:
+            positive: favorable
+            neutral: neutral
+            negative: unfavorable
+        - name: duration_rate_shock
+          source_score: duration_rate_shock_score
+          classification: threshold_state
+          raw_output: duration_rate_shock_state_raw
+          stabilized_output: duration_rate_shock_state
+          stabilization_changed_output: state_stabilization_changed_duration_rate_shock
+          state_buckets:
+            positive: bullish_shock
+            neutral: no_shock
+            negative: bearish_shock
+        - name: inflation
+          source_score: inflation_pressure_score
+          classification: threshold_state
+          raw_output: inflation_state_raw
+          stabilized_output: inflation_state
+          stabilization_changed_output: state_stabilization_changed_inflation
+          state_buckets:
+            positive: inflation_rising
+            neutral: inflation_stable
+            negative: inflation_falling
+        - name: policy
+          source_score: policy_stance_score
+          classification: threshold_state
+          raw_output: policy_state_raw
+          stabilized_output: policy_state
+          stabilization_changed_output: state_stabilization_changed_policy
+          state_buckets:
+            positive: policy_tightening
+            neutral: policy_stable
+            negative: policy_easing
+      state_stabilization: *duration_rule_state_stabilization
+      rule_case_output: duration_rule_case
+      stabilization_changed_any_output: state_stabilization_changed_any
+      rule_scores: *duration_rule_scores
+      score_output: duration_rule_stance_score
+      stance_output: duration_rule_stance
+      strength_output: duration_rule_stance_strength
+    inputs:
+      - component: duration_preference_score
+      - component: duration_rate_shock_score
+      - component: inflation_pressure_score
+      - component: policy_stance_score
+    labels:
+      direction:
+        positive: duration_positive
+        neutral: duration_neutral
+        negative: duration_negative
+      strength:
+        weak: weak
+        moderate: moderate
+        strong: strong
+
+  credit:
+    description: "Macro stance toward credit exposure."
+    score_output: credit_stance_score
+    stance_output: credit_stance
+    strength_output: credit_stance_strength
+    function: credit_spread_stance
+    state_buckets: &credit_rule_state_buckets
+      credit_spread_change:
+        positive: positive
+        neutral: neutral
+        negative: negative
+      credit_spread_state:
+        positive: wide
+        neutral: normal
+        negative: tight
+    state_stabilization: &credit_rule_state_stabilization
+      credit_spread_change:
+        hysteresis_buffer: 0.0
+        min_state_persistence: 1
+      credit_spread_state:
+        hysteresis_buffer: 0.0
+        min_state_persistence: 1
+    rule_scores: &credit_rule_scores
+      positive|wide: 1.2
+      positive|normal: 1.0
+      positive|tight: 0.4
+      neutral|wide: 0.2
+      neutral|normal: 0.0
+      neutral|tight: -0.2
+      negative|wide: -0.8
+      negative|normal: -1.0
+      negative|tight: -1.2
+    rule_adjustments: &credit_rule_adjustments
+      default_cap:
+        min: -1.5
+        max: 1.5
+      states:
+        positive|wide:
+          change_intensity_weight: 0.20
+          level_intensity_weight: 0.10
+        positive|normal:
+          change_intensity_weight: 0.20
+          level_intensity_weight: 0.0
+        positive|tight:
+          change_intensity_weight: 0.10
+          level_intensity_weight: -0.20
+          cap:
+            max: 0.6
+        neutral|wide:
+          change_intensity_weight: 0.0
+          level_intensity_weight: 0.10
+          cap:
+            max: 0.4
+        neutral|normal:
+          change_intensity_weight: 0.0
+          level_intensity_weight: 0.0
+        neutral|tight:
+          change_intensity_weight: 0.0
+          level_intensity_weight: -0.10
+          cap:
+            min: -0.4
+        negative|wide:
+          change_intensity_weight: -0.20
+          level_intensity_weight: 0.05
+        negative|normal:
+          change_intensity_weight: -0.20
+          level_intensity_weight: 0.0
+        negative|tight:
+          change_intensity_weight: -0.20
+          level_intensity_weight: -0.10
+    rule_mapped:
+      function: rule_mapped_stance
+      state_inputs:
+        - name: credit_spread_change
+          source_score: credit_spread_change_score
+          classification: threshold_state
+          raw_output: credit_spread_change_state_raw
+          stabilized_output: credit_spread_change_state
+          stabilization_changed_output: state_stabilization_changed_change_state
+          state_buckets:
+            positive: positive
+            neutral: neutral
+            negative: negative
+        - name: credit_spread_state
+          source_score: credit_spread_state_score
+          classification: threshold_state
+          raw_output: credit_spread_state_category_raw
+          stabilized_output: credit_spread_state_category
+          stabilization_changed_output: state_stabilization_changed_spread_state
+          state_buckets:
+            positive: wide
+            neutral: normal
+            negative: tight
+      state_stabilization: *credit_rule_state_stabilization
+      rule_case_output: credit_state_pair
+      stabilization_changed_any_output: state_stabilization_changed_pair
+      rule_scores: *credit_rule_scores
+      base_rule_score_output: base_rule_score
+      adjustment:
+        metadata_outputs:
+          - credit_spread_change_intensity
+          - credit_spread_state_intensity
+        adjustment_output: rule_adjustment
+        config: *credit_rule_adjustments
+      adjusted_score_output: credit_stance_score
+      score_output: credit_stance_score
+      stance_output: credit_stance
+      strength_output: credit_stance_strength
+    inputs:
+      - component: credit_spread_change_score
+      - component: credit_spread_state_score
+    labels:
+      direction:
+        positive: credit_positive
+        neutral: credit_neutral
+        negative: credit_negative
+      strength:
+        weak: weak
+        moderate: moderate
+        strong: strong
+
+  usd_exposure:
+    description: "Macro stance toward USD exposure for Korea-listed U.S. bond ETFs."
+    score_output: usd_exposure_stance_score
+    stance_output: usd_exposure_stance
+    strength_output: usd_exposure_stance_strength
+    function: weighted_sum
+    inputs:
+      - component: fx_score
+        weight: 1.0
+    labels:
+      direction:
+        positive: usd_positive
+        neutral: usd_neutral
+        negative: usd_negative
+      strength:
+        weak: weak
+        moderate: moderate
+        strong: strong
+
+  curve_positioning:
+    description: "Macro stance toward curve positioning."
+    score_output: curve_positioning_score
+    stance_output: curve_positioning
+    strength_output: curve_positioning_strength
+    function: curve_positioning_stance
+    state_stabilization: &curve_rule_state_stabilization
+      curve_change:
+        hysteresis_buffer: 0.0
+        min_state_persistence: 1
+      curve_state:
+        hysteresis_buffer: 0.0
+        min_state_persistence: 1
+      curve_move_driver:
+        hysteresis_buffer: 0.0
+        min_state_persistence: 1
+    rule_scores: &curve_rule_scores
+      stable|inverted|bull_parallel: -0.25
+      stable|inverted|bear_parallel: -0.25
+      stable|inverted|front_end_down_long_end_up: -0.25
+      stable|inverted|front_end_up_long_end_down: -0.25
+      stable|inverted|mixed_or_unclear: -0.25
+      stable|flat|bull_parallel: 0.0
+      stable|flat|bear_parallel: 0.0
+      stable|flat|front_end_down_long_end_up: 0.0
+      stable|flat|front_end_up_long_end_down: 0.0
+      stable|flat|mixed_or_unclear: 0.0
+      stable|normal|bull_parallel: 0.0
+      stable|normal|bear_parallel: 0.0
+      stable|normal|front_end_down_long_end_up: 0.0
+      stable|normal|front_end_up_long_end_down: 0.0
+      stable|normal|mixed_or_unclear: 0.0
+      stable|steep|bull_parallel: 0.0
+      stable|steep|bear_parallel: 0.0
+      stable|steep|front_end_down_long_end_up: 0.0
+      stable|steep|front_end_up_long_end_down: 0.0
+      stable|steep|mixed_or_unclear: 0.0
+      steepening|inverted|bull_parallel: 1.0
+      steepening|inverted|front_end_down_long_end_up: 1.0
+      steepening|inverted|bear_parallel: 0.0
+      steepening|inverted|front_end_up_long_end_down: 0.0
+      steepening|inverted|mixed_or_unclear: 0.0
+      flattening|inverted|bear_parallel: -1.0
+      flattening|inverted|front_end_up_long_end_down: -1.0
+      flattening|inverted|bull_parallel: -0.5
+      flattening|inverted|front_end_down_long_end_up: -0.5
+      flattening|inverted|mixed_or_unclear: -0.5
+      steepening|flat|front_end_down_long_end_up: 0.75
+      steepening|flat|bull_parallel: 0.5
+      steepening|flat|bear_parallel: 0.0
+      steepening|flat|front_end_up_long_end_down: 0.0
+      steepening|flat|mixed_or_unclear: 0.0
+      flattening|flat|bear_parallel: -0.75
+      flattening|flat|front_end_up_long_end_down: -0.75
+      flattening|flat|bull_parallel: 0.0
+      flattening|flat|front_end_down_long_end_up: 0.0
+      flattening|flat|mixed_or_unclear: 0.0
+      steepening|normal|bull_parallel: 0.25
+      steepening|normal|front_end_down_long_end_up: 0.25
+      steepening|normal|bear_parallel: -0.25
+      steepening|normal|front_end_up_long_end_down: 0.0
+      steepening|normal|mixed_or_unclear: 0.0
+      flattening|normal|bear_parallel: -0.5
+      flattening|normal|front_end_up_long_end_down: -0.5
+      flattening|normal|bull_parallel: -0.25
+      flattening|normal|front_end_down_long_end_up: -0.25
+      flattening|normal|mixed_or_unclear: -0.25
+      steepening|steep|bear_parallel: -0.5
+      steepening|steep|bull_parallel: 0.0
+      steepening|steep|front_end_down_long_end_up: 0.0
+      steepening|steep|front_end_up_long_end_down: 0.0
+      steepening|steep|mixed_or_unclear: 0.0
+      flattening|steep|bull_parallel: 0.5
+      flattening|steep|front_end_down_long_end_up: 0.5
+      flattening|steep|mixed_or_unclear: 0.25
+      flattening|steep|bear_parallel: 0.0
+      flattening|steep|front_end_up_long_end_down: 0.0
+    rule_mapped:
+      function: rule_mapped_stance
+      state_inputs:
+        - name: curve_change
+          source_score: curve_change_score
+          classification: threshold_bucket
+          raw_output: curve_change_bucket_raw
+          stabilized_output: curve_change_bucket
+          stabilization_changed_output: state_stabilization_changed_curve_change
+          buckets:
+            - stable
+            - steepening
+            - flattening
+        - name: curve_state
+          source_score: curve_state_score
+          classification: threshold_bucket
+          raw_output: curve_state_bucket_raw
+          stabilized_output: curve_state_bucket
+          stabilization_changed_output: state_stabilization_changed_curve_state
+          buckets:
+            - inverted
+            - flat
+            - normal
+            - steep
+        - name: curve_move_driver
+          source_score: curve_move_driver_score
+          classification: score_bucket
+          raw_output: yield_move_driver_bucket_raw
+          stabilized_output: yield_move_driver_bucket
+          stabilization_changed_output: state_stabilization_changed_curve_move_driver
+          buckets:
+            - bull_parallel
+            - bear_parallel
+            - front_end_down_long_end_up
+            - front_end_up_long_end_down
+            - mixed_or_unclear
+      state_stabilization: *curve_rule_state_stabilization
+      rule_case_output: curve_positioning_rule_case
+      stabilization_changed_any_output: state_stabilization_changed_any
+      rule_scores: *curve_rule_scores
+      score_output: curve_positioning_score
+      stance_output: curve_positioning
+      strength_output: curve_positioning_strength
+    inputs:
+      - component: curve_change_score
+      - component: curve_state_score
+      - component: curve_move_driver_score
+    labels:
+      direction:
+        positive: long_end
+        neutral: neutral
+        negative: short_end
+      strength:
+        weak: weak
+        moderate: moderate
+        strong: strong
