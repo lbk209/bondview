@@ -47,6 +47,15 @@ The coding agent may update the current working branch or existing PR branch whe
 * Treat config validation, scoring, labels, diagnostics, and plotting as behavior-sensitive areas.
 * When changing scoring, labels, diagnostics, validation, or config interpretation, explicitly report whether model outputs changed.
 
+### Model structure and implementation code
+
+* Separate model structure from implementation code wherever practical.
+* Configuration files should describe model structure: inputs, components, scoring rules, thresholds, labels, outputs, and relationships between model parts.
+* Python code should implement the reusable mechanics that interpret, validate, calculate, diagnose, and report those structures.
+* Do not hard-code model-specific structure in Python when it belongs in configuration.
+* When a module needs new model logic, first decide whether the change belongs in configuration, shared interpretation code, validation/schema logic, or runtime calculation code.
+* Validation should protect the contract between configuration and code. Runtime code should not silently compensate for malformed or incomplete model structure unless that fallback is explicitly part of the design.
+
 ### Architecture and reuse rules
 
 * Reuse existing data access, historical context, diagnostics, and validation helpers before creating new shared layers.
