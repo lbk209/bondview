@@ -1,0 +1,25 @@
+[project]
+name = "bondview"
+version = "0.1.0"
+description = ""
+authors = [
+    {name = "lbk209",email = "leebaekku209@gmail.com"}
+]
+requires-python = ">=3.12"
+dependencies = [
+    "pandas (>=3.0.2,<4.0.0)",
+    "numpy (>=2.4.4,<3.0.0)",
+    "fredapi (>=0.5.2,<0.6.0)",
+    "finance-datareader (>=0.9.110,<0.10.0)",
+    "python-dotenv (>=1.2.2,<2.0.0)",
+    "jupyterlab (>=4.5.6,<5.0.0)",
+    "jupyterlab-widgets (>=3.0.16,<4.0.0)",
+    "matplotlib (>=3.10.9,<4.0.0)",
+    "tqdm (>=4.67.3,<5.0.0)",
+    "ipywidgets (>=8.1.8,<9.0.0)"
+]
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
