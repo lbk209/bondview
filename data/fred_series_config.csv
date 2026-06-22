@@ -1,0 +1,8 @@
+key,fred_id,name,description,expected_frequency
+dgs2,DGS2,2Y Treasury Yield,Market yield reflecting short-rate pressure and expected policy path,daily
+dgs10,DGS10,10Y Treasury Yield,Long-term Treasury yield used for duration and curve analysis,daily
+dgs30,DGS30,30Y Treasury Yield,Ultra-long Treasury yield input for 30Y Treasury ETF exposure,daily
+cpiaucsl,CPIAUCSL,CPI Index,Inflation trend input,monthly
+baa10y,BAA10Y,BAA Spread over 10Y Treasury,Credit spread and credit stress input,daily
+fedfunds,FEDFUNDS,Federal Funds Effective Rate,Realized policy-rate stance,monthly
+dexkous,DEXKOUS,USD/KRW Exchange Rate,FX input for Korea-listed U.S. bond ETFs; KRW per 1 USD,daily
