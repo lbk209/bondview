@@ -66,6 +66,8 @@ The PR description must include enough information for external review. Include:
 
 Do not rely only on the local Codex chat summary. Important audit results and validation results should be included in the PR description.
 
+The PR should be the source of truth for review. If the local Codex final response contains important details not included in the PR description, update the PR description or add a PR comment before finishing.
+
 ## Report files
 
 Use the `reports/` directory only when the task produces review material that is too large or detailed for a normal PR description.
