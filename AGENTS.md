@@ -24,15 +24,19 @@ The coding agent should implement narrowly scoped changes according to the userâ
 
 Do not make independent design decisions beyond the requested task. If a change appears to require a design decision, mention it in the PR description instead of expanding the scope.
 
-Do not merge PRs. The user reviews and merges changes separately.
+Do not merge PRs into `main`. The user reviews and merges PRs into `main`.
+
+The coding agent may update the current working branch or existing PR branch when instructed. If bringing `main` into a task branch is necessary, report it clearly.
 
 ### Implementation rules
 
 * Make only the requested changes.
-* Avoid broad refactors unless explicitly requested.
+* Modify only the files required for the requested task.
+* Create new files only when they are necessary for the requested task.
 * Do not delete files unless explicitly instructed.
-* Do not modify data files unless the task explicitly requires it.
-* Do not change model outputs, scoring behavior, config interpretation, or public APIs unless explicitly requested.
+* Avoid broad refactors unless explicitly requested.
+* Do not change model outputs, scoring behavior, config interpretation, public APIs, or file formats unless explicitly requested.
+* Treat YAML configuration files, including `module*_config.yaml`, as behavior-sensitive files. If they are changed, report the intended behavior impact and whether model outputs changed.
 * If a file appears unused, mention it in the PR description instead of deleting it.
 
 ### Module boundaries
@@ -42,6 +46,18 @@ Do not merge PRs. The user reviews and merges changes separately.
 * Do not bypass formal module outputs with raw or internal variables unless explicitly requested.
 * Treat config validation, scoring, labels, diagnostics, and plotting as behavior-sensitive areas.
 * When changing scoring, labels, diagnostics, validation, or config interpretation, explicitly report whether model outputs changed.
+
+### Architecture and reuse rules
+
+* Reuse existing data access, historical context, diagnostics, and validation helpers before creating new shared layers.
+* Do not create a second data layer, historical context layer, config-loading path, or diagnostics path when an existing one can be extended safely.
+* Do not create thin wrapper layers, pass-through helpers, or new abstraction modules unless they remove real duplication or clarify a stable boundary.
+* Prefer extending the existing interface narrowly over introducing a new architecture for a local requirement.
+* Shared retrieval or data-preparation logic should remain consumer-neutral.
+* Plotting, display, reporting, and review-specific behavior should stay in consumer-specific layers.
+* Diagnostics should explain existing model behavior. Do not change scoring, labels, or stance logic merely to make diagnostics easier.
+* If a task appears to require moving responsibilities across module boundaries, stop and report the design issue instead of silently changing the architecture.
+* Do not bundle cleanup, formatting, import reorganization, or unrelated refactors into behavior-sensitive changes unless explicitly requested.
 
 ### Validation expectations
 
@@ -93,7 +109,7 @@ When unsure whether the current branch is appropriate, stop and report:
 * Create a task-specific branch before committing, unless the user explicitly says to work on an existing PR branch.
 * Commit only files related to the requested task.
 * Do not mix unrelated changes in the same commit.
-* Do not merge PRs.
+* Do not merge PRs into `main`.
 
 ### Pull request expectations
 
