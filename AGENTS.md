@@ -6,11 +6,9 @@ This file provides stable guidance for coding agents working on `bondview`.
 
 The agent should treat this file as baseline project guidance. Task-specific user instructions still take priority when they are more specific.
 
----
+## Project and implementation guardrails
 
-# Project and implementation guardrails
-
-## Project context
+### Project context
 
 `bondview` is a bond ETF decision-support project.
 
@@ -20,7 +18,7 @@ The purpose is not to predict short-term ETF prices directly. The purpose is to 
 
 The codebase should preserve clear boundaries between data inputs, feature generation, component scoring, stance calculation, diagnostics, and reporting.
 
-## Agent role
+### Agent role
 
 The coding agent should implement narrowly scoped changes according to the user’s instructions.
 
@@ -28,7 +26,7 @@ Do not make independent design decisions beyond the requested task. If a change 
 
 Do not merge PRs. The user reviews and merges changes separately.
 
-## Implementation rules
+### Implementation rules
 
 * Make only the requested changes.
 * Avoid broad refactors unless explicitly requested.
@@ -37,7 +35,7 @@ Do not merge PRs. The user reviews and merges changes separately.
 * Do not change model outputs, scoring behavior, config interpretation, or public APIs unless explicitly requested.
 * If a file appears unused, mention it in the PR description instead of deleting it.
 
-## Module boundaries
+### Module boundaries
 
 * Preserve the raw input → feature → component → stance hierarchy.
 * Keep validation/schema logic separate from runtime logic where practical.
@@ -45,7 +43,7 @@ Do not merge PRs. The user reviews and merges changes separately.
 * Treat config validation, scoring, labels, diagnostics, and plotting as behavior-sensitive areas.
 * When changing scoring, labels, diagnostics, validation, or config interpretation, explicitly report whether model outputs changed.
 
-## Validation expectations
+### Validation expectations
 
 For Python changes, run at least:
 
@@ -60,11 +58,9 @@ When relevant, also run focused smoke checks for:
 
 If a check cannot be run because of missing credentials, unavailable dependencies, network limits, or missing external data, report that limitation clearly. Do not fake success.
 
----
+## Git and GitHub workflow
 
-# Git and GitHub workflow
-
-## Git preflight checks
+### Git preflight checks
 
 Before making changes, run basic Git state checks.
 
@@ -91,7 +87,7 @@ When unsure whether the current branch is appropriate, stop and report:
 * working tree status
 * why continuing may be risky
 
-## Branch and commit rules
+### Branch and commit rules
 
 * Do not push directly to `main`.
 * Create a task-specific branch before committing, unless the user explicitly says to work on an existing PR branch.
@@ -99,7 +95,7 @@ When unsure whether the current branch is appropriate, stop and report:
 * Do not mix unrelated changes in the same commit.
 * Do not merge PRs.
 
-## Pull request expectations
+### Pull request expectations
 
 Create a PR but do not merge it.
 
@@ -117,7 +113,7 @@ Do not rely only on the local Codex chat summary. Important audit results and va
 
 The PR should be the source of truth for review. If the local Codex final response contains important details not included in the PR description, update the PR description or add a PR comment before finishing.
 
-## Report files
+### Report files
 
 Use the `reports/` directory only when the task produces review material that is too large or detailed for a normal PR description.
 
