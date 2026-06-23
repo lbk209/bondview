@@ -91,35 +91,55 @@ If a check cannot be run because of missing credentials, unavailable dependencie
 
 ## Git and GitHub workflow
 
-### Working branch policy
+### Core branch model
 
 Before editing, check the current branch, working tree status, recent commits, and existing local/remote branches.
 
 The default source branch is `main`.
 
-If only the source branch exists, create one session branch from it before starting work.
-
-The first branch that the agent creates from the confirmed source branch is the session branch.
+Use a GitHub session branch as the durable integration branch for multi-step work. The session branch must exist on GitHub.
 
 The session branch is the only long-lived agent-created working branch.
 
-If a session branch already exists for the current work, continue from that branch.
+Each individual task should produce a GitHub-visible task result through a task branch and a PR into the session branch, unless the user explicitly instructs otherwise.
 
-If multiple non-source branches exist, or if it is unclear which branch is the source branch or session branch, stop and ask the user to confirm before editing.
+The required remote GitHub state after each task is:
+
+* a session branch that exists on GitHub,
+* a task branch created from the current session branch,
+* a PR from the task branch into the session branch,
+* critical task details included in committed files or the PR description,
+* the task PR merged into the session branch after the task is complete.
+
+Local IDE branch state is an implementation detail. The agent may perform whatever local checkout, branch, commit, push, merge, and cleanup steps are needed to produce the required GitHub-visible result.
 
 Do not push directly to `main`.
 
 Do not commit directly to the source branch unless explicitly instructed.
 
-At any point, the normal clean state should be: the source branch plus one session branch.
+Only the user may merge the session branch into the source branch. The agent must not merge the session branch into the source branch unless explicitly instructed.
 
-### Task work and task PR workflow
+### Session branch selection
 
-The first task may be committed directly to the session branch.
+If only the source branch exists, create one session branch from it and push the session branch to GitHub before starting task work.
 
-For later tasks, the agent may either continue directly on the session branch or create a temporary task branch from the session branch when a separate task PR would make review clearer.
+The first branch that the agent creates from the confirmed source branch is the session branch.
 
-If a task branch is created, its PR should target the session branch, not the source branch.
+If a session branch already exists for the current work, continue from that branch.
+
+If the current branch is not the source branch and no session branch is explicitly identified, report the current branch and ask whether to use it as the session branch.
+
+If multiple non-source branches exist, or if it is unclear which branch is the source branch or session branch, stop and ask the user to confirm before editing.
+
+At any point, the normal durable remote state should be: the source branch plus one session branch. Temporary task branches may exist while task PRs are open.
+
+### Task branch and task PR workflow
+
+For each task, create a task branch from the current session branch.
+
+Complete the task on the task branch.
+
+Push the task branch to GitHub and open a PR from the task branch into the session branch.
 
 The task PR description should include enough information for review:
 
@@ -131,24 +151,36 @@ The task PR description should include enough information for review:
 * Limitations or checks not run
 * Whether model outputs changed, if relevant
 
+Do not leave critical findings, implementation details, audit conclusions, or validation results only in the IDE final response. They must be included in committed files or the PR description.
+
 The agent may merge the task PR into the session branch after requested validation passes and the task PR description is complete.
 
-After merging the task PR into the session branch, delete the task branch.
+After merging the task PR into the session branch, delete the task branch unless the user instructs otherwise.
 
-The task branch is disposable after merge. The merged task PR and the session branch are the reviewable records.
+The task branch is disposable after merge. The merged task PR and the updated session branch are the reviewable records.
 
-If a merged task PR is later found to be fundamentally wrong, revert it on the session branch with a new revert commit unless the user explicitly instructs another correction method.
+If a merged task PR is later found to be fundamentally wrong, revert it on the session branch with a new revert task branch and PR unless the user explicitly instructs another correction method.
 
-Otherwise, continue from the current session branch with a normal follow-up task.
+Otherwise, continue from the current session branch with a normal follow-up task branch and PR.
 
 After completing task work, report:
 
 * current session branch
-* task PR number or link, if a task PR was created
-* merge result, if a task PR was merged
-* deleted task branch, if a task branch was deleted
+* task PR number or link
+* merge result
+* deleted task branch, if deleted
 * validation results
 * any limitations
+
+### Audit-only and analysis-only tasks
+
+For audit-only or analysis-only tasks, do not modify production code.
+
+If the task result needs to be reviewed later, used by ChatGPT, or used as input to later implementation, create a markdown report under `reports/`, commit only that report, open a PR from the task branch into the session branch, and merge the task PR into the session branch after the PR description is complete.
+
+Even short audit results should use a report file when a committed artifact is needed for the task PR.
+
+A report file is not required only when the user explicitly requests a chat-only or local-only answer, or when the task already produces another appropriate committed artifact.
 
 ### Final PR workflow
 
@@ -164,7 +196,7 @@ The final PR description should summarize the full session without duplicating e
 
 * Session branch name
 * Source branch name
-* Task PR links, if any
+* Task PR links
 * High-level summary of changes
 * Files or areas changed
 * Validation summary
@@ -176,22 +208,23 @@ The final PR description should summarize the full session without duplicating e
 
 Use task PRs and report files as the detailed record when the session contains many tasks.
 
-The final PR should be the source of truth for final review.
+The final PR should be the source of truth for final review into the source branch.
 
 ### Report files
 
-Use the `reports/` directory only when the task produces review material that is too large or detailed for a normal PR description.
+Use the `reports/` directory when the task produces review material that should be preserved as a committed artifact.
 
-Do not create a separate report file for routine changes such as small documentation edits, small dependency updates, simple bug fixes, or minor helper changes.
+Create a report file for:
 
-Create a report file only for work that has lasting review value, such as:
+* audit-only or analysis-only tasks that need a task PR,
+* large audits,
+* behavior-sensitive refactors,
+* schema or validation migrations,
+* module split or module boundary reviews,
+* scoring, diagnostics, plotting, or config interpretation reviews,
+* follow-up plans that future tasks may depend on.
 
-* large audits
-* behavior-sensitive refactors
-* schema or validation migrations
-* module split or module boundary reviews
-* scoring, diagnostics, plotting, or config interpretation reviews
-* follow-up plans that future tasks may depend on
+A report file is not normally needed for routine changes such as small documentation edits, small dependency updates, simple bug fixes, or minor helper changes, unless the task is audit-only or the user requests a committed report.
 
 Report files must be placed under `reports/`.
 
@@ -222,3 +255,4 @@ If a report file is created, the PR description must:
 * state why the separate report file was needed
 
 Do not use report files as a substitute for a clear PR description.
+
