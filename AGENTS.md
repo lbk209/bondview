@@ -24,9 +24,9 @@ The coding agent should implement narrowly scoped changes according to the userâ
 
 Do not make independent design decisions beyond the requested task. If a change appears to require a design decision, mention it in the PR description instead of expanding the scope.
 
-Do not merge PRs into `main`. The user reviews and merges PRs into `main`.
+The coding agent may create branches, commits, task PRs, and final review PRs according to the Git workflow below.
 
-The coding agent may update the current working branch or existing PR branch when instructed. If bringing `main` into a task branch is necessary, report it clearly.
+The coding agent must not merge the session branch into the source branch. The user reviews and merges the final PR into the source branch.
 
 ### Implementation rules
 
@@ -37,7 +37,6 @@ The coding agent may update the current working branch or existing PR branch whe
 * Avoid broad refactors unless explicitly requested.
 * Do not change model outputs, scoring behavior, config interpretation, public APIs, or file formats unless explicitly requested.
 * Treat YAML configuration files, including `module*_config.yaml`, as behavior-sensitive files. If they are changed, report the intended behavior impact and whether model outputs changed.
-* If a file appears unused, mention it in the PR description instead of deleting it.
 
 ### Module boundaries
 
@@ -70,9 +69,13 @@ The coding agent may update the current working branch or existing PR branch whe
 
 ### Validation expectations
 
-For Python changes, run at least:
+For Python changes, run syntax checks on every Python file modified by the task.
 
-* `python -m py_compile module1.py module1_schema.py`
+At minimum, use:
+
+`python -m py_compile <modified_python_files>`
+
+For changes that affect shared imports, module boundaries, validation/schema logic, or runtime dispatch, also run syntax checks on directly related Python files.
 
 When relevant, also run focused smoke checks for:
 
@@ -80,51 +83,45 @@ When relevant, also run focused smoke checks for:
 * config validation
 * relevant helper functions
 * non-destructive public methods
+* changed diagnostics or reporting paths
+
+For behavior-sensitive changes, include validation that is specific to the affected behavior.
 
 If a check cannot be run because of missing credentials, unavailable dependencies, network limits, or missing external data, report that limitation clearly. Do not fake success.
 
 ## Git and GitHub workflow
 
-### Git preflight checks
+### Working branch policy
 
-Before making changes, run basic Git state checks.
+Before editing, check the current branch, working tree status, recent commits, and existing local/remote branches.
 
-At minimum, check:
+The default source branch is `main`.
 
-* current branch
-* working tree status
-* latest commit
-* whether the task is intended to update an existing PR branch or create a new branch
-* whether `main` is up to date with `origin/main`
+If only the source branch exists, create one session branch from it before starting work.
 
-If the working tree has unrelated uncommitted changes, stop and report the issue before editing files.
+The first branch that the agent creates from the confirmed source branch is the session branch.
 
-If the task says to create a new branch, start from the latest `main` unless the user explicitly says to work from another branch.
+The session branch is the only long-lived agent-created working branch.
 
-If the task is related to an existing PR, work on that PR branch directly. Do not create a new branch unless explicitly instructed.
+If a session branch already exists for the current work, continue from that branch.
 
-If there are pending setup or dependency PRs that may affect the requested task, warn the user before continuing.
+If multiple non-source branches exist, or if it is unclear which branch is the source branch or session branch, stop and ask the user to confirm before editing.
 
-When unsure whether the current branch is appropriate, stop and report:
+Do not push directly to `main`.
 
-* current branch
-* intended branch
-* working tree status
-* why continuing may be risky
+Do not commit directly to the source branch unless explicitly instructed.
 
-### Branch and commit rules
+At any point, the normal clean state should be: the source branch plus one session branch.
 
-* Do not push directly to `main`.
-* Create a task-specific branch before committing, unless the user explicitly says to work on an existing PR branch.
-* Commit only files related to the requested task.
-* Do not mix unrelated changes in the same commit.
-* Do not merge PRs into `main`.
+### Task work and task PR workflow
 
-### Pull request expectations
+The first task may be committed directly to the session branch.
 
-Create a PR but do not merge it.
+For later tasks, the agent may either continue directly on the session branch or create a temporary task branch from the session branch when a separate task PR would make review clearer.
 
-The PR description must include enough information for external review. Include:
+If a task branch is created, its PR should target the session branch, not the source branch.
+
+The task PR description should include enough information for review:
 
 * Summary of changes
 * Files changed
@@ -134,9 +131,52 @@ The PR description must include enough information for external review. Include:
 * Limitations or checks not run
 * Whether model outputs changed, if relevant
 
-Do not rely only on the local Codex chat summary. Important audit results and validation results should be included in the PR description.
+The agent may merge the task PR into the session branch after requested validation passes and the task PR description is complete.
 
-The PR should be the source of truth for review. If the local Codex final response contains important details not included in the PR description, update the PR description or add a PR comment before finishing.
+After merging the task PR into the session branch, delete the task branch.
+
+The task branch is disposable after merge. The merged task PR and the session branch are the reviewable records.
+
+If a merged task PR is later found to be fundamentally wrong, revert it on the session branch with a new revert commit unless the user explicitly instructs another correction method.
+
+Otherwise, continue from the current session branch with a normal follow-up task.
+
+After completing task work, report:
+
+* current session branch
+* task PR number or link, if a task PR was created
+* merge result, if a task PR was merged
+* deleted task branch, if a task branch was deleted
+* validation results
+* any limitations
+
+### Final PR workflow
+
+When the user asks to finish the session, create one final PR from the session branch into the source branch.
+
+The final PR is the user-reviewed merge point.
+
+The agent must not merge the final PR into the source branch.
+
+The user reviews and merges the final PR.
+
+The final PR description should summarize the full session without duplicating every task PR detail. Include:
+
+* Session branch name
+* Source branch name
+* Task PR links, if any
+* High-level summary of changes
+* Files or areas changed
+* Validation summary
+* Important validation failures or limitations, if any
+* Behavior impact
+* Whether model outputs changed, if relevant
+* Reverted work, if any
+* Any unresolved design or implementation concerns
+
+Use task PRs and report files as the detailed record when the session contains many tasks.
+
+The final PR should be the source of truth for final review.
 
 ### Report files
 
