@@ -64,15 +64,18 @@ The coding agent must not merge the session branch into the source branch. The u
 
 ### Architecture and reuse rules
 
-* Reuse existing data access, historical context, diagnostics, validation, and reporting helpers before creating new shared layers.
-* Do not create a second data layer, historical context layer, config-loading path, diagnostics path, or reporting path when an existing one can be extended safely.
+* Reuse existing helpers within the current module and across related modules before creating new shared layers or duplicating logic.
+* If another module already contains similar reusable mechanics, consider whether the logic should remain module-local, be extracted into a shared helper, or be reused through an existing interface.
+* Do not extract shared helpers merely because two implementations look similar. Extract only when the behavior is stable, genuinely reusable, and the change can be made without broadening the task scope or changing behavior unexpectedly.
+* Do not create duplicate data, configuration, diagnostics, reporting, or review paths within a module or across related modules when an existing path can be safely extended.
 * Do not create thin wrapper layers, pass-through helpers, or new abstraction modules unless they remove real duplication or clarify a stable boundary.
-* Prefer extending the existing interface narrowly over introducing a new architecture for a local requirement.
-* Shared retrieval or data-preparation logic should remain consumer-neutral.
+* Prefer extending an existing interface narrowly over introducing a new architecture for a local requirement.
+* Shared data retrieval, data preparation, and reusable calculation mechanics should remain consumer-neutral.
 * Plotting, display, reporting, and review-specific behavior should stay in consumer-specific layers.
 * Diagnostics should explain existing model behavior. Do not change scoring, labels, stance logic, decision logic, or model outputs merely to make diagnostics easier.
 * If a task appears to require moving responsibilities across module boundaries, stop and report the design issue instead of silently changing the architecture.
 * Do not bundle cleanup, formatting, import reorganization, or unrelated refactors into behavior-sensitive changes unless explicitly requested.
+
 
 ### Validation expectations
 
