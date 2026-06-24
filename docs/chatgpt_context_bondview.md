@@ -31,10 +31,10 @@ The system should help answer questions such as:
 
 The system should preserve a clear conceptual flow:
 
-1. Raw macro and ETF data
-2. Feature generation
-3. Component scoring
-4. Exposure stance calculation
+1. Data acquisition and raw inputs
+2. Data preparation and derived signals
+3. Model or signal calculation
+4. Decision or exposure logic
 5. Diagnostics and review
 6. ETF opportunity or avoid-list evaluation
 
@@ -42,15 +42,23 @@ Do not collapse these layers unnecessarily.
 
 A local implementation convenience should not override the broader system design. If a shortcut makes one function easier but weakens the system boundary, interface, or interpretability, it should be treated cautiously.
 
+For Module 1, the current concrete hierarchy is:
+
+raw input → feature → component → stance
+
+Future modules may use different layer names or internal structures, but they should still keep their data preparation, signal/model calculation, decision logic, diagnostics, and reporting responsibilities explicit.
+
 ### Design guardrails
 
 Preserve module boundaries and formal interfaces.
+
+Each module should preserve its own explicit processing hierarchy and expose formal outputs for downstream consumers.
 
 Do not move decisions into earlier modules simply to solve a local diagnostic, plotting, or reporting problem.
 
 Do not bypass intended module outputs with raw or internal variables unless the interface is explicitly revised.
 
-Treat the following as behavior-sensitive areas:
+Treat the following as behavior-sensitive areas when they affect downstream model behavior or user-facing interpretation:
 
 * scoring
 * labels
@@ -60,6 +68,8 @@ Treat the following as behavior-sensitive areas:
 * plotting
 * historical review logic
 * exposure stance calculation
+* decision logic
+* model outputs
 
 When reviewing changes, distinguish between:
 
@@ -68,41 +78,51 @@ When reviewing changes, distinguish between:
 * behavior change
 * model-output change
 
-A change can be technically small but behaviorally important if it affects scores, labels, stance outputs, diagnostics, or config interpretation.
+A change can be technically small but behaviorally important if it affects scores, labels, stance outputs, diagnostics, config interpretation, decision logic, or downstream ETF review.
 
 ### Model structure and implementation code
 
 The system should separate model structure from implementation code wherever practical, regardless of the specific module, file name, or current implementation layout.
 
-Configuration files should describe model structure: inputs, components, scoring rules, thresholds, labels, outputs, and relationships between model parts.
+Configuration files should describe model structure where configuration is the intended model definition layer. Depending on the module, this may include inputs, components, scoring rules, thresholds, labels, outputs, decision rules, and relationships between model parts.
 
-Python code should implement the reusable mechanics that interpret, validate, calculate, diagnose, and report those structures.
+Python code should implement reusable mechanics that interpret, validate, calculate, diagnose, and report those structures.
 
-Do not hard-code model-specific structure in Python when it belongs in configuration.
+Do not hard-code model-specific structure in Python when it belongs in configuration or another formal model-definition layer.
 
 Do not move configuration-driven model structure into runtime code merely because it is easier for a local implementation.
 
 Do not make Python code depend on one special case unless the task explicitly requires a special-case behavior.
 
-When a module needs new model logic, first decide whether the change belongs in configuration, shared interpretation code, validation/schema logic, or runtime calculation code.
+When a module needs new model logic, first decide whether the change belongs in:
+
+* configuration
+* shared interpretation code
+* validation/schema logic
+* runtime calculation code
+* diagnostics or reporting code
 
 Validation should protect the contract between configuration and code. Runtime code should not silently compensate for malformed or incomplete model structure unless that fallback is explicitly part of the design.
 
 ### Architecture and reuse principles
 
-Reuse existing data access, historical context, diagnostics, and validation helpers before creating new shared layers.
+Reuse existing helpers within the current module and across related modules before creating new shared layers or duplicating logic.
 
-Do not create a second data layer, historical context layer, config-loading path, or diagnostics path when an existing one can be extended safely.
+If another module already contains similar reusable mechanics, consider whether the logic should remain module-local, be extracted into a shared helper, or be reused through an existing interface.
+
+Do not extract shared helpers merely because two implementations look similar. Extract only when the behavior is stable, genuinely reusable, and the change can be made without broadening the task scope or changing behavior unexpectedly.
+
+Do not create duplicate data, configuration, diagnostics, reporting, or review paths within a module or across related modules when an existing path can be safely extended.
 
 Do not create thin wrapper layers, pass-through helpers, or new abstraction modules unless they remove real duplication or clarify a stable boundary.
 
 Prefer narrow extension of an existing interface over introducing a new architecture for a local requirement.
 
-Shared retrieval or data-preparation logic should remain consumer-neutral.
+Shared data retrieval, data preparation, and reusable calculation mechanics should remain consumer-neutral.
 
 Plotting, display, reporting, and review-specific behavior should stay in consumer-specific layers.
 
-Diagnostics should explain existing model behavior. Do not change scoring, labels, or stance logic merely to make diagnostics easier.
+Diagnostics should explain existing model behavior. Do not change scoring, labels, stance logic, decision logic, or model outputs merely to make diagnostics easier.
 
 If a task appears to require moving responsibilities across module boundaries, stop and discuss the design issue before accepting the change.
 
@@ -110,17 +130,17 @@ If a task appears to require moving responsibilities across module boundaries, s
 
 The exact module boundaries may evolve, but the conceptual responsibilities should remain clear.
 
-#### Macro regime and exposure stance
+#### Macro regime and exposure stance / Module 1
 
-This module should produce macro/regime features, component scores, exposure stances, validation outputs, and diagnostics in a structured way.
+The current Module 1 area should produce macro/regime features, component scores, exposure stances, validation outputs, and diagnostics in a structured way.
 
-The raw input → feature → component → stance hierarchy should remain clear.
+For Module 1, the raw input → feature → component → stance hierarchy should remain clear.
 
 Validation/schema logic and runtime logic may share helpers where appropriate, but their responsibilities should remain distinguishable.
 
 Diagnostics should explain the model behavior without secretly changing the model behavior.
 
-This module is especially behavior-sensitive because small changes in config interpretation, scoring, labels, or stance mapping may affect downstream ETF selection.
+This area is especially behavior-sensitive because small changes in config interpretation, scoring, labels, stance mapping, diagnostics, or plotting may affect downstream ETF selection.
 
 #### Data and feature preparation
 
@@ -218,6 +238,7 @@ For task PRs, review should check:
 * validation results
 * behavior impact
 * report files under `reports/`, if created
+* updated session branch state after the task PR is merged
 * coding-agent summary only as supporting context
 
 For the final session PR, review should check:
@@ -234,7 +255,7 @@ For the final session PR, review should check:
 
 Do not rely on stale attached files, previous snippets, local-only IDE output, or raw/parsed views if they conflict with the GitHub PR, linked task PRs, report files, or updated session branch.
 
-If a claim cannot be verified directly from the PR or linked task PRs, state that clearly.
+If a claim cannot be verified directly from the PR, linked task PRs, report files, or updated session branch, state that clearly.
 
 When reviewing Markdown or documentation changes, check the rendered GitHub view when formatting matters.
 
@@ -258,13 +279,13 @@ Otherwise, treat corrections as normal follow-up work from the current session b
 
 ### Relationship with `AGENTS.md`
 
-`AGENTS.md` is the repository-visible instruction file for Codex and other coding agents.
+`AGENTS.md` is the primary instruction file for Codex and other coding agents.
 
-This ChatGPT context guide is local-only and ignored by Git. It is not a Codex instruction file and should not be treated as a PR artifact.
+This ChatGPT context guide is maintained in the repository to preserve ChatGPT/user review context. It is not the primary Codex instruction file and should not override `AGENTS.md`.
 
 ChatGPT should use this guide to understand the user’s intended workflow, review posture, and design preferences when discussing Codex results or drafting Codex prompts.
 
-If the coding-agent workflow itself needs to change, update `AGENTS.md`. Updating this local guide only changes ChatGPT/user context.
+If the coding-agent workflow itself needs to change, update `AGENTS.md`. Updating this context guide only changes ChatGPT/user review context unless the same rule is also reflected in `AGENTS.md`.
 
 ### Prompting posture
 
@@ -353,7 +374,7 @@ The important review artifact is the GitHub-visible state:
 
 The local IDE state is not the source of truth for ChatGPT review.
 
-Because this guide is local-only, changes to this file do not replace updates to `AGENTS.md` when the coding-agent workflow itself needs to change.
+Because this guide is not the primary Codex instruction file, changes to this file do not replace updates to `AGENTS.md` when the coding-agent workflow itself needs to change.
 
 ### Report files
 
@@ -368,5 +389,3 @@ A report file is also appropriate for large audits, behavior-sensitive refactors
 If a report file is created, the PR description should link to it and summarize the key findings.
 
 A report file is not required only when the user explicitly requests a chat-only or local-only answer, or when the task already produces another appropriate committed artifact.
-
-
