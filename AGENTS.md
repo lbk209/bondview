@@ -12,11 +12,13 @@ The agent should treat this file as baseline project guidance. Task-specific use
 
 `bondview` is a bond ETF decision-support project.
 
-The project uses macroeconomic data and ETF price data to evaluate bond market conditions, derive exposure stances, and support systematic review of bond ETF opportunities.
+The project uses macroeconomic data and ETF price data to evaluate bond market conditions, derive exposure views, and support systematic review of bond ETF opportunities.
 
-The purpose is not to predict short-term ETF prices directly. The purpose is to organize market judgment, identify macro-consistent exposure stances, and review ETFs whose price behavior may be misaligned with the macro-based view.
+The purpose is not to predict short-term ETF prices directly. The purpose is to organize market judgment, identify macro-consistent exposure views, and review ETFs whose price behavior may be misaligned with the macro-based view.
 
-The codebase should preserve clear boundaries between data inputs, feature generation, component scoring, stance calculation, diagnostics, and reporting.
+The codebase should preserve clear boundaries between data acquisition, data preparation, model or signal calculation, decision logic, diagnostics, reporting, and review outputs.
+
+Individual modules may use more specific internal layers. For example, Module 1 currently uses a raw input → feature → component → stance hierarchy.
 
 ### Agent role
 
@@ -25,6 +27,8 @@ The coding agent should implement narrowly scoped changes according to the user�
 Do not make independent design decisions beyond the requested task. If a change appears to require a design decision, mention it in the PR description instead of expanding the scope.
 
 The coding agent may create branches, commits, task PRs, and final review PRs according to the Git workflow below.
+
+The source branch is the branch that will eventually receive the completed session work. Unless the user specifies otherwise, the source branch is `main`.
 
 The coding agent must not merge the session branch into the source branch. The user reviews and merges the final PR into the source branch.
 
@@ -40,32 +44,38 @@ The coding agent must not merge the session branch into the source branch. The u
 
 ### Module boundaries
 
-* Preserve the raw input → feature → component → stance hierarchy.
+* Each module should preserve a clear internal processing hierarchy and expose formal outputs for downstream consumers.
+* Do not bypass a module’s formal intermediate or final outputs with raw or internal variables unless explicitly requested.
+* Do not collapse data preparation, model or signal calculation, decision logic, diagnostics, plotting, or reporting merely because a local implementation would be shorter.
 * Keep validation/schema logic separate from runtime logic where practical.
-* Do not bypass formal module outputs with raw or internal variables unless explicitly requested.
-* Treat config validation, scoring, labels, diagnostics, and plotting as behavior-sensitive areas.
-* When changing scoring, labels, diagnostics, validation, or config interpretation, explicitly report whether model outputs changed.
+* Treat config validation, scoring, labels, diagnostics, plotting, and decision outputs as behavior-sensitive areas when they affect downstream behavior.
+* When changing scoring, labels, diagnostics, validation, config interpretation, or decision outputs, explicitly report whether model outputs changed.
+* For Module 1, preserve the current raw input → feature → component → stance hierarchy.
+* Future modules may use different internal layer names, but the same principle applies: keep intermediate responsibilities explicit, reviewable, and behavior-sensitive where they affect downstream decisions.
 
 ### Model structure and implementation code
 
 * Separate model structure from implementation code wherever practical.
-* Configuration files should describe model structure: inputs, components, scoring rules, thresholds, labels, outputs, and relationships between model parts.
+* Configuration files should describe model structure where the module is configuration-driven: inputs, components or signals, scoring rules, thresholds, labels, outputs, and relationships between model parts.
 * Python code should implement the reusable mechanics that interpret, validate, calculate, diagnose, and report those structures.
 * Do not hard-code model-specific structure in Python when it belongs in configuration.
-* When a module needs new model logic, first decide whether the change belongs in configuration, shared interpretation code, validation/schema logic, or runtime calculation code.
+* When a module needs new model logic, first decide whether the change belongs in configuration, shared interpretation code, validation/schema logic, runtime calculation code, diagnostics, or reporting code.
 * Validation should protect the contract between configuration and code. Runtime code should not silently compensate for malformed or incomplete model structure unless that fallback is explicitly part of the design.
 
 ### Architecture and reuse rules
 
-* Reuse existing data access, historical context, diagnostics, and validation helpers before creating new shared layers.
-* Do not create a second data layer, historical context layer, config-loading path, or diagnostics path when an existing one can be extended safely.
+* Reuse existing helpers within the current module and across related modules before creating new shared layers or duplicating logic.
+* If another module already contains similar reusable mechanics, consider whether the logic should remain module-local, be extracted into a shared helper, or be reused through an existing interface.
+* Do not extract shared helpers merely because two implementations look similar. Extract only when the behavior is stable, genuinely reusable, and the change can be made without broadening the task scope or changing behavior unexpectedly.
+* Do not create duplicate data, configuration, diagnostics, reporting, or review paths within a module or across related modules when an existing path can be safely extended.
 * Do not create thin wrapper layers, pass-through helpers, or new abstraction modules unless they remove real duplication or clarify a stable boundary.
-* Prefer extending the existing interface narrowly over introducing a new architecture for a local requirement.
-* Shared retrieval or data-preparation logic should remain consumer-neutral.
+* Prefer extending an existing interface narrowly over introducing a new architecture for a local requirement.
+* Shared data retrieval, data preparation, and reusable calculation mechanics should remain consumer-neutral.
 * Plotting, display, reporting, and review-specific behavior should stay in consumer-specific layers.
-* Diagnostics should explain existing model behavior. Do not change scoring, labels, or stance logic merely to make diagnostics easier.
+* Diagnostics should explain existing model behavior. Do not change scoring, labels, stance logic, decision logic, or model outputs merely to make diagnostics easier.
 * If a task appears to require moving responsibilities across module boundaries, stop and report the design issue instead of silently changing the architecture.
 * Do not bundle cleanup, formatting, import reorganization, or unrelated refactors into behavior-sensitive changes unless explicitly requested.
+
 
 ### Validation expectations
 
@@ -75,15 +85,16 @@ At minimum, use:
 
 `python -m py_compile <modified_python_files>`
 
-For changes that affect shared imports, module boundaries, validation/schema logic, or runtime dispatch, also run syntax checks on directly related Python files.
+For changes that affect shared imports, module boundaries, validation/schema logic, runtime dispatch, or reporting/diagnostic dispatch, also run syntax checks on directly related Python files.
 
 When relevant, also run focused smoke checks for:
 
-* config loading
+* data or config loading
 * config validation
 * relevant helper functions
 * non-destructive public methods
 * changed diagnostics or reporting paths
+* changed decision or model-output paths
 
 For behavior-sensitive changes, include validation that is specific to the affected behavior.
 
@@ -113,7 +124,7 @@ The required remote GitHub state after each task is:
 
 Local IDE branch state is an implementation detail. The agent may perform whatever local checkout, branch, commit, push, merge, and cleanup steps are needed to produce the required GitHub-visible result.
 
-Do not push directly to `main`.
+Do not push directly to the source branch.
 
 Do not commit directly to the source branch unless explicitly instructed.
 
@@ -155,9 +166,13 @@ Do not leave critical findings, implementation details, audit conclusions, or va
 
 The agent may merge the task PR into the session branch after requested validation passes and the task PR description is complete.
 
-After merging the task PR into the session branch, delete the task branch unless the user instructs otherwise.
+After merging the task PR into the session branch, delete the remote task branch unless the user instructs otherwise.
+
+After merging the task PR, the agent should return to the session branch, update it from GitHub, and delete the local task branch when safe.
 
 The task branch is disposable after merge. The merged task PR and the updated session branch are the reviewable records.
+
+Local cleanup is not the workflow invariant. The required invariant is the GitHub-visible session branch, task PR, merged task result, and final PR structure.
 
 If a merged task PR is later found to be fundamentally wrong, revert it on the session branch with a new revert task branch and PR unless the user explicitly instructs another correction method.
 
@@ -168,7 +183,8 @@ After completing task work, report:
 * current session branch
 * task PR number or link
 * merge result
-* deleted task branch, if deleted
+* deleted remote task branch, if deleted
+* deleted local task branch, if deleted
 * validation results
 * any limitations
 
@@ -255,4 +271,3 @@ If a report file is created, the PR description must:
 * state why the separate report file was needed
 
 Do not use report files as a substitute for a clear PR description.
-
