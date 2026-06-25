@@ -16,7 +16,11 @@ The project uses macroeconomic data and ETF price data to evaluate bond market c
 
 The purpose is not to predict short-term ETF prices directly. The purpose is to organize market judgment, identify macro-consistent exposure views, and review ETFs whose price behavior may be misaligned with the macro-based view.
 
+In this document, “model” means any project logic that transforms input data into signals, scores, classifications, exposure views, rankings, diagnostics, or review outputs.
+
 The codebase should preserve clear boundaries between data acquisition, data preparation, model or signal calculation, decision logic, diagnostics, reporting, and review outputs.
+
+The current codebase is still centered heavily on Module 1, but future modules may cover separate responsibilities such as data preparation, ETF review, portfolio or ranking logic, reporting, or other decision-support layers.
 
 Individual modules may use more specific internal layers. For example, Module 1 currently uses a raw input → feature → component → stance hierarchy.
 
@@ -24,13 +28,12 @@ Individual modules may use more specific internal layers. For example, Module 1 
 
 The coding agent should implement narrowly scoped changes according to the user’s instructions.
 
-Do not make independent design decisions beyond the requested task. If a change appears to require a design decision, mention it in the PR description instead of expanding the scope.
+Do not make independent design decisions beyond the requested task. If a change appears to require a design decision, mention it in the task result instead of expanding the scope.
 
-The coding agent may create branches, commits, task PRs, and final review PRs according to the Git workflow below.
+The coding agent may create the GitHub-visible work artifacts required by the Git workflow below.
 
-The source branch is the branch that will eventually receive the completed session work. Unless the user specifies otherwise, the source branch is `main`.
+The coding agent must not complete or merge final session work into the project’s stable branch unless explicitly instructed by the user.
 
-The coding agent must not merge the session branch into the source branch. The user reviews and merges the final PR into the source branch.
 
 ### Implementation rules
 
@@ -76,7 +79,6 @@ The coding agent must not merge the session branch into the source branch. The u
 * If a task appears to require moving responsibilities across module boundaries, stop and report the design issue instead of silently changing the architecture.
 * Do not bundle cleanup, formatting, import reorganization, or unrelated refactors into behavior-sensitive changes unless explicitly requested.
 
-
 ### Validation expectations
 
 For Python changes, run syntax checks on every Python file modified by the task.
@@ -99,6 +101,7 @@ When relevant, also run focused smoke checks for:
 For behavior-sensitive changes, include validation that is specific to the affected behavior.
 
 If a check cannot be run because of missing credentials, unavailable dependencies, network limits, or missing external data, report that limitation clearly. Do not fake success.
+
 
 ## Git and GitHub workflow
 
