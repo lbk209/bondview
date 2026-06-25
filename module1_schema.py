@@ -1109,6 +1109,7 @@ def validate_module1_config(config: dict) -> dict:
         if function == "weighted_feature_score":
             inputs = score.get("inputs")
             requires_weighted_inputs = state_transform != "fixed_anchor"
+            requires_input_anchors = state_transform == "fixed_anchor"
             if not isinstance(inputs, list) or not inputs:
                 add_issue(
                     "components",
@@ -1156,7 +1157,7 @@ def validate_module1_config(config: dict) -> dict:
                             "invalid",
                             "weighted_feature_score input weight must be numeric and not bool.",
                         )
-                if component_name == "curve_state":
+                if requires_input_anchors:
                     validate_anchor_block(
                         component_name,
                         item.get("anchors"),

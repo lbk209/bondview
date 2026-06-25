@@ -1189,34 +1189,6 @@ class RegimeModule:
         )
 
 
-    def _calculate_curve_state_score(
-        self,
-        score_config: dict,
-        *,
-        apply_input_preparation: bool = True,
-    ) -> pd.Series:
-        input_configs = {
-            item.get("feature"): item
-            for item in score_config.get("inputs", [])
-            if isinstance(item, dict)
-        }
-        feature_name = "curve_10y2y_level"
-        if feature_name not in self.features.columns:
-            raise ValueError(f"Missing feature for curve_state: {feature_name}")
-
-        input_config = input_configs.get(feature_name, {})
-        score_input = self.features[feature_name]
-        if apply_input_preparation:
-            score_input = self._prepare_component_input_series(
-                score_input,
-                score_config.get("input_preparation"),
-            )
-        return self._fixed_anchor_state_score(
-            score_input,
-            input_config.get("anchors", {}),
-            context=f"curve_state {feature_name}",
-        )
-
     def _calculate_curve_move_driver_score(
         self,
         score_config: dict,
@@ -1824,8 +1796,68 @@ class RegimeModule:
             )
             return self._apply_sign(score, score_config.get("sign"))
 
-        if function == "weighted_feature_score" and component_name == "curve_state":
-            score = self._calculate_curve_state_score(score_config)
+        if function == "weighted_feature_score":
+            inputs = score_config.get("inputs")
+            if not isinstance(inputs, list) or not inputs:
+                raise ValueError(
+                    f"Current-state component {component_name} "
+                    "weighted_feature_score requires inputs."
+                )
+
+            transformed_terms = []
+            has_explicit_weight = any(
+                isinstance(item, dict) and "weight" in item for item in inputs
+            )
+
+            for idx, item in enumerate(inputs):
+                if not isinstance(item, dict):
+                    raise ValueError(
+                        f"Current-state component {component_name} "
+                        f"inputs[{idx}] must be a mapping."
+                    )
+
+                feature_name = item.get("feature")
+                if feature_name not in self.features.columns:
+                    raise ValueError(
+                        f"Missing feature for {component_name}: {feature_name}"
+                    )
+
+                score_input = self.features[feature_name]
+                if apply_input_preparation:
+                    score_input = self._prepare_component_input_series(
+                        score_input,
+                        score_config.get("input_preparation"),
+                    )
+                feature_score = self._fixed_anchor_state_score(
+                    score_input,
+                    item.get("anchors", {}),
+                    context=f"{component_name} {feature_name}",
+                )
+
+                weight = item.get("weight")
+                if weight is None:
+                    if len(inputs) > 1 or has_explicit_weight:
+                        raise ValueError(
+                            f"Current-state component {component_name} "
+                            f"inputs[{idx}].weight is required when fixed-anchor "
+                            "scoring combines multiple weighted inputs."
+                        )
+                    weight = 1.0
+                elif (
+                    isinstance(weight, bool)
+                    or not isinstance(weight, Real)
+                    or pd.isna(weight)
+                ):
+                    raise ValueError(
+                        f"Current-state component {component_name} "
+                        f"inputs[{idx}].weight must be numeric and not bool."
+                    )
+                transformed_terms.append((feature_score, float(weight)))
+
+            score = self._weighted_sum_score(
+                transformed_terms,
+                context=f"Current-state component {component_name}",
+            )
             return self._apply_sign(score, score_config.get("sign"))
 
         raise ValueError(
@@ -1843,8 +1875,6 @@ class RegimeModule:
             )
 
         scores = pd.DataFrame(index=self.features.index)
-        current_state_components = {"credit_spread_state", "curve_state"}
-
         for component_name, component in self.component_config["components"].items():
             score_config = component.get("score", {})
             output = score_config.get("output")
@@ -1859,7 +1889,7 @@ class RegimeModule:
                 "normalization",
             )
 
-            if component_name in current_state_components:
+            if score_config.get("state_transform") == "fixed_anchor":
                 score = self._calculate_current_state_component_score(
                     component_name,
                     score_config,
@@ -7954,7 +7984,8 @@ class RegimeModule:
 
         curve_state_config = components["curve_state"]["score"]
         raw_scores["raw_curve_state_score"] = self._clip_score(
-            self._calculate_curve_state_score(
+            self._calculate_current_state_component_score(
+                "curve_state",
                 curve_state_config,
                 apply_input_preparation=False,
             ),
