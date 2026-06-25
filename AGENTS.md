@@ -109,11 +109,13 @@ If a check cannot be run because of missing credentials, unavailable dependencie
 
 Before editing, check the current branch, working tree status, recent commits, and existing local/remote branches.
 
+Fetch and prune remote-tracking refs before deciding the session branch.
+
 The default source branch is `main`.
 
 Use a GitHub session branch as the durable integration branch for multi-step work. The session branch must exist on GitHub.
 
-The session branch is the only long-lived agent-created working branch.
+The session branch is the only long-lived agent-created working branch for a session.
 
 Each individual task should produce a GitHub-visible task result through a task branch and a PR into the session branch, unless the user explicitly instructs otherwise.
 
@@ -127,25 +129,69 @@ The required remote GitHub state after each task is:
 
 Local IDE branch state is an implementation detail. The agent may perform whatever local checkout, branch, commit, push, merge, and cleanup steps are needed to produce the required GitHub-visible result.
 
+Local branches should not by themselves make session branch selection ambiguous. Local branch state matters only for safety checks, such as uncommitted changes, unpushed commits, branch-name conflicts, or work that could be overwritten.
+
 Do not push directly to the source branch.
 
 Do not commit directly to the source branch unless explicitly instructed.
 
 Only the user may merge the session branch into the source branch. The agent must not merge the session branch into the source branch unless explicitly instructed.
 
+### Branch naming
+
+Use branch names that make the remote GitHub workflow easy to inspect.
+
+Codex-created branches should use the `codex/` prefix.
+
+Session branches should use this format:
+
+`codex/session/YYMMDD_HHMM`
+
+The timestamp should identify when the session branch was created. Do not use a task-specific or module-specific session name, because one session may contain tasks across multiple modules, documentation areas, audits, cleanup work, and workflow updates.
+
+Examples:
+
+* `codex/session/260625_0930`
+* `codex/session/260625_1415`
+
+Task branches should use this format:
+
+`codex/task/YYMMDD_HHMM_<short_task_name>`
+
+The task name should describe the specific task being implemented or audited.
+
+Examples:
+
+* `codex/task/260625_1010_curve_state_score`
+* `codex/task/260625_1135_agents_branch_rules`
+* `codex/task/260625_1500_hardcoded_calculator_audit`
+
+Revert branches should use this format:
+
+`codex/revert/YYMMDD_HHMM_<short_revert_name>`
+
+Examples:
+
+* `codex/revert/260625_1610_curve_state_score`
+* `codex/revert/260625_1645_task_pr_12`
+
+Do not infer that every non-source branch is a session branch. A branch should be treated as a Codex session branch only when it clearly follows the `codex/session/` naming convention or when the user explicitly identifies it as the session branch.
+
 ### Session branch selection
 
-If only the source branch exists, create one session branch from it and push the session branch to GitHub before starting task work.
+Session branch selection should be based on the live GitHub remote branch state after fetching and pruning remote-tracking refs.
 
-The first branch that the agent creates from the confirmed source branch is the session branch.
+Local branches are implementation details and should not by themselves make the session branch ambiguous. Local branch state matters only for safety checks, such as uncommitted changes, unpushed commits, branch-name conflicts, or work that could be overwritten.
 
-If a session branch already exists for the current work, continue from that branch.
+If no clear live GitHub Codex session branch exists, create a new session branch from the source branch and push it to GitHub before starting task work, even if other non-source remote branches exist.
 
-If the current branch is not the source branch and no session branch is explicitly identified, report the current branch and ask whether to use it as the session branch.
+If exactly one clear live GitHub Codex session branch exists, continue from that session branch.
 
-If multiple non-source branches exist, or if it is unclear which branch is the source branch or session branch, stop and ask the user to confirm before editing.
+If multiple plausible live GitHub Codex session branches exist, stop and ask the user which session branch to use.
 
-At any point, the normal durable remote state should be: the source branch plus one session branch. Temporary task branches may exist while task PRs are open.
+If the user explicitly instructs the agent to start a new session from the source branch, create a new session branch from the source branch even if other remote branches exist.
+
+If the branch situation is unclear because of local-only branches, stale remote-tracking refs, or leftover task branches, do not treat that alone as session ambiguity. Fetch, prune, inspect the live GitHub remote state, and proceed according to the rules above.
 
 ### Task branch and task PR workflow
 
@@ -274,3 +320,4 @@ If a report file is created, the PR description must:
 * state why the separate report file was needed
 
 Do not use report files as a substitute for a clear PR description.
+
