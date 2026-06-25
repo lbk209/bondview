@@ -1119,6 +1119,13 @@ def validate_module1_config(config: dict) -> dict:
                     "weighted_feature_score requires a non-empty inputs list.",
                 )
                 inputs = []
+            has_explicit_weight = any(
+                isinstance(item, dict) and "weight" in item for item in inputs
+            )
+            requires_fixed_anchor_weights = (
+                state_transform == "fixed_anchor"
+                and (len(inputs) > 1 or has_explicit_weight)
+            )
             for idx, item in enumerate(inputs):
                 if not isinstance(item, dict):
                     add_issue(
@@ -1138,7 +1145,7 @@ def validate_module1_config(config: dict) -> dict:
                         "unknown_feature",
                         f"Feature is not defined: {feature_name}.",
                     )
-                if requires_weighted_inputs:
+                if requires_weighted_inputs or requires_fixed_anchor_weights:
                     if "weight" not in item:
                         add_issue(
                             "components",
