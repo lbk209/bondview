@@ -1027,9 +1027,13 @@ def validate_module1_config(config: dict) -> dict:
             "credit_spread_change",
             "credit_spread_state",
         }
+        supports_input_preparation = (
+            component_name in supported_input_preparation_components
+            or function == "curve_move_driver_score"
+        )
         if input_preparation is not None:
             field_prefix = "score.input_preparation"
-            if component_name not in supported_input_preparation_components:
+            if not supports_input_preparation:
                 add_issue(
                     "components",
                     component_name,
@@ -1069,13 +1073,13 @@ def validate_module1_config(config: dict) -> dict:
                     )
                 min_abs_value = input_preparation.get("min_abs_value")
                 if min_abs_value is not None:
-                    if component_name != "curve_move_driver":
+                    if function != "curve_move_driver_score":
                         add_issue(
                             "components",
                             component_name,
                             f"{field_prefix}.min_abs_value",
                             "unsupported_for_component",
-                            "input_preparation.min_abs_value is only supported for curve_move_driver.",
+                            "input_preparation.min_abs_value is only supported for curve_move_driver_score.",
                         )
                     elif (
                         not is_number(min_abs_value)
@@ -1172,16 +1176,6 @@ def validate_module1_config(config: dict) -> dict:
                     )
 
         if function == "curve_move_driver_score":
-            if component_name != "curve_move_driver":
-                add_issue(
-                    "components",
-                    component_name,
-                    "score.function",
-                    "unsupported_for_component",
-                    "curve_move_driver_score is only supported for the "
-                    "curve_move_driver component.",
-                )
-
             inputs = score.get("inputs")
             if not isinstance(inputs, list) or len(inputs) != 2:
                 add_issue(
@@ -1244,8 +1238,7 @@ def validate_module1_config(config: dict) -> dict:
                 "current-state components use fixed-anchor scoring and must not use rolling normalization.",
             )
         if (
-            component_name == "curve_move_driver"
-            and function == "curve_move_driver_score"
+            function == "curve_move_driver_score"
             and normalization is not None
         ):
             add_issue(
@@ -1273,8 +1266,7 @@ def validate_module1_config(config: dict) -> dict:
                 "current-state components use fixed-anchor scoring and must not use rolling score smoothing.",
             )
         if (
-            component_name == "curve_move_driver"
-            and function == "curve_move_driver_score"
+            function == "curve_move_driver_score"
             and smoothing is not None
         ):
             add_issue(

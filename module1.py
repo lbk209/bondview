@@ -1023,6 +1023,58 @@ class RegimeModule:
         )
 
 
+    def _prepared_component_score_inputs(
+        self,
+        component_name: str,
+        score_config: dict,
+        *,
+        expected_count: int | None = None,
+        apply_input_preparation: bool = True,
+        apply_min_abs_value: bool = False,
+    ) -> list[pd.Series]:
+        inputs = score_config.get("inputs")
+        if not isinstance(inputs, list) or not inputs:
+            raise ValueError(
+                f"Component {component_name} score.inputs must be a non-empty list."
+            )
+        if expected_count is not None and len(inputs) != expected_count:
+            raise ValueError(
+                f"Component {component_name} requires exactly {expected_count} inputs."
+            )
+
+        prepared = []
+        input_preparation = score_config.get("input_preparation")
+        for idx, item in enumerate(inputs):
+            if not isinstance(item, dict):
+                raise ValueError(
+                    f"Component {component_name} inputs[{idx}] must be a mapping."
+                )
+
+            feature_name = item.get("feature")
+            if feature_name not in self.features.columns:
+                raise ValueError(f"Missing feature for {component_name}: {feature_name}")
+
+            score_input = self.features[feature_name]
+            if apply_input_preparation:
+                score_input = self._prepare_component_input_series(
+                    score_input,
+                    input_preparation,
+                )
+
+            prepared.append(score_input)
+
+        min_abs_value = None
+        if apply_min_abs_value and apply_input_preparation and input_preparation:
+            min_abs_value = input_preparation.get("min_abs_value")
+        if min_abs_value is not None:
+            prepared = [
+                score_input.mask(score_input.abs() < min_abs_value, 0.0)
+                for score_input in prepared
+            ]
+
+        return prepared
+
+
     def _clip_score(self, sr: pd.Series, clip_config: dict | None) -> pd.Series:
         if not clip_config:
             return sr
@@ -1191,51 +1243,27 @@ class RegimeModule:
 
     def _calculate_curve_move_driver_score(
         self,
+        component_name: str,
         score_config: dict,
         *,
         apply_input_preparation: bool = True,
     ) -> pd.Series:
-        configured_features = [
-            item.get("feature")
-            for item in score_config.get("inputs", [])
-            if isinstance(item, dict)
-        ]
-        required = configured_features or ["dgs2_change", "dgs10_change"]
-
-        if len(required) != 2:
-            raise ValueError("curve_move_driver_score requires exactly two inputs.")
-
-        missing = [
-            feature for feature in required if feature not in self.features.columns
-        ]
-        if missing:
-            raise ValueError(f"Missing feature(s) for curve_move_driver: {missing}")
-
-        front_end = self.features[required[0]]
-        long_end = self.features[required[1]]
-        if apply_input_preparation:
-            input_preparation = score_config.get("input_preparation")
-            front_end = self._prepare_component_input_series(
-                front_end,
-                input_preparation,
-            )
-            long_end = self._prepare_component_input_series(
-                long_end,
-                input_preparation,
-            )
-            min_abs_value = input_preparation.get("min_abs_value") if input_preparation else None
-            if min_abs_value is not None:
-                front_end = front_end.mask(front_end.abs() < min_abs_value, 0.0)
-                long_end = long_end.mask(long_end.abs() < min_abs_value, 0.0)
+        front_end, long_end = self._prepared_component_score_inputs(
+            component_name,
+            score_config,
+            expected_count=2,
+            apply_input_preparation=apply_input_preparation,
+            apply_min_abs_value=True,
+        )
         return self._curve_move_driver_score_from_prepared_inputs(
             front_end,
             long_end,
-            self._curve_component_bucket_config("curve_move_driver"),
+            self._component_score_bucket_config(component_name),
         )
 
-    def _curve_component_bucket_config(self, component_name: str) -> dict:
+    def _component_score_bucket_config(self, component_name: str) -> dict:
         if self.component_config is None:
-            raise ValueError("Run load_module1_config() before curve bucket classification.")
+            raise ValueError("Run load_module1_config() before bucket classification.")
 
         buckets = (
             self.component_config
@@ -1245,8 +1273,13 @@ class RegimeModule:
             .get("buckets")
         )
         if not isinstance(buckets, dict) or not buckets:
-            raise ValueError(f"Curve component {component_name} score.buckets must be a non-empty mapping.")
+            raise ValueError(
+                f"Component {component_name} score.buckets must be a non-empty mapping."
+            )
         return buckets
+
+    def _curve_component_bucket_config(self, component_name: str) -> dict:
+        return self._component_score_bucket_config(component_name)
 
     def _curve_positioning_rule_scores(self, stance_config: dict) -> dict:
         rule_scores = stance_config.get("rule_scores")
@@ -1914,8 +1947,11 @@ class RegimeModule:
                     normalization_horizon,
                 )
 
-            elif function == "curve_move_driver_score" and component_name == "curve_move_driver":
-                score = self._calculate_curve_move_driver_score(score_config)
+            elif function == "curve_move_driver_score":
+                score = self._calculate_curve_move_driver_score(
+                    component_name,
+                    score_config,
+                )
 
             else:
                 raise ValueError(
@@ -6225,6 +6261,13 @@ class RegimeModule:
         self,
         target: str | None,
     ) -> set[str] | None:
+        component_names = self._diagnostic_component_names_for_target(target)
+        return None if component_names is None else set(component_names)
+
+    def _diagnostic_component_names_for_target(
+        self,
+        target: str | None,
+    ) -> tuple[str, ...] | None:
         if target is None:
             return None
         if self.exposure_stance_config is None:
@@ -6243,7 +6286,11 @@ class RegimeModule:
             component_name = component_by_score_output.get(score_output)
             if component_name is not None:
                 component_names.add(component_name)
-        return component_names
+        return tuple(
+            component_name
+            for component_name in component_by_score_output.values()
+            if component_name in component_names
+        )
 
     def _score_input_features_for_diagnostic_component(
         self,
@@ -6263,6 +6310,27 @@ class RegimeModule:
             for item in inputs
             if isinstance(item, dict) and item.get("feature") is not None
         )
+
+    def _score_input_features_for_diagnostic_components(
+        self,
+        component_names: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        if self.component_config is None:
+            raise ValueError("Run load_module1_config() before prepared-input diagnostics.")
+
+        features = []
+        seen = set()
+        components = self.component_config["components"]
+        for component_name in component_names:
+            score_config = components[component_name].get("score", {})
+            for feature in self._score_input_features_for_diagnostic_component(
+                component_name,
+                score_config,
+            ):
+                if feature not in seen:
+                    features.append(feature)
+                    seen.add(feature)
+        return tuple(features)
 
     def _diagnostic_input_specs(
         self,
@@ -6360,6 +6428,30 @@ class RegimeModule:
             raise ValueError(
                 "Expected exactly one prepared/filtered diagnostic input spec for "
                 f"{target} {component} {source} {kind}, found {len(matches)}."
+            )
+        return matches[0]
+
+    def _diagnostic_input_spec_by_role(
+        self,
+        target: str,
+        component: str,
+        kind: str,
+        role: str,
+    ) -> DiagnosticInputSpec:
+        matches = [
+            spec
+            for spec in self._diagnostic_input_specs(
+                target,
+                kinds=("prepared", "filtered"),
+            )
+            if spec.component == component
+            and spec.kind == kind
+            and spec.role == role
+        ]
+        if len(matches) != 1:
+            raise ValueError(
+                "Expected exactly one prepared/filtered diagnostic input spec for "
+                f"{target} {component} {kind} role={role}, found {len(matches)}."
             )
         return matches[0]
 
@@ -6860,14 +6952,17 @@ class RegimeModule:
                 for col in ["dgs2", "dgs10"]
                 if col in ctx.returned_columns["raw_inputs"]
             ]
+            component_names = self._diagnostic_component_names_for_target(spec.target)
+            feature_cols = (
+                self._score_input_features_for_diagnostic_components(
+                    tuple(reversed(component_names))
+                )
+                if component_names is not None
+                else ()
+            )
             context_cols.extend(
                 col
-                for col in [
-                    "dgs2_change",
-                    "dgs10_change",
-                    "curve_10y2y_level",
-                    "curve_10y2y_change",
-                ]
+                for col in feature_cols
                 if col in ctx.returned_columns["features"]
             )
             context_parts = []
@@ -7927,12 +8022,8 @@ class RegimeModule:
         self,
         front_end: pd.Series,
         long_end: pd.Series,
-        bucket_config: dict | None = None,
+        bucket_config: dict,
     ) -> pd.Series:
-        bucket_config = bucket_config or self._curve_component_bucket_config(
-            "curve_move_driver"
-        )
-
         def bucket_score(bucket_name: str) -> float:
             bucket_rule = bucket_config.get(bucket_name)
             if not isinstance(bucket_rule, dict) or "score" not in bucket_rule:
@@ -7995,6 +8086,7 @@ class RegimeModule:
         curve_move_driver_config = components["curve_move_driver"]["score"]
         raw_scores["raw_curve_move_driver_score"] = self._clip_score(
             self._calculate_curve_move_driver_score(
+                "curve_move_driver",
                 curve_move_driver_config,
                 apply_input_preparation=False,
             ),
@@ -8028,12 +8120,10 @@ class RegimeModule:
         raw_scores = self._raw_curve_component_scores_for_input_smoothing_comparison()
 
         detail = pd.DataFrame(index=self.features.index)
-        for column in [
-            "curve_10y2y_change",
-            "curve_10y2y_level",
-            "dgs2_change",
-            "dgs10_change",
-        ]:
+        component_names = self._diagnostic_component_names_for_target(target)
+        for column in self._score_input_features_for_diagnostic_components(
+            component_names or (),
+        ):
             if column in self.features.columns:
                 detail[column] = self.features[column]
         detail = pd.concat(
@@ -8242,19 +8332,17 @@ class RegimeModule:
         min_abs_value = input_preparation.get("min_abs_value")
 
         prepared_inputs = self._prepared_filtered_input_columns(target)
-        front_end_prepared_spec = self._diagnostic_input_spec(
+        front_end_prepared_spec = self._diagnostic_input_spec_by_role(
             target,
             "curve_move_driver",
-            "dgs2_change",
             "prepared",
-            role="front_end",
+            "front_end",
         )
-        long_end_prepared_spec = self._diagnostic_input_spec(
+        long_end_prepared_spec = self._diagnostic_input_spec_by_role(
             target,
             "curve_move_driver",
-            "dgs10_change",
             "prepared",
-            role="long_end",
+            "long_end",
         )
         front_end_prepared = prepared_inputs[front_end_prepared_spec.output]
         long_end_prepared = prepared_inputs[long_end_prepared_spec.output]
@@ -8264,19 +8352,17 @@ class RegimeModule:
             front_end_filtered = front_end_prepared.copy()
             long_end_filtered = long_end_prepared.copy()
         else:
-            front_end_filtered_spec = self._diagnostic_input_spec(
+            front_end_filtered_spec = self._diagnostic_input_spec_by_role(
                 target,
                 "curve_move_driver",
-                "dgs2_change",
                 "filtered",
-                role="front_end",
+                "front_end",
             )
-            long_end_filtered_spec = self._diagnostic_input_spec(
+            long_end_filtered_spec = self._diagnostic_input_spec_by_role(
                 target,
                 "curve_move_driver",
-                "dgs10_change",
                 "filtered",
-                role="long_end",
+                "long_end",
             )
             front_end_filtered = prepared_inputs[front_end_filtered_spec.output]
             long_end_filtered = prepared_inputs[long_end_filtered_spec.output]
@@ -8285,6 +8371,7 @@ class RegimeModule:
             self._curve_move_driver_score_from_prepared_inputs(
                 front_end_prepared,
                 long_end_prepared,
+                self._curve_component_bucket_config("curve_move_driver"),
             ),
             curve_move_driver_config.get("clip"),
         )
@@ -8292,6 +8379,7 @@ class RegimeModule:
             self._curve_move_driver_score_from_prepared_inputs(
                 front_end_filtered,
                 long_end_filtered,
+                self._curve_component_bucket_config("curve_move_driver"),
             ),
             curve_move_driver_config.get("clip"),
         )
@@ -8315,7 +8403,7 @@ class RegimeModule:
         )
 
         detail = pd.DataFrame(index=self.features.index)
-        for column in ["dgs2_change", "dgs10_change"]:
+        for column in [front_end_prepared_spec.source, long_end_prepared_spec.source]:
             if column in self.features.columns:
                 detail[column] = self.features[column]
         detail[front_end_prepared_spec.output] = front_end_prepared
@@ -8323,7 +8411,7 @@ class RegimeModule:
         if front_end_filtered_spec is None:
             detail[
                 self._diagnostic_input_column_name(
-                    "dgs2_change",
+                    front_end_prepared_spec.source,
                     "filtered",
                     "curve_move_driver",
                 )
@@ -8333,7 +8421,7 @@ class RegimeModule:
         if long_end_filtered_spec is None:
             detail[
                 self._diagnostic_input_column_name(
-                    "dgs10_change",
+                    long_end_prepared_spec.source,
                     "filtered",
                     "curve_move_driver",
                 )
