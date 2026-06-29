@@ -1278,9 +1278,6 @@ class RegimeModule:
             )
         return buckets
 
-    def _curve_component_bucket_config(self, component_name: str) -> dict:
-        return self._component_score_bucket_config(component_name)
-
     def _curve_positioning_rule_scores(self, stance_config: dict) -> dict:
         rule_scores = stance_config.get("rule_scores")
         if not isinstance(rule_scores, dict) or not rule_scores:
@@ -2464,11 +2461,11 @@ class RegimeModule:
     ) -> str:
         if pd.isna(value):
             return pd.NA
-        bucket_config = bucket_config or self._curve_component_bucket_config("curve_change")
+        bucket_config = bucket_config or self._component_score_bucket_config("curve_change")
         if hysteresis_buffer == 0.0:
             return self._threshold_bucket(
                 value,
-                bucket_config or self._curve_component_bucket_config("curve_change"),
+                bucket_config or self._component_score_bucket_config("curve_change"),
             )
 
         min_buckets = [
@@ -2585,11 +2582,11 @@ class RegimeModule:
     ) -> str:
         if pd.isna(value):
             return pd.NA
-        bucket_config = bucket_config or self._curve_component_bucket_config("curve_state")
+        bucket_config = bucket_config or self._component_score_bucket_config("curve_state")
         if active_state is None or hysteresis_buffer == 0.0:
             return self._threshold_bucket(
                 value,
-                bucket_config or self._curve_component_bucket_config("curve_state"),
+                bucket_config or self._component_score_bucket_config("curve_state"),
             )
 
         ordered = self._curve_ordered_threshold_buckets(bucket_config)
@@ -2626,7 +2623,7 @@ class RegimeModule:
     ) -> str:
         return self._score_bucket(
             value,
-            bucket_config or self._curve_component_bucket_config("curve_move_driver"),
+            bucket_config or self._component_score_bucket_config("curve_move_driver"),
         )
 
     def _curve_positioning_stabilization_config(
@@ -2674,9 +2671,9 @@ class RegimeModule:
             stance_config,
             overrides=stabilization_overrides,
         )
-        curve_change_bucket_config = self._curve_component_bucket_config("curve_change")
-        curve_state_bucket_config = self._curve_component_bucket_config("curve_state")
-        curve_move_driver_bucket_config = self._curve_component_bucket_config(
+        curve_change_bucket_config = self._component_score_bucket_config("curve_change")
+        curve_state_bucket_config = self._component_score_bucket_config("curve_state")
+        curve_move_driver_bucket_config = self._component_score_bucket_config(
             "curve_move_driver"
         )
         buckets = pd.DataFrame(index=curve_change_score.index)
@@ -2684,21 +2681,21 @@ class RegimeModule:
             lambda value: self._threshold_bucket(
                 value,
                 curve_change_bucket_config
-                or self._curve_component_bucket_config("curve_change"),
+                or self._component_score_bucket_config("curve_change"),
             )
         )
         buckets["curve_state_bucket_raw"] = curve_state_score.apply(
             lambda value: self._threshold_bucket(
                 value,
                 curve_state_bucket_config
-                or self._curve_component_bucket_config("curve_state"),
+                or self._component_score_bucket_config("curve_state"),
             )
         )
         buckets["yield_move_driver_bucket_raw"] = curve_move_driver_score.apply(
             lambda value: self._score_bucket(
                 value,
                 curve_move_driver_bucket_config
-                or self._curve_component_bucket_config("curve_move_driver"),
+                or self._component_score_bucket_config("curve_move_driver"),
             )
         )
         buckets["curve_change_bucket"] = self._stabilize_state_series(
@@ -7319,28 +7316,6 @@ class RegimeModule:
 
         return stance_config
 
-    def _curve_positioning_required_output_cols(self) -> list[str]:
-        stance_config = self._curve_positioning_stance_config()
-        required_stance_cols = [
-            stance_config.get("score_output"),
-            stance_config.get("stance_output"),
-            stance_config.get("strength_output"),
-        ]
-        missing_stance_cols = [
-            col
-            for col in required_stance_cols
-            if col is None
-            or self.exposure_stance is None
-            or col not in self.exposure_stance.columns
-        ]
-        if missing_stance_cols:
-            raise ValueError(
-                "Curve positioning exposure stance outputs are missing: "
-                f"{missing_stance_cols}"
-            )
-
-        return required_stance_cols
-
     def _rule_mapped_trace_supported_functions(self) -> set[str]:
         return {
             "duration_rule_stance",
@@ -7838,9 +7813,15 @@ class RegimeModule:
             include_raw_input=False,
             include_labels=False,
         )
-        score_output, stance_output, strength_output = (
-            self._curve_positioning_required_output_cols()
+        rule_mapped_context = self._resolve_rule_mapped_diagnostic_config(
+            "curve_positioning"
         )
+        diagnostic_spec = self._derive_rule_mapped_diagnostic_spec_from_context(
+            rule_mapped_context
+        )
+        score_output = diagnostic_spec.final_score_col
+        stance_output = diagnostic_spec.stance_label_col
+        strength_output = diagnostic_spec.strength_label_col
 
         rule_case_distribution = self._curve_value_counts_with_ratio(
             diagnostics["curve_positioning_rule_case"],
@@ -8114,9 +8095,27 @@ class RegimeModule:
             )
 
         stance_config = self._curve_positioning_stance_config()
-        score_output, stance_output, strength_output = (
-            self._curve_positioning_required_output_cols()
+        rule_mapped_context = self._resolve_rule_mapped_diagnostic_config(
+            "curve_positioning"
         )
+        diagnostic_spec = self._derive_rule_mapped_diagnostic_spec_from_context(
+            rule_mapped_context
+        )
+        score_output = diagnostic_spec.final_score_col
+        stance_output = diagnostic_spec.stance_label_col
+        strength_output = diagnostic_spec.strength_label_col
+        required_stance_cols = [score_output, stance_output, strength_output]
+        missing_stance_cols = [
+            col
+            for col in required_stance_cols
+            if col is None or col not in self.exposure_stance.columns
+        ]
+        if missing_stance_cols:
+            raise ValueError(
+                "Curve positioning exposure stance outputs are missing: "
+                f"{missing_stance_cols}"
+            )
+
         raw_scores = self._raw_curve_component_scores_for_input_smoothing_comparison()
 
         detail = pd.DataFrame(index=self.features.index)
@@ -8371,7 +8370,7 @@ class RegimeModule:
             self._curve_move_driver_score_from_prepared_inputs(
                 front_end_prepared,
                 long_end_prepared,
-                self._curve_component_bucket_config("curve_move_driver"),
+                self._component_score_bucket_config("curve_move_driver"),
             ),
             curve_move_driver_config.get("clip"),
         )
@@ -8379,7 +8378,7 @@ class RegimeModule:
             self._curve_move_driver_score_from_prepared_inputs(
                 front_end_filtered,
                 long_end_filtered,
-                self._curve_component_bucket_config("curve_move_driver"),
+                self._component_score_bucket_config("curve_move_driver"),
             ),
             curve_move_driver_config.get("clip"),
         )
@@ -8436,7 +8435,7 @@ class RegimeModule:
             score_without_threshold.apply(
                 lambda value: self._score_bucket(
                     value,
-                    self._curve_component_bucket_config("curve_move_driver"),
+                    self._component_score_bucket_config("curve_move_driver"),
                 )
             )
         )
@@ -8444,7 +8443,7 @@ class RegimeModule:
             score_with_threshold.apply(
                 lambda value: self._score_bucket(
                     value,
-                    self._curve_component_bucket_config("curve_move_driver"),
+                    self._component_score_bucket_config("curve_move_driver"),
                 )
             )
         )
