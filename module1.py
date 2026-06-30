@@ -8724,102 +8724,115 @@ class RegimeModule:
             result["detail"] = detail
         return result
 
-    def _curve_stabilization_case_detail(
+    def _rule_mapped_stabilization_case_detail_comparison(
         self,
-        case_config: dict,
+        stance_name: str,
         stance_config: dict,
+        *,
+        baseline_stabilization_overrides: dict,
+        case_stabilization_overrides: dict,
+        detail_columns: dict,
     ) -> pd.DataFrame:
-        score_output = stance_config.get("score_output")
-        neutral_diag = self._build_rule_mapped_stance_score_breakdown(
-            "curve_positioning",
+        spec = self._resolve_rule_mapped_stance_schema(stance_name, stance_config)
+        baseline_diag = self._build_rule_mapped_stance_score_breakdown(
+            stance_name,
             stance_config,
-            stabilization_overrides=self._neutral_curve_positioning_stabilization_overrides(),
+            stabilization_overrides=baseline_stabilization_overrides,
         )
         case_diag = self._build_rule_mapped_stance_score_breakdown(
-            "curve_positioning",
+            stance_name,
             stance_config,
-            stabilization_overrides=case_config,
+            stabilization_overrides=case_stabilization_overrides,
         )
         detail = pd.DataFrame(index=self.scores.index)
-        for column in [
-            "curve_change_score",
-            "curve_state_score",
-            "curve_move_driver_score",
-        ]:
-            detail[column] = self.scores[column]
-        detail["raw_curve_change_bucket"] = neutral_diag["curve_change_bucket"]
-        detail["stabilized_curve_change_bucket"] = case_diag["curve_change_bucket"]
-        detail["raw_curve_state_bucket"] = neutral_diag["curve_state_bucket"]
-        detail["stabilized_curve_state_bucket"] = case_diag["curve_state_bucket"]
-        detail["raw_yield_move_driver_bucket"] = neutral_diag["yield_move_driver_bucket"]
-        detail["stabilized_yield_move_driver_bucket"] = case_diag[
-            "yield_move_driver_bucket"
-        ]
-        detail["raw_curve_positioning_rule_case"] = neutral_diag[
-            "curve_positioning_rule_case"
-        ]
-        detail["stabilized_curve_positioning_rule_case"] = case_diag[
-            "curve_positioning_rule_case"
-        ]
-        detail["raw_curve_positioning_score"] = neutral_diag[score_output]
-        detail["stabilized_curve_positioning_score"] = case_diag[score_output]
-        detail["score_diff"] = (
-            detail["stabilized_curve_positioning_score"]
-            - detail["raw_curve_positioning_score"]
+
+        for state_input in spec.state_inputs:
+            output_col = detail_columns["score_inputs"].get(
+                state_input.name,
+                state_input.source_score_col,
+            )
+            detail[output_col] = self.scores[state_input.source_score_col]
+
+        for state_input in spec.state_inputs:
+            state_columns = detail_columns["states"][state_input.name]
+            detail[state_columns["raw"]] = baseline_diag[
+                state_input.stabilized_output_col
+            ]
+            detail[state_columns["stabilized"]] = case_diag[
+                state_input.stabilized_output_col
+            ]
+
+        rule_case_columns = detail_columns["rule_case"]
+        detail[rule_case_columns["raw"]] = baseline_diag[spec.rule_case_output_col]
+        detail[rule_case_columns["stabilized"]] = case_diag[spec.rule_case_output_col]
+
+        score_columns = detail_columns["score"]
+        detail[score_columns["raw"]] = baseline_diag[spec.score_output_col]
+        detail[score_columns["stabilized"]] = case_diag[spec.score_output_col]
+        detail[detail_columns["score_diff"]] = (
+            detail[score_columns["stabilized"]]
+            - detail[score_columns["raw"]]
         )
-        raw_direction, raw_strength = self._curve_positioning_labels_for_score(
-            detail["raw_curve_positioning_score"],
-            stance_config,
+
+        raw_direction, raw_strength = self._stance_labels_for_score(
+            detail[score_columns["raw"]], stance_config
         )
-        stabilized_direction, stabilized_strength = self._curve_positioning_labels_for_score(
-            detail["stabilized_curve_positioning_score"],
-            stance_config,
+        stabilized_direction, stabilized_strength = self._stance_labels_for_score(
+            detail[score_columns["stabilized"]], stance_config
         )
-        detail["raw_curve_positioning"] = raw_direction
-        detail["stabilized_curve_positioning"] = stabilized_direction
-        detail["raw_curve_positioning_strength"] = raw_strength
-        detail["stabilized_curve_positioning_strength"] = stabilized_strength
-        detail["score_changed"] = self._series_mismatch_mask(
-            detail["raw_curve_positioning_score"],
-            detail["stabilized_curve_positioning_score"],
+        direction_columns = detail_columns["direction"]
+        strength_columns = detail_columns["strength"]
+        detail[direction_columns["raw"]] = raw_direction
+        detail[direction_columns["stabilized"]] = stabilized_direction
+        detail[strength_columns["raw"]] = raw_strength
+        detail[strength_columns["stabilized"]] = stabilized_strength
+
+        change_columns = detail_columns["changed"]
+        detail[change_columns["score"]] = self._series_mismatch_mask(
+            detail[score_columns["raw"]],
+            detail[score_columns["stabilized"]],
             tolerance=1e-10,
         )
-        detail["direction_changed"] = self._series_mismatch_mask(
-            detail["raw_curve_positioning"],
-            detail["stabilized_curve_positioning"],
+        detail[change_columns["direction"]] = self._series_mismatch_mask(
+            detail[direction_columns["raw"]],
+            detail[direction_columns["stabilized"]],
         )
-        detail["strength_changed"] = self._series_mismatch_mask(
-            detail["raw_curve_positioning_strength"],
-            detail["stabilized_curve_positioning_strength"],
+        detail[change_columns["strength"]] = self._series_mismatch_mask(
+            detail[strength_columns["raw"]],
+            detail[strength_columns["stabilized"]],
         )
-        detail["raw_score_change_flag"] = (
-            detail["raw_curve_positioning_score"]
-            .dropna()
-            .ne(detail["raw_curve_positioning_score"].dropna().shift(1))
-            .reindex(detail.index, fill_value=False)
-        )
-        detail["stabilized_score_change_flag"] = (
-            detail["stabilized_curve_positioning_score"]
-            .dropna()
-            .ne(detail["stabilized_curve_positioning_score"].dropna().shift(1))
-            .reindex(detail.index, fill_value=False)
-        )
-        if detail["raw_score_change_flag"].notna().any():
-            first_raw = detail["raw_curve_positioning_score"].first_valid_index()
-            if first_raw is not None:
-                detail.loc[first_raw, "raw_score_change_flag"] = False
-        if detail["stabilized_score_change_flag"].notna().any():
-            first_stabilized = detail[
-                "stabilized_curve_positioning_score"
-            ].first_valid_index()
-            if first_stabilized is not None:
-                detail.loc[first_stabilized, "stabilized_score_change_flag"] = False
 
-        detail["raw_one_day_spike_flag"] = False
-        detail["stabilized_one_day_spike_flag"] = False
+        score_change_flag_columns = detail_columns["score_change_flags"]
+        detail[score_change_flag_columns["raw"]] = (
+            detail[score_columns["raw"]]
+            .dropna()
+            .ne(detail[score_columns["raw"]].dropna().shift(1))
+            .reindex(detail.index, fill_value=False)
+        )
+        detail[score_change_flag_columns["stabilized"]] = (
+            detail[score_columns["stabilized"]]
+            .dropna()
+            .ne(detail[score_columns["stabilized"]].dropna().shift(1))
+            .reindex(detail.index, fill_value=False)
+        )
+        if detail[score_change_flag_columns["raw"]].notna().any():
+            first_raw = detail[score_columns["raw"]].first_valid_index()
+            if first_raw is not None:
+                detail.loc[first_raw, score_change_flag_columns["raw"]] = False
+        if detail[score_change_flag_columns["stabilized"]].notna().any():
+            first_stabilized = detail[score_columns["stabilized"]].first_valid_index()
+            if first_stabilized is not None:
+                detail.loc[
+                    first_stabilized,
+                    score_change_flag_columns["stabilized"],
+                ] = False
+
+        one_day_spike_flag_columns = detail_columns["one_day_spike_flags"]
+        detail[one_day_spike_flag_columns["raw"]] = False
+        detail[one_day_spike_flag_columns["stabilized"]] = False
         for score_col, flag_col in [
-            ("raw_curve_positioning_score", "raw_one_day_spike_flag"),
-            ("stabilized_curve_positioning_score", "stabilized_one_day_spike_flag"),
+            (score_columns["raw"], one_day_spike_flag_columns["raw"]),
+            (score_columns["stabilized"], one_day_spike_flag_columns["stabilized"]),
         ]:
             values = detail[score_col]
             for pos in range(1, len(values) - 1):
@@ -8835,6 +8848,69 @@ class RegimeModule:
                 if current_value != previous_value and current_value != next_value and previous_value == next_value:
                     detail.iloc[pos, detail.columns.get_loc(flag_col)] = True
         return detail
+
+    def _curve_stabilization_case_detail(
+        self,
+        case_config: dict,
+        stance_config: dict,
+    ) -> pd.DataFrame:
+        return self._rule_mapped_stabilization_case_detail_comparison(
+            "curve_positioning",
+            stance_config,
+            baseline_stabilization_overrides=self._neutral_curve_positioning_stabilization_overrides(),
+            case_stabilization_overrides=case_config,
+            detail_columns={
+                "score_inputs": {
+                    "curve_change": "curve_change_score",
+                    "curve_state": "curve_state_score",
+                    "curve_move_driver": "curve_move_driver_score",
+                },
+                "states": {
+                    "curve_change": {
+                        "raw": "raw_curve_change_bucket",
+                        "stabilized": "stabilized_curve_change_bucket",
+                    },
+                    "curve_state": {
+                        "raw": "raw_curve_state_bucket",
+                        "stabilized": "stabilized_curve_state_bucket",
+                    },
+                    "curve_move_driver": {
+                        "raw": "raw_yield_move_driver_bucket",
+                        "stabilized": "stabilized_yield_move_driver_bucket",
+                    },
+                },
+                "rule_case": {
+                    "raw": "raw_curve_positioning_rule_case",
+                    "stabilized": "stabilized_curve_positioning_rule_case",
+                },
+                "score": {
+                    "raw": "raw_curve_positioning_score",
+                    "stabilized": "stabilized_curve_positioning_score",
+                },
+                "score_diff": "score_diff",
+                "direction": {
+                    "raw": "raw_curve_positioning",
+                    "stabilized": "stabilized_curve_positioning",
+                },
+                "strength": {
+                    "raw": "raw_curve_positioning_strength",
+                    "stabilized": "stabilized_curve_positioning_strength",
+                },
+                "changed": {
+                    "score": "score_changed",
+                    "direction": "direction_changed",
+                    "strength": "strength_changed",
+                },
+                "score_change_flags": {
+                    "raw": "raw_score_change_flag",
+                    "stabilized": "stabilized_score_change_flag",
+                },
+                "one_day_spike_flags": {
+                    "raw": "raw_one_day_spike_flag",
+                    "stabilized": "stabilized_one_day_spike_flag",
+                },
+            },
+        )
 
     def _curve_stabilization_summary_row(
         self,
