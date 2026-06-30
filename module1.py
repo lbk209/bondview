@@ -2095,6 +2095,77 @@ class RegimeModule:
         }
 
 
+    def _rule_mapped_component_parameter_effect_detail(
+        self,
+        target: str,
+        component_score_col: str,
+        baseline_score: pd.Series,
+        alternate_score: pd.Series,
+        *,
+        baseline_component_output: str,
+        alternate_component_output: str,
+        baseline_stance_output: str,
+        alternate_stance_output: str,
+        stance_diff_output: str,
+        component_changed_output: str,
+        stance_changed_output: str,
+    ) -> pd.DataFrame:
+        if self.scores is None:
+            raise ValueError(
+                "Run calculate_component_scores() before comparing parameter effects."
+            )
+
+        context = self._resolve_rule_mapped_diagnostic_config(target)
+        spec = self._derive_rule_mapped_diagnostic_spec_from_context(context)
+        if component_score_col not in spec.score_input_cols:
+            raise ValueError(
+                f"{component_score_col} is not an input to rule-mapped stance {target}."
+            )
+
+        def scenario_scores(scenario_component_score: pd.Series) -> pd.DataFrame:
+            scenario = pd.DataFrame(index=self.scores.index)
+            for score_col in spec.score_input_cols:
+                scenario[f"raw_{score_col}"] = (
+                    scenario_component_score
+                    if score_col == component_score_col
+                    else self.scores[score_col]
+                )
+            return scenario
+
+        baseline_stance = (
+            self._reconstruct_rule_mapped_stance_for_input_preparation_diagnostic(
+                target,
+                scenario_scores(baseline_score),
+            )["score"]
+        )
+        alternate_stance = (
+            self._reconstruct_rule_mapped_stance_for_input_preparation_diagnostic(
+                target,
+                scenario_scores(alternate_score),
+            )["score"]
+        )
+
+        detail = pd.DataFrame(index=self.scores.index)
+        detail[baseline_component_output] = baseline_score
+        detail[alternate_component_output] = alternate_score
+        detail[baseline_stance_output] = baseline_stance
+        detail[alternate_stance_output] = alternate_stance
+        detail[stance_diff_output] = (
+            detail[alternate_stance_output] - detail[baseline_stance_output]
+        )
+        detail[component_changed_output] = self._series_mismatch_mask(
+            detail[baseline_component_output],
+            detail[alternate_component_output],
+            tolerance=1e-10,
+        )
+        detail[stance_changed_output] = self._series_mismatch_mask(
+            detail[baseline_stance_output],
+            detail[alternate_stance_output],
+            tolerance=1e-10,
+        )
+        return detail
+
+
     def calculate_component_scores(self) -> pd.DataFrame:
         if self.features is None:
             raise ValueError("Run calculate_features() before calculate_component_scores().")
@@ -8512,22 +8583,18 @@ class RegimeModule:
             curve_move_driver_config.get("clip"),
         )
 
-        stance_config = self._curve_positioning_stance_config()
-        curve_positioning_without_threshold = (
-            self._curve_positioning_score_from_component_scores(
-                self.scores["curve_change_score"],
-                self.scores["curve_state_score"],
-                score_without_threshold,
-                stance_config,
-            )
-        )
-        curve_positioning_with_threshold = (
-            self._curve_positioning_score_from_component_scores(
-                self.scores["curve_change_score"],
-                self.scores["curve_state_score"],
-                score_with_threshold,
-                stance_config,
-            )
+        parameter_effect = self._rule_mapped_component_parameter_effect_detail(
+            target,
+            "curve_move_driver_score",
+            score_without_threshold,
+            score_with_threshold,
+            baseline_component_output="curve_move_driver_score_without_threshold",
+            alternate_component_output="curve_move_driver_score_with_threshold",
+            baseline_stance_output="curve_positioning_score_without_threshold",
+            alternate_stance_output="curve_positioning_score_with_threshold",
+            stance_diff_output="curve_positioning_score_diff_due_to_threshold",
+            component_changed_output="curve_move_driver_score_changed_by_threshold",
+            stance_changed_output="curve_positioning_score_changed_by_threshold",
         )
 
         detail = pd.DataFrame(index=self.features.index)
@@ -8556,10 +8623,12 @@ class RegimeModule:
             ] = long_end_filtered
         else:
             detail[long_end_filtered_spec.output] = long_end_filtered
-        detail["curve_move_driver_score_without_threshold"] = (
-            score_without_threshold
-        )
-        detail["curve_move_driver_score_with_threshold"] = score_with_threshold
+        detail["curve_move_driver_score_without_threshold"] = parameter_effect[
+            "curve_move_driver_score_without_threshold"
+        ]
+        detail["curve_move_driver_score_with_threshold"] = parameter_effect[
+            "curve_move_driver_score_with_threshold"
+        ]
         detail["curve_move_driver_bucket_without_threshold"] = (
             score_without_threshold.apply(
                 lambda value: self._score_bucket(
@@ -8576,30 +8645,14 @@ class RegimeModule:
                 )
             )
         )
-        detail["curve_positioning_score_without_threshold"] = (
-            curve_positioning_without_threshold
-        )
-        detail["curve_positioning_score_with_threshold"] = (
-            curve_positioning_with_threshold
-        )
-        detail["curve_positioning_score_diff_due_to_threshold"] = (
-            detail["curve_positioning_score_with_threshold"]
-            - detail["curve_positioning_score_without_threshold"]
-        )
-        detail["curve_move_driver_score_changed_by_threshold"] = (
-            self._series_mismatch_mask(
-                detail["curve_move_driver_score_without_threshold"],
-                detail["curve_move_driver_score_with_threshold"],
-                tolerance=1e-10,
-            )
-        )
-        detail["curve_positioning_score_changed_by_threshold"] = (
-            self._series_mismatch_mask(
-                detail["curve_positioning_score_without_threshold"],
-                detail["curve_positioning_score_with_threshold"],
-                tolerance=1e-10,
-            )
-        )
+        for column in [
+            "curve_positioning_score_without_threshold",
+            "curve_positioning_score_with_threshold",
+            "curve_positioning_score_diff_due_to_threshold",
+            "curve_move_driver_score_changed_by_threshold",
+            "curve_positioning_score_changed_by_threshold",
+        ]:
+            detail[column] = parameter_effect[column]
 
         valid = detail[
             detail["curve_move_driver_score_without_threshold"].notna()
