@@ -1308,25 +1308,6 @@ class RegimeModule:
             )
         return buckets
 
-    def _curve_positioning_rule_scores(self, stance_config: dict) -> dict:
-        rule_scores = stance_config.get("rule_scores")
-        if not isinstance(rule_scores, dict) or not rule_scores:
-            raise ValueError("Curve positioning rule_scores must be a non-empty mapping.")
-
-        parsed_scores = {}
-        for case_key, score in rule_scores.items():
-            if not isinstance(case_key, str):
-                raise ValueError("Curve positioning rule score keys must be strings.")
-            parts = case_key.split("|")
-            if len(parts) != 3:
-                raise ValueError(
-                    "Curve positioning rule score keys must use "
-                    "curve_change|curve_state|curve_move_driver format: "
-                    f"{case_key}"
-                )
-            parsed_scores[tuple(parts)] = float(score)
-        return parsed_scores
-
 
     def _rule_state_is_missing(self, state) -> bool:
         if state is None:
@@ -2730,51 +2711,6 @@ class RegimeModule:
             )
         return pd.concat([breakdown, state_detail, rule_detail], axis=1)
 
-    def _curve_positioning_rule_score(
-        self,
-        curve_change_bucket,
-        curve_state_bucket,
-        yield_move_driver_bucket,
-        rule_scores: dict,
-    ):
-        if (
-            pd.isna(curve_change_bucket)
-            or pd.isna(curve_state_bucket)
-            or pd.isna(yield_move_driver_bucket)
-        ):
-            return pd.NA
-
-        rule_key = (
-            str(curve_change_bucket),
-            str(curve_state_bucket),
-            str(yield_move_driver_bucket),
-        )
-        if rule_key not in rule_scores:
-            raise ValueError(
-                "Missing curve positioning rule score for "
-                "curve_change|curve_state|curve_move_driver case: "
-                f"{'|'.join(rule_key)}"
-            )
-        return rule_scores[rule_key]
-
-    def _curve_change_candidate_bucket(
-        self,
-        value: float,
-        *,
-        active_state=None,
-        hysteresis_buffer: float = 0.0,
-        bucket_config=None,
-    ) -> str:
-        return self._threshold_bucket_hysteresis_candidate(
-            value,
-            active_state=active_state,
-            hysteresis_buffer=hysteresis_buffer,
-            bucket_config=(
-                bucket_config
-                or self._component_score_bucket_config("curve_change")
-            ),
-        )
-
     def _threshold_bucket_hysteresis_candidate(
         self,
         value: float,
@@ -2820,9 +2756,6 @@ class RegimeModule:
         if value <= negative_threshold - buffer:
             return negative_bucket
         return neutral_bucket
-
-    def _curve_ordered_threshold_buckets(self, bucket_config: dict) -> list[dict]:
-        return self._ordered_threshold_buckets(bucket_config)
 
     def _ordered_threshold_buckets(self, bucket_config: dict) -> list[dict]:
         ordered = []
@@ -2885,24 +2818,6 @@ class RegimeModule:
 
         return True
 
-    def _curve_state_candidate_bucket(
-        self,
-        value: float,
-        *,
-        active_state=None,
-        hysteresis_buffer: float = 0.0,
-        bucket_config=None,
-    ) -> str:
-        return self._ordered_threshold_bucket_hysteresis_candidate(
-            value,
-            active_state=active_state,
-            hysteresis_buffer=hysteresis_buffer,
-            bucket_config=(
-                bucket_config
-                or self._component_score_bucket_config("curve_state")
-            ),
-        )
-
     def _ordered_threshold_bucket_hysteresis_candidate(
         self,
         value: float,
@@ -2939,138 +2854,6 @@ class RegimeModule:
             elif value < boundary:
                 return interval["name"]
         return ordered[-1]["name"]
-
-    def _yield_move_driver_candidate_bucket(
-        self,
-        value: float,
-        *,
-        active_state=None,
-        hysteresis_buffer: float = 0.0,
-        bucket_config=None,
-    ) -> str:
-        return self._score_bucket(
-            value,
-            bucket_config or self._component_score_bucket_config("curve_move_driver"),
-        )
-
-    def _curve_positioning_stabilization_config(
-        self,
-        stance_config: dict,
-        overrides: dict | None = None,
-    ) -> dict:
-        configured = stance_config.get("state_stabilization")
-        if overrides is not None:
-            configured = overrides
-        if not isinstance(configured, dict):
-            raise ValueError("Curve positioning state_stabilization must be a mapping.")
-
-        resolved = {}
-        for component_name in ["curve_change", "curve_state", "curve_move_driver"]:
-            component_config = configured.get(component_name)
-            if not isinstance(component_config, dict):
-                raise ValueError(
-                    f"Curve positioning state_stabilization.{component_name} must be a mapping."
-                )
-            if "hysteresis_buffer" not in component_config:
-                raise ValueError(
-                    f"Curve positioning state_stabilization.{component_name}.hysteresis_buffer is required."
-                )
-            if "min_state_persistence" not in component_config:
-                raise ValueError(
-                    f"Curve positioning state_stabilization.{component_name}.min_state_persistence is required."
-                )
-            resolved[component_name] = {
-                "hysteresis_buffer": float(component_config["hysteresis_buffer"]),
-                "min_state_persistence": int(component_config["min_state_persistence"]),
-            }
-
-        return resolved
-
-    def _stabilize_curve_positioning_rule_buckets(
-        self,
-        curve_change_score: pd.Series,
-        curve_state_score: pd.Series,
-        curve_move_driver_score: pd.Series,
-        stance_config: dict,
-        stabilization_overrides: dict | None = None,
-    ) -> pd.DataFrame:
-        stabilization_config = self._curve_positioning_stabilization_config(
-            stance_config,
-            overrides=stabilization_overrides,
-        )
-        curve_change_bucket_config = self._component_score_bucket_config("curve_change")
-        curve_state_bucket_config = self._component_score_bucket_config("curve_state")
-        curve_move_driver_bucket_config = self._component_score_bucket_config(
-            "curve_move_driver"
-        )
-        buckets = pd.DataFrame(index=curve_change_score.index)
-        buckets["curve_change_bucket_raw"] = curve_change_score.apply(
-            lambda value: self._threshold_bucket(
-                value,
-                curve_change_bucket_config
-                or self._component_score_bucket_config("curve_change"),
-            )
-        )
-        buckets["curve_state_bucket_raw"] = curve_state_score.apply(
-            lambda value: self._threshold_bucket(
-                value,
-                curve_state_bucket_config
-                or self._component_score_bucket_config("curve_state"),
-            )
-        )
-        buckets["yield_move_driver_bucket_raw"] = curve_move_driver_score.apply(
-            lambda value: self._score_bucket(
-                value,
-                curve_move_driver_bucket_config
-                or self._component_score_bucket_config("curve_move_driver"),
-            )
-        )
-        buckets["curve_change_bucket"] = self._stabilize_state_series(
-            curve_change_score,
-            lambda value, active_state, hysteresis_buffer: self._curve_change_candidate_bucket(
-                value,
-                active_state=active_state,
-                hysteresis_buffer=hysteresis_buffer,
-                bucket_config=curve_change_bucket_config,
-            ),
-            hysteresis_buffer=stabilization_config["curve_change"][
-                "hysteresis_buffer"
-            ],
-            min_state_persistence=stabilization_config["curve_change"][
-                "min_state_persistence"
-            ],
-        )
-        buckets["curve_state_bucket"] = self._stabilize_state_series(
-            curve_state_score,
-            lambda value, active_state, hysteresis_buffer: self._curve_state_candidate_bucket(
-                value,
-                active_state=active_state,
-                hysteresis_buffer=hysteresis_buffer,
-                bucket_config=curve_state_bucket_config,
-            ),
-            hysteresis_buffer=stabilization_config["curve_state"][
-                "hysteresis_buffer"
-            ],
-            min_state_persistence=stabilization_config["curve_state"][
-                "min_state_persistence"
-            ],
-        )
-        buckets["yield_move_driver_bucket"] = self._stabilize_state_series(
-            curve_move_driver_score,
-            lambda value, active_state, hysteresis_buffer: self._yield_move_driver_candidate_bucket(
-                value,
-                active_state=active_state,
-                hysteresis_buffer=hysteresis_buffer,
-                bucket_config=curve_move_driver_bucket_config,
-            ),
-            hysteresis_buffer=stabilization_config["curve_move_driver"][
-                "hysteresis_buffer"
-            ],
-            min_state_persistence=stabilization_config["curve_move_driver"][
-                "min_state_persistence"
-            ],
-        )
-        return buckets
 
     def _threshold_state_from_score(
         self,
@@ -8220,37 +8003,6 @@ class RegimeModule:
             "fed_hiking_2022": ("2022-03-01", "2022-12-31"),
             "full_history": (None, None),
         }
-
-    def _curve_positioning_labels_for_score(
-        self,
-        score: pd.Series,
-        stance_config: dict,
-    ) -> tuple[pd.Series, pd.Series]:
-        return self._stance_labels_for_score(score, stance_config)
-
-    def _curve_positioning_score_from_component_scores(
-        self,
-        curve_change_score: pd.Series,
-        curve_state_score: pd.Series,
-        curve_move_driver_score: pd.Series,
-        stance_config: dict,
-    ) -> pd.Series:
-        rule_scores = self._curve_positioning_rule_scores(stance_config)
-        rule_buckets = self._stabilize_curve_positioning_rule_buckets(
-            curve_change_score,
-            curve_state_score,
-            curve_move_driver_score,
-            stance_config,
-        )
-        scores = pd.Series(index=rule_buckets.index, dtype="object")
-        for idx, row in rule_buckets.iterrows():
-            scores.loc[idx] = self._curve_positioning_rule_score(
-                row["curve_change_bucket"],
-                row["curve_state_bucket"],
-                row["yield_move_driver_bucket"],
-                rule_scores,
-            )
-        return pd.to_numeric(scores, errors="coerce")
 
     def _curve_move_driver_score_from_prepared_inputs(
         self,
