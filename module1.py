@@ -1255,11 +1255,41 @@ class RegimeModule:
             apply_input_preparation=apply_input_preparation,
             apply_min_abs_value=True,
         )
+        bucket_scores = self._curve_move_driver_bucket_scores(
+            self._component_score_bucket_config(component_name)
+        )
         return self._curve_move_driver_score_from_prepared_inputs(
             front_end,
             long_end,
-            self._component_score_bucket_config(component_name),
+            bucket_scores,
         )
+
+    def _curve_move_driver_bucket_scores(self, bucket_config: dict) -> dict[str, float]:
+        def bucket_score(bucket_name: str) -> float:
+            bucket_rule = bucket_config.get(bucket_name)
+            if not isinstance(bucket_rule, dict) or "score" not in bucket_rule:
+                raise ValueError(
+                    f"curve_move_driver bucket {bucket_name} must define score."
+                )
+            return float(bucket_rule["score"])
+
+        default_scores = [
+            bucket_rule.get("score")
+            for bucket_rule in bucket_config.values()
+            if isinstance(bucket_rule, dict) and bucket_rule.get("default") is True
+        ]
+        if len(default_scores) != 1 or pd.isna(default_scores[0]):
+            raise ValueError(
+                "curve_move_driver must define exactly one default bucket with a score."
+            )
+
+        return {
+            "default": float(default_scores[0]),
+            "bull_parallel": bucket_score("bull_parallel"),
+            "bear_parallel": bucket_score("bear_parallel"),
+            "front_end_down_long_end_up": bucket_score("front_end_down_long_end_up"),
+            "front_end_up_long_end_down": bucket_score("front_end_up_long_end_down"),
+        }
 
     def _component_score_bucket_config(self, component_name: str) -> dict:
         if self.component_config is None:
@@ -8003,36 +8033,17 @@ class RegimeModule:
         self,
         front_end: pd.Series,
         long_end: pd.Series,
-        bucket_config: dict,
+        bucket_scores: dict[str, float],
     ) -> pd.Series:
-        def bucket_score(bucket_name: str) -> float:
-            bucket_rule = bucket_config.get(bucket_name)
-            if not isinstance(bucket_rule, dict) or "score" not in bucket_rule:
-                raise ValueError(
-                    f"curve_move_driver bucket {bucket_name} must define score."
-                )
-            return float(bucket_rule["score"])
-
-        default_scores = [
-            bucket_rule.get("score")
-            for bucket_rule in bucket_config.values()
-            if isinstance(bucket_rule, dict) and bucket_rule.get("default") is True
-        ]
-        if len(default_scores) != 1 or pd.isna(default_scores[0]):
-            raise ValueError(
-                "curve_move_driver must define exactly one default bucket with a score."
-            )
-        default_score = float(default_scores[0])
-
-        score = pd.Series(default_score, index=front_end.index)
-        score.loc[(front_end < 0) & (long_end < 0)] = bucket_score("bull_parallel")
-        score.loc[(front_end > 0) & (long_end > 0)] = bucket_score("bear_parallel")
-        score.loc[(front_end < 0) & (long_end > 0)] = bucket_score(
+        score = pd.Series(bucket_scores["default"], index=front_end.index)
+        score.loc[(front_end < 0) & (long_end < 0)] = bucket_scores["bull_parallel"]
+        score.loc[(front_end > 0) & (long_end > 0)] = bucket_scores["bear_parallel"]
+        score.loc[(front_end < 0) & (long_end > 0)] = bucket_scores[
             "front_end_down_long_end_up"
-        )
-        score.loc[(front_end > 0) & (long_end < 0)] = bucket_score(
+        ]
+        score.loc[(front_end > 0) & (long_end < 0)] = bucket_scores[
             "front_end_up_long_end_down"
-        )
+        ]
         score.loc[front_end.isna() | long_end.isna()] = pd.NA
         return score
 
@@ -8366,11 +8377,14 @@ class RegimeModule:
             front_end_filtered = prepared_inputs[front_end_filtered_spec.output]
             long_end_filtered = prepared_inputs[long_end_filtered_spec.output]
 
+        curve_move_driver_bucket_scores = self._curve_move_driver_bucket_scores(
+            self._component_score_bucket_config("curve_move_driver")
+        )
         score_without_threshold = self._clip_score(
             self._curve_move_driver_score_from_prepared_inputs(
                 front_end_prepared,
                 long_end_prepared,
-                self._component_score_bucket_config("curve_move_driver"),
+                curve_move_driver_bucket_scores,
             ),
             curve_move_driver_config.get("clip"),
         )
@@ -8378,7 +8392,7 @@ class RegimeModule:
             self._curve_move_driver_score_from_prepared_inputs(
                 front_end_filtered,
                 long_end_filtered,
-                self._component_score_bucket_config("curve_move_driver"),
+                curve_move_driver_bucket_scores,
             ),
             curve_move_driver_config.get("clip"),
         )
