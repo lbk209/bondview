@@ -2017,6 +2017,84 @@ class RegimeModule:
         return recalculated
 
 
+    def _stance_labels_for_score(
+        self,
+        score: pd.Series,
+        stance_config: dict,
+    ) -> tuple[pd.Series, pd.Series]:
+        rules = self.exposure_stance_config["stance_label_rules"]
+        direction_thresholds = rules.get("direction_thresholds", {})
+        strength_thresholds = rules.get("strength_thresholds", {})
+        neutral_strength = rules.get("neutral_strength", "weak")
+        labels = stance_config.get("labels", {})
+        direction_labels = labels.get("direction", {})
+        strength_labels = labels.get("strength", {})
+        direction = score.apply(
+            lambda value: self._label_stance_direction(
+                value,
+                direction_thresholds,
+                direction_labels,
+            )
+        )
+        strength = pd.Series(index=score.index, dtype="object")
+        for idx, value in score.items():
+            strength.loc[idx] = self._label_stance_strength(
+                value,
+                direction.loc[idx],
+                direction_labels,
+                strength_thresholds,
+                strength_labels,
+                neutral_strength,
+            )
+        return direction, strength
+
+
+    def _reconstruct_rule_mapped_stance_for_input_preparation_diagnostic(
+        self,
+        target: str,
+        alternate_scores: pd.DataFrame,
+    ) -> dict[str, pd.Series]:
+        if self.scores is None:
+            raise ValueError(
+                "Run calculate_component_scores() before reconstructing diagnostic stances."
+            )
+        if self.exposure_stance_config is None:
+            raise ValueError(
+                "Run load_module1_config() before reconstructing diagnostic stances."
+            )
+
+        context = self._resolve_rule_mapped_diagnostic_config(target)
+        spec = self._derive_rule_mapped_diagnostic_spec_from_context(context)
+        stance_config = context["stance_config"]
+        temporary_scores = self.scores.copy()
+        for score_col in spec.score_input_cols:
+            alternate_col = f"raw_{score_col}"
+            if alternate_col not in alternate_scores.columns:
+                raise ValueError(
+                    f"Missing alternate diagnostic score column for {target}: "
+                    f"{alternate_col}"
+                )
+            temporary_scores[score_col] = alternate_scores[alternate_col]
+
+        original_scores = self.scores
+        try:
+            self.scores = temporary_scores
+            reconstruction = self._build_rule_mapped_stance_score_breakdown(
+                spec.target,
+                stance_config,
+            )
+        finally:
+            self.scores = original_scores
+
+        score = reconstruction[spec.final_score_col]
+        direction, strength = self._stance_labels_for_score(score, stance_config)
+        return {
+            "score": score,
+            "direction": direction,
+            "strength": strength,
+        }
+
+
     def calculate_component_scores(self) -> pd.DataFrame:
         if self.features is None:
             raise ValueError("Run calculate_features() before calculate_component_scores().")
@@ -7688,31 +7766,7 @@ class RegimeModule:
         score: pd.Series,
         stance_config: dict,
     ) -> tuple[pd.Series, pd.Series]:
-        rules = self.exposure_stance_config["stance_label_rules"]
-        direction_thresholds = rules.get("direction_thresholds", {})
-        strength_thresholds = rules.get("strength_thresholds", {})
-        neutral_strength = rules.get("neutral_strength", "weak")
-        labels = stance_config.get("labels", {})
-        direction_labels = labels.get("direction", {})
-        strength_labels = labels.get("strength", {})
-        direction = score.apply(
-            lambda value: self._label_stance_direction(
-                value,
-                direction_thresholds,
-                direction_labels,
-            )
-        )
-        strength = pd.Series(index=score.index, dtype="object")
-        for idx, value in score.items():
-            strength.loc[idx] = self._label_stance_strength(
-                value,
-                direction.loc[idx],
-                direction_labels,
-                strength_thresholds,
-                strength_labels,
-                neutral_strength,
-            )
-        return direction, strength
+        return self._stance_labels_for_score(score, stance_config)
 
     def _raw_credit_component_scores_for_input_smoothing_comparison(
         self,
@@ -7741,7 +7795,6 @@ class RegimeModule:
                 "Run load_module1_config() before comparing credit input smoothing."
             )
 
-        stance_config = self._credit_stance_config()
         raw_scores = self._raw_credit_component_scores_for_input_smoothing_comparison()
         detail = pd.DataFrame(index=self.features.index)
         if "baa10y_change" in self.features.columns:
@@ -7762,13 +7815,13 @@ class RegimeModule:
         detail["smoothed_credit_spread_state_score"] = self.scores[
             "credit_spread_state_score"
         ]
-        detail["raw_credit_stance_score"] = (
-            self._credit_stance_score_from_component_scores(
-                raw_scores["raw_credit_spread_change_score"],
-                raw_scores["raw_credit_spread_state_score"],
-                stance_config,
+        raw_stance = (
+            self._reconstruct_rule_mapped_stance_for_input_preparation_diagnostic(
+                target,
+                raw_scores,
             )
         )
+        detail["raw_credit_stance_score"] = raw_stance["score"]
         detail["smoothed_credit_stance_score"] = self.exposure_stance[
             "credit_stance_score"
         ]
@@ -7776,12 +7829,8 @@ class RegimeModule:
             detail["smoothed_credit_stance_score"]
             - detail["raw_credit_stance_score"]
         )
-        raw_direction, raw_strength = self._credit_stance_labels_for_score(
-            detail["raw_credit_stance_score"],
-            stance_config,
-        )
-        detail["raw_credit_stance"] = raw_direction
-        detail["raw_credit_stance_strength"] = raw_strength
+        detail["raw_credit_stance"] = raw_stance["direction"]
+        detail["raw_credit_stance_strength"] = raw_stance["strength"]
         detail["smoothed_credit_stance"] = self.exposure_stance["credit_stance"]
         detail["smoothed_credit_stance_strength"] = self.exposure_stance[
             "credit_stance_strength"
@@ -8106,31 +8155,7 @@ class RegimeModule:
         score: pd.Series,
         stance_config: dict,
     ) -> tuple[pd.Series, pd.Series]:
-        rules = self.exposure_stance_config["stance_label_rules"]
-        direction_thresholds = rules.get("direction_thresholds", {})
-        strength_thresholds = rules.get("strength_thresholds", {})
-        neutral_strength = rules.get("neutral_strength", "weak")
-        labels = stance_config.get("labels", {})
-        direction_labels = labels.get("direction", {})
-        strength_labels = labels.get("strength", {})
-        direction = score.apply(
-            lambda value: self._label_stance_direction(
-                value,
-                direction_thresholds,
-                direction_labels,
-            )
-        )
-        strength = pd.Series(index=score.index, dtype="object")
-        for idx, value in score.items():
-            strength.loc[idx] = self._label_stance_strength(
-                value,
-                direction.loc[idx],
-                direction_labels,
-                strength_thresholds,
-                strength_labels,
-                neutral_strength,
-            )
-        return direction, strength
+        return self._stance_labels_for_score(score, stance_config)
 
     def _curve_positioning_score_from_component_scores(
         self,
@@ -8201,7 +8226,6 @@ class RegimeModule:
                 "Run load_module1_config() before comparing curve input smoothing."
             )
 
-        stance_config = self._curve_positioning_stance_config()
         rule_mapped_context = self._resolve_rule_mapped_diagnostic_config(
             "curve_positioning"
         )
@@ -8242,14 +8266,13 @@ class RegimeModule:
         detail["smoothed_curve_move_driver_score"] = self.scores[
             "curve_move_driver_score"
         ]
-        detail["raw_curve_positioning_score"] = (
-            self._curve_positioning_score_from_component_scores(
-                raw_scores["raw_curve_change_score"],
-                raw_scores["raw_curve_state_score"],
-                raw_scores["raw_curve_move_driver_score"],
-                stance_config,
+        raw_stance = (
+            self._reconstruct_rule_mapped_stance_for_input_preparation_diagnostic(
+                target,
+                raw_scores,
             )
         )
+        detail["raw_curve_positioning_score"] = raw_stance["score"]
         detail["smoothed_curve_positioning_score"] = self.exposure_stance[
             score_output
         ]
@@ -8257,12 +8280,8 @@ class RegimeModule:
             detail["smoothed_curve_positioning_score"]
             - detail["raw_curve_positioning_score"]
         )
-        raw_direction, raw_strength = self._curve_positioning_labels_for_score(
-            detail["raw_curve_positioning_score"],
-            stance_config,
-        )
-        detail["raw_curve_positioning"] = raw_direction
-        detail["raw_curve_positioning_strength"] = raw_strength
+        detail["raw_curve_positioning"] = raw_stance["direction"]
+        detail["raw_curve_positioning_strength"] = raw_stance["strength"]
         detail["smoothed_curve_positioning"] = self.exposure_stance[stance_output]
         detail["smoothed_curve_positioning_strength"] = self.exposure_stance[
             strength_output
