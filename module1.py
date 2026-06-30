@@ -1925,6 +1925,98 @@ class RegimeModule:
         )
 
 
+    def _calculate_component_score_for_input_preparation_diagnostic(
+        self,
+        component_name: str,
+        score_config: dict,
+        *,
+        apply_input_preparation: bool,
+    ) -> pd.Series:
+        function = score_config.get("function")
+
+        if score_config.get("state_transform") == "fixed_anchor":
+            score = self._calculate_current_state_component_score(
+                component_name,
+                score_config,
+                apply_input_preparation=apply_input_preparation,
+            )
+            return self._clip_score(score, score_config.get("clip"))
+
+        normalization = score_config.get("normalization")
+        normalization_horizon = score_config.get(
+            "normalization_horizon",
+            "normalization",
+        )
+
+        if function == "single_feature_score":
+            score = self._calculate_single_feature_component_score(
+                component_name,
+                score_config,
+                normalization,
+                normalization_horizon,
+                apply_input_preparation=apply_input_preparation,
+            )
+        elif function == "weighted_feature_score":
+            score = self._calculate_weighted_feature_component_score(
+                component_name,
+                score_config,
+                normalization,
+                normalization_horizon,
+                apply_input_preparation=apply_input_preparation,
+            )
+        elif function == "curve_move_driver_score":
+            score = self._calculate_curve_move_driver_score(
+                component_name,
+                score_config,
+                apply_input_preparation=apply_input_preparation,
+            )
+        else:
+            raise ValueError(
+                f"Unsupported score function for diagnostic component {component_name}: "
+                f"{function}"
+            )
+
+        return self._clip_score(score, score_config.get("clip"))
+
+
+    def _recalculate_component_scores_for_input_preparation_diagnostic(
+        self,
+        target: str,
+        *,
+        apply_input_preparation: bool,
+        output_prefix: str,
+    ) -> pd.DataFrame:
+        if self.features is None:
+            raise ValueError(
+                "Run calculate_features() before recalculating diagnostic component scores."
+            )
+        if self.component_config is None or self.exposure_stance_config is None:
+            raise ValueError(
+                "Run load_module1_config() before recalculating diagnostic component scores."
+            )
+
+        component_names = self._diagnostic_component_names_for_target(target)
+        if component_names is None:
+            raise ValueError(f"Unable to resolve diagnostic components for target: {target}")
+
+        recalculated = pd.DataFrame(index=self.features.index)
+        components = self.component_config["components"]
+        for component_name in component_names:
+            score_config = components[component_name].get("score", {})
+            output = score_config.get("output")
+            if not isinstance(output, str) or output.strip() == "":
+                raise ValueError(f"Component {component_name} score is missing output.")
+            recalculated[f"{output_prefix}{output}"] = (
+                self._calculate_component_score_for_input_preparation_diagnostic(
+                    component_name,
+                    score_config,
+                    apply_input_preparation=apply_input_preparation,
+                )
+            )
+
+        return recalculated
+
+
     def calculate_component_scores(self) -> pd.DataFrame:
         if self.features is None:
             raise ValueError("Run calculate_features() before calculate_component_scores().")
@@ -7625,32 +7717,11 @@ class RegimeModule:
     def _raw_credit_component_scores_for_input_smoothing_comparison(
         self,
     ) -> pd.DataFrame:
-        components = self.component_config["components"]
-        raw_scores = pd.DataFrame(index=self.features.index)
-
-        change_config = components["credit_spread_change"]["score"]
-        raw_scores["raw_credit_spread_change_score"] = self._clip_score(
-            self._calculate_single_feature_component_score(
-                "credit_spread_change",
-                change_config,
-                change_config.get("normalization"),
-                change_config.get("normalization_horizon", "normalization"),
-                apply_input_preparation=False,
-            ),
-            change_config.get("clip"),
+        return self._recalculate_component_scores_for_input_preparation_diagnostic(
+            "credit",
+            apply_input_preparation=False,
+            output_prefix="raw_",
         )
-
-        state_config = components["credit_spread_state"]["score"]
-        raw_scores["raw_credit_spread_state_score"] = self._clip_score(
-            self._calculate_current_state_component_score(
-                "credit_spread_state",
-                state_config,
-                apply_input_preparation=False,
-            ),
-            state_config.get("clip"),
-        )
-
-        return raw_scores
 
     def _credit_input_smoothing_effect_detail(self, target: str) -> pd.DataFrame:
         if self.features is None:
@@ -8106,42 +8177,11 @@ class RegimeModule:
     def _raw_curve_component_scores_for_input_smoothing_comparison(
         self,
     ) -> pd.DataFrame:
-        components = self.component_config["components"]
-        raw_scores = pd.DataFrame(index=self.features.index)
-
-        curve_change_config = components["curve_change"]["score"]
-        raw_scores["raw_curve_change_score"] = self._clip_score(
-            self._calculate_weighted_feature_component_score(
-                "curve_change",
-                curve_change_config,
-                curve_change_config.get("normalization"),
-                curve_change_config.get("normalization_horizon", "normalization"),
-                apply_input_preparation=False,
-            ),
-            curve_change_config.get("clip"),
+        return self._recalculate_component_scores_for_input_preparation_diagnostic(
+            "curve_positioning",
+            apply_input_preparation=False,
+            output_prefix="raw_",
         )
-
-        curve_state_config = components["curve_state"]["score"]
-        raw_scores["raw_curve_state_score"] = self._clip_score(
-            self._calculate_current_state_component_score(
-                "curve_state",
-                curve_state_config,
-                apply_input_preparation=False,
-            ),
-            curve_state_config.get("clip"),
-        )
-
-        curve_move_driver_config = components["curve_move_driver"]["score"]
-        raw_scores["raw_curve_move_driver_score"] = self._clip_score(
-            self._calculate_curve_move_driver_score(
-                "curve_move_driver",
-                curve_move_driver_config,
-                apply_input_preparation=False,
-            ),
-            curve_move_driver_config.get("clip"),
-        )
-
-        return raw_scores
 
     def _curve_input_smoothing_effect_detail(self, target: str) -> pd.DataFrame:
         if self.features is None:
