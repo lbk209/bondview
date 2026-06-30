@@ -2309,7 +2309,7 @@ class RegimeModule:
                 buckets_by_input[state_input.name] = buckets
                 state_detail[state_input.raw_output_col] = score.apply(
                     lambda value, thresholds=thresholds, buckets=buckets: (
-                        self._duration_rule_classify_state(value, thresholds, buckets)
+                        self._threshold_state_from_score(value, thresholds, buckets)
                     )
                 )
                 state_detail[state_input.stabilized_output_col] = (
@@ -2745,7 +2745,7 @@ class RegimeModule:
         )
         return buckets
 
-    def _duration_rule_classify_state(
+    def _threshold_state_from_score(
         self,
         value: float,
         thresholds: dict,
