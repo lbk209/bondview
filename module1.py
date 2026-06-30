@@ -2215,21 +2215,56 @@ class RegimeModule:
         if state_input.classification == "score_bucket":
             return self._score_bucket(value, bucket_config)
 
-        if state_input.component_name == "curve_change":
-            return self._curve_change_candidate_bucket(
+        if self._threshold_tail_default_bucket_parts(bucket_config) is not None:
+            return self._threshold_bucket_hysteresis_candidate(
                 value,
                 active_state=active_state,
                 hysteresis_buffer=hysteresis_buffer,
                 bucket_config=bucket_config,
             )
-        if state_input.component_name == "curve_state":
-            return self._curve_state_candidate_bucket(
+
+        if self._is_ordered_threshold_bucket_config(bucket_config):
+            return self._ordered_threshold_bucket_hysteresis_candidate(
                 value,
                 active_state=active_state,
                 hysteresis_buffer=hysteresis_buffer,
                 bucket_config=bucket_config,
             )
+
         return self._threshold_bucket(value, bucket_config)
+
+    def _threshold_tail_default_bucket_parts(self, bucket_config: dict):
+        min_buckets = [
+            (bucket_name, rule["min"])
+            for bucket_name, rule in bucket_config.items()
+            if isinstance(rule, dict) and "min" in rule and "max" not in rule
+        ]
+        max_buckets = [
+            (bucket_name, rule["max"])
+            for bucket_name, rule in bucket_config.items()
+            if isinstance(rule, dict) and "max" in rule and "min" not in rule
+        ]
+        default_buckets = [
+            bucket_name
+            for bucket_name, rule in bucket_config.items()
+            if isinstance(rule, dict) and rule.get("default") is True
+        ]
+        if len(min_buckets) != 1 or len(max_buckets) != 1 or len(default_buckets) != 1:
+            return None
+        return min_buckets[0], max_buckets[0], default_buckets[0]
+
+    def _is_ordered_threshold_bucket_config(self, bucket_config: dict) -> bool:
+        if not isinstance(bucket_config, dict) or not bucket_config:
+            return False
+        range_fields = {"min", "max", "min_exclusive", "max_exclusive"}
+        for rule in bucket_config.values():
+            if not isinstance(rule, dict):
+                return False
+            if rule.get("default") is True or "score" in rule:
+                return False
+            if not any(field in rule for field in range_fields):
+                return False
+        return True
 
     def _rule_mapped_adjusted_row(
         self,
@@ -2489,36 +2524,40 @@ class RegimeModule:
         hysteresis_buffer: float = 0.0,
         bucket_config=None,
     ) -> str:
+        return self._threshold_bucket_hysteresis_candidate(
+            value,
+            active_state=active_state,
+            hysteresis_buffer=hysteresis_buffer,
+            bucket_config=(
+                bucket_config
+                or self._component_score_bucket_config("curve_change")
+            ),
+        )
+
+    def _threshold_bucket_hysteresis_candidate(
+        self,
+        value: float,
+        *,
+        active_state=None,
+        hysteresis_buffer: float = 0.0,
+        bucket_config=None,
+    ) -> str:
         if pd.isna(value):
             return pd.NA
-        bucket_config = bucket_config or self._component_score_bucket_config("curve_change")
         if hysteresis_buffer == 0.0:
-            return self._threshold_bucket(
-                value,
-                bucket_config or self._component_score_bucket_config("curve_change"),
+            return self._threshold_bucket(value, bucket_config)
+
+        bucket_parts = self._threshold_tail_default_bucket_parts(bucket_config)
+        if bucket_parts is None:
+            raise ValueError(
+                "Threshold buckets must define one min, one max, and one default bucket."
             )
 
-        min_buckets = [
-            (bucket_name, rule["min"])
-            for bucket_name, rule in bucket_config.items()
-            if isinstance(rule, dict) and "min" in rule and "max" not in rule
-        ]
-        max_buckets = [
-            (bucket_name, rule["max"])
-            for bucket_name, rule in bucket_config.items()
-            if isinstance(rule, dict) and "max" in rule and "min" not in rule
-        ]
-        default_buckets = [
-            bucket_name
-            for bucket_name, rule in bucket_config.items()
-            if isinstance(rule, dict) and rule.get("default") is True
-        ]
-        if len(min_buckets) != 1 or len(max_buckets) != 1 or len(default_buckets) != 1:
-            raise ValueError("curve_change buckets must define one min, one max, and one default bucket.")
-
-        positive_bucket, positive_threshold = min_buckets[0]
-        negative_bucket, negative_threshold = max_buckets[0]
-        neutral_bucket = default_buckets[0]
+        (
+            (positive_bucket, positive_threshold),
+            (negative_bucket, negative_threshold),
+            neutral_bucket,
+        ) = bucket_parts
         buffer = hysteresis_buffer
 
         if active_state == positive_bucket:
@@ -2542,6 +2581,9 @@ class RegimeModule:
         return neutral_bucket
 
     def _curve_ordered_threshold_buckets(self, bucket_config: dict) -> list[dict]:
+        return self._ordered_threshold_buckets(bucket_config)
+
+    def _ordered_threshold_buckets(self, bucket_config: dict) -> list[dict]:
         ordered = []
         for bucket_name, rule in bucket_config.items():
             if not isinstance(rule, dict):
@@ -2610,16 +2652,30 @@ class RegimeModule:
         hysteresis_buffer: float = 0.0,
         bucket_config=None,
     ) -> str:
+        return self._ordered_threshold_bucket_hysteresis_candidate(
+            value,
+            active_state=active_state,
+            hysteresis_buffer=hysteresis_buffer,
+            bucket_config=(
+                bucket_config
+                or self._component_score_bucket_config("curve_state")
+            ),
+        )
+
+    def _ordered_threshold_bucket_hysteresis_candidate(
+        self,
+        value: float,
+        *,
+        active_state=None,
+        hysteresis_buffer: float = 0.0,
+        bucket_config=None,
+    ) -> str:
         if pd.isna(value):
             return pd.NA
-        bucket_config = bucket_config or self._component_score_bucket_config("curve_state")
         if active_state is None or hysteresis_buffer == 0.0:
-            return self._threshold_bucket(
-                value,
-                bucket_config or self._component_score_bucket_config("curve_state"),
-            )
+            return self._threshold_bucket(value, bucket_config)
 
-        ordered = self._curve_ordered_threshold_buckets(bucket_config)
+        ordered = self._ordered_threshold_buckets(bucket_config)
         active_interval = next(
             (interval for interval in ordered if interval["name"] == active_state),
             None,
