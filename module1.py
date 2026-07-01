@@ -8497,7 +8497,7 @@ class RegimeModule:
                         move_changed_count
                     ),
                     "curve_move_driver_score_changed_ratio_vs_no_threshold": (
-                        move_changed_count / valid_count if valid_count else pd.NA
+                        self._ratio_or_na(move_changed_count, valid_count)
                     ),
                     "mixed_or_unclear_count_before_threshold": mixed_before,
                     "mixed_or_unclear_count_after_threshold": mixed_after,
@@ -8506,9 +8506,10 @@ class RegimeModule:
                         positioning_changed_count
                     ),
                     "curve_positioning_score_changed_ratio_due_to_threshold": (
-                        positioning_changed_count / valid_positioning_count
-                        if valid_positioning_count
-                        else pd.NA
+                        self._ratio_or_na(
+                            positioning_changed_count,
+                            valid_positioning_count,
+                        )
                     ),
                 }
             ]
@@ -8755,19 +8756,34 @@ class RegimeModule:
             "mean_abs_score_diff": valid["score_diff"].abs().mean(),
             "max_abs_score_diff": valid["score_diff"].abs().max() if valid_count else pd.NA,
             "changed_score_count": int(valid["score_changed"].sum()),
-            "changed_score_ratio": int(valid["score_changed"].sum()) / valid_count if valid_count else pd.NA,
+            "changed_score_ratio": self._ratio_or_na(
+                int(valid["score_changed"].sum()),
+                valid_count,
+            ),
             "changed_direction_count": int(valid["direction_changed"].sum()),
-            "changed_direction_ratio": int(valid["direction_changed"].sum()) / valid_count if valid_count else pd.NA,
+            "changed_direction_ratio": self._ratio_or_na(
+                int(valid["direction_changed"].sum()),
+                valid_count,
+            ),
             "changed_strength_count": int(valid["strength_changed"].sum()),
-            "changed_strength_ratio": int(valid["strength_changed"].sum()) / valid_count if valid_count else pd.NA,
+            "changed_strength_ratio": self._ratio_or_na(
+                int(valid["strength_changed"].sum()),
+                valid_count,
+            ),
             "raw_score_change_count": raw_score_change_count,
             "stabilized_score_change_count": stabilized_score_change_count,
             "score_change_reduction_count": raw_score_change_count - stabilized_score_change_count,
-            "score_change_reduction_ratio": (raw_score_change_count - stabilized_score_change_count) / raw_score_change_count if raw_score_change_count else pd.NA,
+            "score_change_reduction_ratio": self._ratio_or_na(
+                raw_score_change_count - stabilized_score_change_count,
+                raw_score_change_count,
+            ),
             "one_day_spike_count_raw": raw_spikes,
             "one_day_spike_count_stabilized": stabilized_spikes,
             "one_day_spike_reduction_count": raw_spikes - stabilized_spikes,
-            "one_day_spike_reduction_ratio": (raw_spikes - stabilized_spikes) / raw_spikes if raw_spikes else pd.NA,
+            "one_day_spike_reduction_ratio": self._ratio_or_na(
+                raw_spikes - stabilized_spikes,
+                raw_spikes,
+            ),
             "bucket_change_count_raw": bucket_change_count_raw,
             "bucket_change_count_stabilized": bucket_change_count_stabilized,
             "dominant_raw_direction": self._curve_dominant_value(detail["raw_curve_positioning"]),
@@ -8784,11 +8800,7 @@ class RegimeModule:
         detail: pd.DataFrame,
     ) -> dict:
         start, end = window
-        window_detail = detail
-        if start is not None:
-            window_detail = window_detail.loc[window_detail.index >= pd.to_datetime(start)]
-        if end is not None:
-            window_detail = window_detail.loc[window_detail.index <= pd.to_datetime(end)]
+        window_detail = self._inclusive_window_slice(detail, start, end)
         valid = window_detail[
             window_detail["raw_curve_positioning_score"].notna()
             & window_detail["stabilized_curve_positioning_score"].notna()
@@ -8805,7 +8817,10 @@ class RegimeModule:
             "mean_score_diff": valid["score_diff"].mean(),
             "mean_abs_score_diff": valid["score_diff"].abs().mean(),
             "changed_score_count": int(valid["score_changed"].sum()),
-            "changed_score_ratio": int(valid["score_changed"].sum()) / obs_count if obs_count else pd.NA,
+            "changed_score_ratio": self._ratio_or_na(
+                int(valid["score_changed"].sum()),
+                obs_count,
+            ),
             "raw_score_change_count": self._count_series_changes(window_detail["raw_curve_positioning_score"]),
             "stabilized_score_change_count": self._count_series_changes(window_detail["stabilized_curve_positioning_score"]),
             "one_day_spike_count_raw": self._count_one_day_spikes(window_detail["raw_curve_positioning_score"]),
@@ -8864,7 +8879,10 @@ class RegimeModule:
                         "raw_change_count": raw_count,
                         "stabilized_change_count": stabilized_count,
                         "change_reduction_count": raw_count - stabilized_count,
-                        "change_reduction_ratio": (raw_count - stabilized_count) / raw_count if raw_count else pd.NA,
+                        "change_reduction_ratio": self._ratio_or_na(
+                            raw_count - stabilized_count,
+                            raw_count,
+                        ),
                     }
                 )
             for score_type, score_col in [
@@ -8880,7 +8898,7 @@ class RegimeModule:
                             "score_type": score_type,
                             "score": score_value,
                             "count": int(count),
-                            "ratio": count / total if total else pd.NA,
+                            "ratio": self._ratio_or_na(count, total),
                         }
                     )
             if include_diagnostics:
@@ -9025,10 +9043,7 @@ class RegimeModule:
 
         def window_slice(diag: pd.DataFrame, window_id: str) -> pd.DataFrame:
             start, end = windows[window_id]
-            return diag.loc[
-                (diag.index >= pd.to_datetime(start))
-                & (diag.index <= pd.to_datetime(end))
-            ]
+            return self._inclusive_window_slice(diag, start, end)
 
         def baa_metric(diag: pd.DataFrame, metric: str):
             if "baa10y" not in diag.columns:
@@ -9068,8 +9083,9 @@ class RegimeModule:
                 "dominant_credit_state_pair": dominant_state_pair,
                 "dominant_credit_state_pair_ratio": dominant_state_pair_ratio,
                 "changed_pair_count": changed_pair_count,
-                "changed_pair_ratio": (
-                    changed_pair_count / obs_count if obs_count else pd.NA
+                "changed_pair_ratio": self._ratio_or_na(
+                    changed_pair_count,
+                    obs_count,
                 ),
                 "changed_change_state_count": int(
                     win["state_stabilization_changed_change_state"].sum()
@@ -9183,11 +9199,11 @@ class RegimeModule:
                         "case_id": case_id,
                         "tight_state_count": tight_state_count,
                         "tight_state_ratio": (
-                            tight_state_count / tight_obs if tight_obs else pd.NA
+                            self._ratio_or_na(tight_state_count, tight_obs)
                         ),
                         "tight_pair_count": tight_pair_count,
                         "tight_pair_ratio": (
-                            tight_pair_count / tight_obs if tight_obs else pd.NA
+                            self._ratio_or_na(tight_pair_count, tight_obs)
                         ),
                         "credit_stance_score_mean": (
                             tight_score.mean() if tight_obs else pd.NA
@@ -9223,8 +9239,9 @@ class RegimeModule:
                         "changed_spread_state_count": int(
                             diag["state_stabilization_changed_spread_state"].sum()
                         ),
-                        "changed_pair_ratio": (
-                            full_changed_pair_count / full_obs if full_obs else pd.NA
+                        "changed_pair_ratio": self._ratio_or_na(
+                            full_changed_pair_count,
+                            full_obs,
                         ),
                         "non_missing_obs_count": full_obs,
                     }
