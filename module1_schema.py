@@ -2342,6 +2342,19 @@ def validate_module1_config(config: dict) -> dict:
                         f"rule_mapped state input {output_field} must be a non-empty string.",
                     )
 
+            diagnostic_component = state_input.get("diagnostic_component")
+            if (
+                diagnostic_component is not None
+                and not non_empty_string(diagnostic_component)
+            ):
+                add_issue(
+                    section_name,
+                    stance_name,
+                    f"{input_prefix}.diagnostic_component",
+                    "invalid",
+                    "rule_mapped state input diagnostic_component must be a non-empty string when present.",
+                )
+
             values = []
             if classification == "threshold_state":
                 state_buckets = state_input.get("state_buckets")
