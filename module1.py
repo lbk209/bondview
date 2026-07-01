@@ -183,49 +183,10 @@ class DiagnosticInputSpec:
 
 class RegimeModule:
     _RULE_MAPPED_DIAGNOSTIC_COMPAT = {
-        "duration": {
-            "function": "duration_rule_stance",
-            "rule_case_col": "duration_rule_case",
-            "state_suffix": "state",
-            "stabilization_change_any_col": "state_stabilization_changed_any",
-        },
-        "credit": {
-            "function": "credit_spread_stance",
-            "rule_case_col": "credit_state_pair",
-            "state_suffix": "state",
-            "state_column_aliases": {
-                "credit_spread_state": "credit_spread_state_category",
-            },
-            "state_column_overrides": {
-                "credit_spread_state": (
-                    "credit_spread_state_category_raw",
-                    "credit_spread_state_category",
-                ),
-            },
-            "stabilization_change_aliases": {
-                "credit_spread_change": "change_state",
-                "credit_spread_state": "spread_state",
-            },
-            "stabilization_change_any_col": "state_stabilization_changed_pair",
-            "base_rule_score_col": "base_rule_score",
-            "adjustment_col": "rule_adjustment",
-            "adjusted_score_col": "final_score_col",
-            "rule_metadata_cols": (
-                "credit_spread_change_intensity",
-                "credit_spread_state_intensity",
-            ),
-        },
         "curve_positioning": {
-            "function": "curve_positioning_stance",
-            "rule_case_col": "curve_positioning_rule_case",
-            "state_suffix": "bucket",
-            "state_column_aliases": {
-                "curve_move_driver": "yield_move_driver",
-            },
             "component_name_aliases": {
                 "curve_move_driver": "yield_move_driver",
             },
-            "stabilization_change_any_col": "state_stabilization_changed_any",
         },
     }
 
