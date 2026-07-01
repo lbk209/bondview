@@ -1007,6 +1007,7 @@ exposure_stances:
         - name: curve_move_driver
           source_score: curve_move_driver_score
           classification: score_bucket
+          diagnostic_component: yield_move_driver
           raw_output: yield_move_driver_bucket_raw
           stabilized_output: yield_move_driver_bucket
           stabilization_changed_output: state_stabilization_changed_curve_move_driver

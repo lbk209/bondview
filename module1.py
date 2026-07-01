@@ -145,6 +145,7 @@ class _RuleMappedStateInputSpec:
     stabilized_output_col: str
     stabilization_changed_output_col: str
     values: tuple[str, ...]
+    diagnostic_component: str | None = None
     state_buckets: dict[str, str] = field(default_factory=dict)
 
 
@@ -182,14 +183,6 @@ class DiagnosticInputSpec:
 
 
 class RegimeModule:
-    _RULE_MAPPED_DIAGNOSTIC_COMPAT = {
-        "curve_positioning": {
-            "component_name_aliases": {
-                "curve_move_driver": "yield_move_driver",
-            },
-        },
-    }
-
     def __init__(
         self,
         api_key_env="FRED_API_KEY",
@@ -1475,6 +1468,13 @@ class RegimeModule:
                 "stabilization_changed_output",
                 input_context,
             )
+            diagnostic_component = None
+            if state_input.get("diagnostic_component") is not None:
+                diagnostic_component = require_string(
+                    state_input,
+                    "diagnostic_component",
+                    input_context,
+                )
 
             state_buckets = {}
             values = []
@@ -1533,6 +1533,7 @@ class RegimeModule:
                     stabilized_output_col=stabilized_output_col,
                     stabilization_changed_output_col=stabilization_changed_output_col,
                     values=tuple(values),
+                    diagnostic_component=diagnostic_component,
                     state_buckets=state_buckets,
                 )
             )
@@ -6806,8 +6807,6 @@ class RegimeModule:
         stance_name = context["stance_name"]
         function = context["function"]
         rule_mapped_spec = context.get("rule_mapped_spec")
-        compat = self._RULE_MAPPED_DIAGNOSTIC_COMPAT.get(stance_name, {})
-        component_name_aliases = compat.get("component_name_aliases", {})
         adjustment = rule_mapped_spec.adjustment
 
         return RuleMappedDiagnosticSpec(
@@ -6830,13 +6829,7 @@ class RegimeModule:
             stance_label_col=context["stance_label_col"],
             strength_label_col=context["strength_label_col"],
             component_names=tuple(
-                component_name_aliases.get(
-                    state_input.name,
-                    component_name_aliases.get(
-                        state_input.component_name,
-                        state_input.component_name,
-                    ),
-                )
+                state_input.diagnostic_component or state_input.component_name
                 for state_input in rule_mapped_spec.state_inputs
             ),
             stabilization_change_cols=tuple(
