@@ -7703,26 +7703,15 @@ class RegimeModule:
         tolerance = 1e-10
 
         def changed_count(left_col, right_col):
-            comparable = detail[left_col].notna() & detail[right_col].notna()
-            return int(
-                (
-                    self._series_mismatch_mask(
-                        detail[left_col],
-                        detail[right_col],
-                        tolerance=tolerance,
-                    )
-                    & comparable
-                ).sum()
+            return self._changed_count_for_valid_pairs(
+                detail,
+                left_col,
+                right_col,
+                tolerance=tolerance,
             )
 
         def mean_abs_diff(left_col, right_col):
-            comparable = detail[left_col].notna() & detail[right_col].notna()
-            if not comparable.any():
-                return pd.NA
-            return (
-                detail.loc[comparable, right_col]
-                - detail.loc[comparable, left_col]
-            ).abs().mean()
+            return self._mean_abs_diff_for_valid_pairs(detail, left_col, right_col)
 
         credit_stance_changed_count = changed_count(
             "raw_credit_stance_score",
@@ -7761,30 +7750,27 @@ class RegimeModule:
                 "smoothed_credit_spread_state_score",
             ),
             "credit_stance_score_changed_count": credit_stance_changed_count,
-            "credit_stance_score_changed_ratio": (
-                credit_stance_changed_count / valid_count if valid_count else pd.NA
+            "credit_stance_score_changed_ratio": self._ratio_or_na(
+                credit_stance_changed_count,
+                valid_count,
             ),
             "raw_credit_score_change_count": raw_credit_score_change_count,
             "smoothed_credit_score_change_count": smoothed_credit_score_change_count,
             "score_change_reduction_count": (
                 raw_credit_score_change_count - smoothed_credit_score_change_count
             ),
-            "score_change_reduction_ratio": (
-                (raw_credit_score_change_count - smoothed_credit_score_change_count)
-                / raw_credit_score_change_count
-                if raw_credit_score_change_count
-                else pd.NA
+            "score_change_reduction_ratio": self._ratio_or_na(
+                raw_credit_score_change_count - smoothed_credit_score_change_count,
+                raw_credit_score_change_count,
             ),
             "raw_one_day_spike_count": raw_one_day_spike_count,
             "smoothed_one_day_spike_count": smoothed_one_day_spike_count,
             "one_day_spike_reduction_count": (
                 raw_one_day_spike_count - smoothed_one_day_spike_count
             ),
-            "one_day_spike_reduction_ratio": (
-                (raw_one_day_spike_count - smoothed_one_day_spike_count)
-                / raw_one_day_spike_count
-                if raw_one_day_spike_count
-                else pd.NA
+            "one_day_spike_reduction_ratio": self._ratio_or_na(
+                raw_one_day_spike_count - smoothed_one_day_spike_count,
+                raw_one_day_spike_count,
             ),
         }
 
@@ -7805,18 +7791,11 @@ class RegimeModule:
         window_rows = []
         for window_id, window in windows.items():
             start, end = window
-            window_detail = detail
-            if start is not None:
-                window_detail = window_detail.loc[
-                    window_detail.index >= pd.to_datetime(start)
-                ]
-            if end is not None:
-                window_detail = window_detail.loc[
-                    window_detail.index <= pd.to_datetime(end)
-                ]
+            window_detail = self._inclusive_window_slice(detail, start, end)
             row = self._credit_input_smoothing_summary_row(window_detail)
-            row.update({"window_id": window_id, "start": start, "end": end})
-            window_rows.append(row)
+            window_rows.append(
+                self._window_summary_row(window_id, start, end, row)
+            )
 
         result = {
             "summary": summary,
@@ -7825,6 +7804,83 @@ class RegimeModule:
         if include_detail:
             result["detail"] = detail
         return result
+
+    def _ratio_or_na(self, numerator, denominator):
+        return numerator / denominator if denominator else pd.NA
+
+    def _mean_abs_diff_for_valid_pairs(
+        self,
+        frame: pd.DataFrame,
+        left_col: str,
+        right_col: str,
+    ):
+        comparable = frame[left_col].notna() & frame[right_col].notna()
+        if not comparable.any():
+            return pd.NA
+        return (
+            frame.loc[comparable, right_col]
+            - frame.loc[comparable, left_col]
+        ).abs().mean()
+
+    def _changed_count_for_valid_pairs(
+        self,
+        frame: pd.DataFrame,
+        left_col: str,
+        right_col: str,
+        *,
+        tolerance: float = 1e-10,
+    ) -> int:
+        comparable = frame[left_col].notna() & frame[right_col].notna()
+        return int(
+            (
+                self._series_mismatch_mask(
+                    frame[left_col],
+                    frame[right_col],
+                    tolerance=tolerance,
+                )
+                & comparable
+            ).sum()
+        )
+
+    def _changed_count_for_aligned_pairs(
+        self,
+        frame: pd.DataFrame,
+        left_col: str,
+        right_col: str,
+        *,
+        tolerance: float = 1e-10,
+    ) -> int:
+        return int(
+            self._series_mismatch_mask(
+                frame[left_col],
+                frame[right_col],
+                tolerance=tolerance,
+            ).sum()
+        )
+
+    def _inclusive_window_slice(
+        self,
+        frame: pd.DataFrame,
+        start=None,
+        end=None,
+    ) -> pd.DataFrame:
+        window = frame
+        if start is not None:
+            window = window.loc[window.index >= pd.to_datetime(start)]
+        if end is not None:
+            window = window.loc[window.index <= pd.to_datetime(end)]
+        return window
+
+    def _window_summary_row(
+        self,
+        window_id: str,
+        start,
+        end,
+        summary_row: dict,
+    ) -> dict:
+        row = summary_row.copy()
+        row.update({"window_id": window_id, "start": start, "end": end})
+        return row
 
     def _series_mismatch_mask(
         self,
@@ -8122,20 +8178,16 @@ class RegimeModule:
         valid_count = int(len(valid))
         tolerance = 1e-10
 
-        def changed_count(left_col, right_col, frame=detail):
-            return int(
-                self._series_mismatch_mask(
-                    frame[left_col],
-                    frame[right_col],
-                    tolerance=tolerance,
-                ).sum()
+        def changed_count(left_col, right_col):
+            return self._changed_count_for_aligned_pairs(
+                detail,
+                left_col,
+                right_col,
+                tolerance=tolerance,
             )
 
         def mean_abs_diff(left_col, right_col):
-            comparable = detail[left_col].notna() & detail[right_col].notna()
-            if not comparable.any():
-                return pd.NA
-            return (detail.loc[comparable, right_col] - detail.loc[comparable, left_col]).abs().mean()
+            return self._mean_abs_diff_for_valid_pairs(detail, left_col, right_col)
 
         curve_positioning_changed_count = changed_count(
             "raw_curve_positioning_score",
@@ -8178,34 +8230,32 @@ class RegimeModule:
                 "smoothed_curve_state_score",
             ),
             "curve_move_driver_score_changed_count": curve_move_driver_changed_count,
-            "curve_move_driver_score_changed_ratio": (
-                curve_move_driver_changed_count / valid_count if valid_count else pd.NA
+            "curve_move_driver_score_changed_ratio": self._ratio_or_na(
+                curve_move_driver_changed_count,
+                valid_count,
             ),
             "curve_positioning_score_changed_count": curve_positioning_changed_count,
-            "curve_positioning_score_changed_ratio": (
-                curve_positioning_changed_count / valid_count if valid_count else pd.NA
+            "curve_positioning_score_changed_ratio": self._ratio_or_na(
+                curve_positioning_changed_count,
+                valid_count,
             ),
             "raw_curve_score_change_count": raw_curve_score_change_count,
             "smoothed_curve_score_change_count": smoothed_curve_score_change_count,
             "score_change_reduction_count": (
                 raw_curve_score_change_count - smoothed_curve_score_change_count
             ),
-            "score_change_reduction_ratio": (
-                (raw_curve_score_change_count - smoothed_curve_score_change_count)
-                / raw_curve_score_change_count
-                if raw_curve_score_change_count
-                else pd.NA
+            "score_change_reduction_ratio": self._ratio_or_na(
+                raw_curve_score_change_count - smoothed_curve_score_change_count,
+                raw_curve_score_change_count,
             ),
             "raw_one_day_spike_count": raw_one_day_spike_count,
             "smoothed_one_day_spike_count": smoothed_one_day_spike_count,
             "one_day_spike_reduction_count": (
                 raw_one_day_spike_count - smoothed_one_day_spike_count
             ),
-            "one_day_spike_reduction_ratio": (
-                (raw_one_day_spike_count - smoothed_one_day_spike_count)
-                / raw_one_day_spike_count
-                if raw_one_day_spike_count
-                else pd.NA
+            "one_day_spike_reduction_ratio": self._ratio_or_na(
+                raw_one_day_spike_count - smoothed_one_day_spike_count,
+                raw_one_day_spike_count,
             ),
         }
 
@@ -8226,18 +8276,11 @@ class RegimeModule:
         window_rows = []
         for window_id, window in windows.items():
             start, end = window
-            window_detail = detail
-            if start is not None:
-                window_detail = window_detail.loc[
-                    window_detail.index >= pd.to_datetime(start)
-                ]
-            if end is not None:
-                window_detail = window_detail.loc[
-                    window_detail.index <= pd.to_datetime(end)
-                ]
+            window_detail = self._inclusive_window_slice(detail, start, end)
             row = self._curve_input_smoothing_summary_row(window_detail)
-            row.update({"window_id": window_id, "start": start, "end": end})
-            window_rows.append(row)
+            window_rows.append(
+                self._window_summary_row(window_id, start, end, row)
+            )
 
         result = {
             "summary": summary,
