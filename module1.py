@@ -7084,7 +7084,11 @@ class RegimeModule:
         include_labels: bool = True,
     ) -> pd.DataFrame:
         """
-        Return the active rule-mapped stance calculation breakdown for target.
+        Inspect how a rule-mapped stance is formed on each date.
+    
+        This returns the underlying rule-mapped diagnostic view: component states,
+        stabilized states, rule cases, scores, and labels used to explain the
+        stance calculation.
         """
         context = self._resolve_rule_mapped_diagnostic_config(target)
         spec = self._derive_rule_mapped_diagnostic_spec_from_context(context)
@@ -7118,6 +7122,13 @@ class RegimeModule:
         start=None,
         end=None,
     ) -> pd.DataFrame:
+        """
+        Inspect when and how a rule-mapped stance changes over time.
+    
+        This returns a transition-focused view that highlights rule-case changes,
+        score changes, previous values, and stabilization-related movement so stance
+        shifts can be reviewed without manually comparing rows.
+        """
         context = self._resolve_rule_mapped_diagnostic_config(target)
         spec = self._derive_rule_mapped_diagnostic_spec_from_context(context)
         diagnostics = self.diagnose_rule_mapped_stance(
