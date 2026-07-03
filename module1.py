@@ -4839,32 +4839,6 @@ class RegimeModule:
             return distributions["label_distribution"]
         return distributions["strength_distribution"]
 
-    def diagnose_historical_review_case(
-        self,
-        target: str | None = None,
-        context_id: str | None = None,
-        level: str | None = None,
-        only_use_for_validation: bool = True,
-        include_low_relevance: bool = False,
-        min_obs: int = 20,
-        plausible_threshold: float = 0.70,
-        mixed_threshold: float = 0.45,
-    ) -> pd.DataFrame:
-        """
-        Return historical review diagnostics using the canonical review path.
-        """
-        return self.review_historical_cases(
-            target=target,
-            context_id=context_id,
-            level=level,
-            only_use_for_validation=only_use_for_validation,
-            include_low_relevance=include_low_relevance,
-            min_obs=min_obs,
-            plausible_threshold=plausible_threshold,
-            mixed_threshold=mixed_threshold,
-            output="diagnostic",
-        )
-
 
     def run_module1_historical_review(
         self,
