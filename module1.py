@@ -166,7 +166,6 @@ class SmoothingDiagnosticTargetProfile:
     score_diff_col: str
     final_score_metric_prefix: str
     score_change_metric_prefix: str
-    changed_count_mode: str
 
 
 @dataclass(frozen=True)
@@ -7595,11 +7594,6 @@ class RegimeModule:
             )
             for score_col in spec.score_input_cols
         )
-        changed_count_mode = (
-            "aligned_pairs"
-            if spec.target == "curve_positioning"
-            else "valid_pairs"
-        )
         return SmoothingDiagnosticTargetProfile(
             target=spec.target,
             display_target="curve" if spec.target == "curve_positioning" else spec.target,
@@ -7621,7 +7615,6 @@ class RegimeModule:
             score_change_metric_prefix=(
                 "curve" if spec.target == "curve_positioning" else spec.target
             ),
-            changed_count_mode=changed_count_mode,
         )
 
     def _validate_input_smoothing_detail_prerequisites(self, target: str) -> None:
@@ -7810,7 +7803,7 @@ class RegimeModule:
             )
 
         resolved_windows = self._smoothing_diagnostic_windows(windows)
-        if resolved_target == "credit":
+        if resolved_target in {"credit", "curve_positioning"}:
             profile = self._smoothing_diagnostic_target_profile(resolved_target)
             detail = self._rule_mapped_input_smoothing_effect_detail(
                 resolved_target,
@@ -7819,19 +7812,12 @@ class RegimeModule:
             return self._smoothing_effect_result(
                 detail,
                 resolved_windows,
-                self._credit_input_smoothing_summary_row,
-                include_detail,
-            )
-        if resolved_target == "curve_positioning":
-            profile = self._smoothing_diagnostic_target_profile(resolved_target)
-            detail = self._rule_mapped_input_smoothing_effect_detail(
-                resolved_target,
-                profile,
-            )
-            return self._smoothing_effect_result(
-                detail,
-                resolved_windows,
-                self._curve_input_smoothing_summary_row,
+                lambda summary_detail: (
+                    self._rule_mapped_input_smoothing_summary_row(
+                        summary_detail,
+                        profile,
+                    )
+                ),
                 include_detail,
             )
 
@@ -7891,141 +7877,160 @@ class RegimeModule:
     ) -> tuple[pd.Series, pd.Series]:
         return self._stance_labels_for_score(score, stance_config)
 
-    def _credit_input_smoothing_summary_row(
-        self,
-        detail: pd.DataFrame,
-    ) -> dict:
-        valid = detail[
-            detail["raw_credit_stance_score"].notna()
-            & detail["smoothed_credit_stance_score"].notna()
-        ]
-        valid_count = int(len(valid))
-        tolerance = 1e-10
-
-        def changed_count(left_col, right_col):
-            return self._changed_count_for_valid_pairs(
-                detail,
-                left_col,
-                right_col,
-                tolerance=tolerance,
-            )
-
-        def mean_abs_diff(left_col, right_col):
-            return self._mean_abs_diff_for_valid_pairs(detail, left_col, right_col)
-
-        credit_stance_changed_count = changed_count(
-            "raw_credit_stance_score",
-            "smoothed_credit_stance_score",
-        )
-        raw_credit_score_change_count = self._count_series_changes(
-            detail["raw_credit_stance_score"]
-        )
-        smoothed_credit_score_change_count = self._count_series_changes(
-            detail["smoothed_credit_stance_score"]
-        )
-        raw_one_day_spike_count = self._count_one_day_spikes(
-            detail["raw_credit_stance_score"]
-        )
-        smoothed_one_day_spike_count = self._count_one_day_spikes(
-            detail["smoothed_credit_stance_score"]
-        )
-
-        return {
-            "total_rows": int(len(detail)),
-            "valid_rows": valid_count,
-            "credit_spread_change_score_changed_count": changed_count(
-                "raw_credit_spread_change_score",
-                "smoothed_credit_spread_change_score",
-            ),
-            "credit_spread_change_score_mean_abs_diff": mean_abs_diff(
-                "raw_credit_spread_change_score",
-                "smoothed_credit_spread_change_score",
-            ),
-            "credit_spread_state_score_changed_count": changed_count(
-                "raw_credit_spread_state_score",
-                "smoothed_credit_spread_state_score",
-            ),
-            "credit_spread_state_score_mean_abs_diff": mean_abs_diff(
-                "raw_credit_spread_state_score",
-                "smoothed_credit_spread_state_score",
-            ),
-            "credit_stance_score_changed_count": credit_stance_changed_count,
-            "credit_stance_score_changed_ratio": self._ratio_or_na(
-                credit_stance_changed_count,
-                valid_count,
-            ),
-            "raw_credit_score_change_count": raw_credit_score_change_count,
-            "smoothed_credit_score_change_count": smoothed_credit_score_change_count,
-            "score_change_reduction_count": (
-                raw_credit_score_change_count - smoothed_credit_score_change_count
-            ),
-            "score_change_reduction_ratio": self._ratio_or_na(
-                raw_credit_score_change_count - smoothed_credit_score_change_count,
-                raw_credit_score_change_count,
-            ),
-            "raw_one_day_spike_count": raw_one_day_spike_count,
-            "smoothed_one_day_spike_count": smoothed_one_day_spike_count,
-            "one_day_spike_reduction_count": (
-                raw_one_day_spike_count - smoothed_one_day_spike_count
-            ),
-            "one_day_spike_reduction_ratio": self._ratio_or_na(
-                raw_one_day_spike_count - smoothed_one_day_spike_count,
-                raw_one_day_spike_count,
-            ),
-        }
-
     def _ratio_or_na(self, numerator, denominator):
         return numerator / denominator if denominator else pd.NA
 
-    def _mean_abs_diff_for_valid_pairs(
+    def _smoothing_pair_comparison_metrics(
+        self,
+        raw: pd.Series,
+        smoothed: pd.Series,
+        *,
+        tolerance: float = 1e-10,
+    ) -> dict:
+        both_valid = raw.notna() & smoothed.notna()
+        one_sided_missing = raw.isna() ^ smoothed.isna()
+        aligned = both_valid | one_sided_missing
+        both_valid_count = int(both_valid.sum())
+        one_sided_missing_count = int(one_sided_missing.sum())
+
+        changed = self._series_mismatch_mask(
+            raw,
+            smoothed,
+            tolerance=tolerance,
+        )
+        both_valid_changed_count = int((changed & both_valid).sum())
+        aligned_changed_count = both_valid_changed_count + one_sided_missing_count
+        aligned_count = int(aligned.sum())
+
+        mean_abs_diff = pd.NA
+        if both_valid.any():
+            mean_abs_diff = (smoothed.loc[both_valid] - raw.loc[both_valid]).abs().mean()
+
+        return {
+            "both_valid_count": both_valid_count,
+            "both_valid_changed_count": both_valid_changed_count,
+            "both_valid_changed_ratio": self._ratio_or_na(
+                both_valid_changed_count,
+                both_valid_count,
+            ),
+            "one_sided_missing_count": one_sided_missing_count,
+            "one_sided_missing_ratio": self._ratio_or_na(
+                one_sided_missing_count,
+                aligned_count,
+            ),
+            "aligned_count": aligned_count,
+            "aligned_changed_count": aligned_changed_count,
+            "aligned_changed_ratio": self._ratio_or_na(
+                aligned_changed_count,
+                aligned_count,
+            ),
+            "mean_abs_diff": mean_abs_diff,
+        }
+
+    def _smoothing_pair_comparison_metrics_for_columns(
         self,
         frame: pd.DataFrame,
-        left_col: str,
-        right_col: str,
+        raw_col: str,
+        smoothed_col: str,
+        *,
+        tolerance: float = 1e-10,
+    ) -> dict:
+        return self._smoothing_pair_comparison_metrics(
+            frame[raw_col],
+            frame[smoothed_col],
+            tolerance=tolerance,
+        )
+
+    def _add_prefixed_smoothing_pair_metrics(
+        self,
+        row: dict,
+        prefix: str,
+        metrics: dict,
+    ) -> None:
+        for metric, value in metrics.items():
+            row[f"{prefix}_{metric}"] = value
+
+    def _rule_mapped_input_smoothing_summary_row(
+        self,
+        detail: pd.DataFrame,
+        profile: SmoothingDiagnosticTargetProfile,
     ):
-        comparable = frame[left_col].notna() & frame[right_col].notna()
-        if not comparable.any():
-            return pd.NA
-        return (
-            frame.loc[comparable, right_col]
-            - frame.loc[comparable, left_col]
-        ).abs().mean()
-
-    def _changed_count_for_valid_pairs(
-        self,
-        frame: pd.DataFrame,
-        left_col: str,
-        right_col: str,
-        *,
-        tolerance: float = 1e-10,
-    ) -> int:
-        comparable = frame[left_col].notna() & frame[right_col].notna()
-        return int(
-            (
-                self._series_mismatch_mask(
-                    frame[left_col],
-                    frame[right_col],
-                    tolerance=tolerance,
-                )
-                & comparable
-            ).sum()
+        tolerance = 1e-10
+        final_metrics = self._smoothing_pair_comparison_metrics_for_columns(
+            detail,
+            profile.raw_final_score_col,
+            profile.smoothed_final_score_col,
+            tolerance=tolerance,
         )
 
-    def _changed_count_for_aligned_pairs(
-        self,
-        frame: pd.DataFrame,
-        left_col: str,
-        right_col: str,
-        *,
-        tolerance: float = 1e-10,
-    ) -> int:
-        return int(
-            self._series_mismatch_mask(
-                frame[left_col],
-                frame[right_col],
+        row = {
+            "total_rows": int(len(detail)),
+            "valid_rows": final_metrics["both_valid_count"],
+        }
+        for pair in profile.component_score_pairs:
+            metrics = self._smoothing_pair_comparison_metrics_for_columns(
+                detail,
+                pair.raw_col,
+                pair.smoothed_col,
                 tolerance=tolerance,
-            ).sum()
+            )
+            self._add_prefixed_smoothing_pair_metrics(
+                row,
+                pair.metric_prefix,
+                metrics,
+            )
+        self._add_prefixed_smoothing_pair_metrics(
+            row,
+            profile.final_score_metric_prefix,
+            final_metrics,
         )
+
+        change_prefix = profile.score_change_metric_prefix
+        raw_score_change_count = self._count_series_changes(
+            detail[profile.raw_final_score_col]
+        )
+        smoothed_score_change_count = self._count_series_changes(
+            detail[profile.smoothed_final_score_col]
+        )
+        score_change_reduction_count = (
+            raw_score_change_count - smoothed_score_change_count
+        )
+        raw_one_day_spike_count = self._count_one_day_spikes(
+            detail[profile.raw_final_score_col]
+        )
+        smoothed_one_day_spike_count = self._count_one_day_spikes(
+            detail[profile.smoothed_final_score_col]
+        )
+        one_day_spike_reduction_count = (
+            raw_one_day_spike_count - smoothed_one_day_spike_count
+        )
+        row.update(
+            {
+                f"raw_{change_prefix}_score_change_count": raw_score_change_count,
+                f"smoothed_{change_prefix}_score_change_count": (
+                    smoothed_score_change_count
+                ),
+                f"{change_prefix}_score_change_reduction_count": (
+                    score_change_reduction_count
+                ),
+                f"{change_prefix}_score_change_reduction_ratio": self._ratio_or_na(
+                    score_change_reduction_count,
+                    raw_score_change_count,
+                ),
+                f"raw_{change_prefix}_one_day_spike_count": raw_one_day_spike_count,
+                f"smoothed_{change_prefix}_one_day_spike_count": (
+                    smoothed_one_day_spike_count
+                ),
+                f"{change_prefix}_one_day_spike_reduction_count": (
+                    one_day_spike_reduction_count
+                ),
+                f"{change_prefix}_one_day_spike_reduction_ratio": self._ratio_or_na(
+                    one_day_spike_reduction_count,
+                    raw_one_day_spike_count,
+                ),
+            }
+        )
+        return row
 
     def _inclusive_window_slice(
         self,
@@ -8163,98 +8168,6 @@ class RegimeModule:
         ]
         score.loc[front_end.isna() | long_end.isna()] = pd.NA
         return score
-
-    def _curve_input_smoothing_summary_row(
-        self,
-        detail: pd.DataFrame,
-    ) -> dict:
-        valid = detail[
-            detail["raw_curve_positioning_score"].notna()
-            & detail["smoothed_curve_positioning_score"].notna()
-        ]
-        valid_count = int(len(valid))
-        tolerance = 1e-10
-
-        def changed_count(left_col, right_col):
-            return self._changed_count_for_aligned_pairs(
-                detail,
-                left_col,
-                right_col,
-                tolerance=tolerance,
-            )
-
-        def mean_abs_diff(left_col, right_col):
-            return self._mean_abs_diff_for_valid_pairs(detail, left_col, right_col)
-
-        curve_positioning_changed_count = changed_count(
-            "raw_curve_positioning_score",
-            "smoothed_curve_positioning_score",
-        )
-        raw_curve_score_change_count = self._count_series_changes(
-            detail["raw_curve_positioning_score"]
-        )
-        smoothed_curve_score_change_count = self._count_series_changes(
-            detail["smoothed_curve_positioning_score"]
-        )
-        raw_one_day_spike_count = self._count_one_day_spikes(
-            detail["raw_curve_positioning_score"]
-        )
-        smoothed_one_day_spike_count = self._count_one_day_spikes(
-            detail["smoothed_curve_positioning_score"]
-        )
-        curve_move_driver_changed_count = changed_count(
-            "raw_curve_move_driver_score",
-            "smoothed_curve_move_driver_score",
-        )
-
-        return {
-            "total_rows": int(len(detail)),
-            "valid_rows": valid_count,
-            "curve_change_score_changed_count": changed_count(
-                "raw_curve_change_score",
-                "smoothed_curve_change_score",
-            ),
-            "curve_change_score_mean_abs_diff": mean_abs_diff(
-                "raw_curve_change_score",
-                "smoothed_curve_change_score",
-            ),
-            "curve_state_score_changed_count": changed_count(
-                "raw_curve_state_score",
-                "smoothed_curve_state_score",
-            ),
-            "curve_state_score_mean_abs_diff": mean_abs_diff(
-                "raw_curve_state_score",
-                "smoothed_curve_state_score",
-            ),
-            "curve_move_driver_score_changed_count": curve_move_driver_changed_count,
-            "curve_move_driver_score_changed_ratio": self._ratio_or_na(
-                curve_move_driver_changed_count,
-                valid_count,
-            ),
-            "curve_positioning_score_changed_count": curve_positioning_changed_count,
-            "curve_positioning_score_changed_ratio": self._ratio_or_na(
-                curve_positioning_changed_count,
-                valid_count,
-            ),
-            "raw_curve_score_change_count": raw_curve_score_change_count,
-            "smoothed_curve_score_change_count": smoothed_curve_score_change_count,
-            "score_change_reduction_count": (
-                raw_curve_score_change_count - smoothed_curve_score_change_count
-            ),
-            "score_change_reduction_ratio": self._ratio_or_na(
-                raw_curve_score_change_count - smoothed_curve_score_change_count,
-                raw_curve_score_change_count,
-            ),
-            "raw_one_day_spike_count": raw_one_day_spike_count,
-            "smoothed_one_day_spike_count": smoothed_one_day_spike_count,
-            "one_day_spike_reduction_count": (
-                raw_one_day_spike_count - smoothed_one_day_spike_count
-            ),
-            "one_day_spike_reduction_ratio": self._ratio_or_na(
-                raw_one_day_spike_count - smoothed_one_day_spike_count,
-                raw_one_day_spike_count,
-            ),
-        }
 
     def compare_curve_move_driver_threshold_effect(
         self,
