@@ -7082,16 +7082,45 @@ class RegimeModule:
         include_stabilized_states: bool = True,
         include_rule_case: bool = True,
         include_labels: bool = True,
-    ) -> pd.DataFrame:
+        view: str = "state",
+    ) -> pd.DataFrame | dict:
         """
-        Inspect how a rule-mapped stance is formed on each date.
-    
-        This returns the underlying rule-mapped diagnostic view: component states,
-        stabilized states, rule cases, scores, and labels used to explain the
-        stance calculation.
+        Unified public entry point for rule-mapped stance diagnostics.
+
+        Supported views:
+
+        - ``view="state"``: point/row-level rule-mapped stance diagnostics.
+        - ``view="transitions"``: transition-focused diagnostics.
+        - ``view="stability"``: period-level stability/churn summary.
+
+        Different views may return different object types. The state and
+        transitions views return DataFrames; the stability view returns a dict of
+        summary DataFrames.
+
+        Future plan: the detailed boundary between state diagnostics, transition
+        diagnostics, and stability summaries may be refined later. This change
+        only centralizes access through one public entry point and preserves the
+        existing outputs.
         """
+        allowed_views = {"state", "transitions", "stability"}
+        if view not in allowed_views:
+            allowed = ", ".join(
+                f'"{allowed_view}"' for allowed_view in sorted(allowed_views)
+            )
+            raise ValueError(
+                f"Unsupported rule-mapped stance diagnostic view {view!r}. "
+                f"Allowed values are: {allowed}."
+            )
+
         context = self._resolve_rule_mapped_diagnostic_config(target)
         spec = self._derive_rule_mapped_diagnostic_spec_from_context(context)
+        if view != "state":
+            include_scores = False
+            include_raw_states = True
+            include_stabilized_states = True
+            include_rule_case = True
+            include_labels = True
+
         diagnostics = self._trace_rule_mapped_stance_score(
             spec.target,
             context_id=context_id,
@@ -7113,36 +7142,22 @@ class RegimeModule:
             include_rule_case=include_rule_case,
             include_labels=include_labels,
         )
-        return diagnostics[selected_cols].copy()
+        diagnostics = diagnostics[selected_cols].copy()
 
-    def diagnose_rule_mapped_stance_transitions(
+        if view == "state":
+            return diagnostics
+        if view == "transitions":
+            return self._diagnose_rule_mapped_stance_transitions(diagnostics, spec)
+        return self._summarize_rule_mapped_stance_stability(diagnostics, spec)
+
+    def _diagnose_rule_mapped_stance_transitions(
         self,
-        target: str,
-        context_id: str | None = None,
-        start=None,
-        end=None,
+        diagnostics: pd.DataFrame,
+        spec: RuleMappedDiagnosticSpec,
     ) -> pd.DataFrame:
         """
-        Inspect when and how a rule-mapped stance changes over time.
-    
-        This returns a transition-focused view that highlights rule-case changes,
-        score changes, previous values, and stabilization-related movement so stance
-        shifts can be reviewed without manually comparing rows.
+        Build transition diagnostics from precomputed unified state diagnostics.
         """
-        context = self._resolve_rule_mapped_diagnostic_config(target)
-        spec = self._derive_rule_mapped_diagnostic_spec_from_context(context)
-        diagnostics = self.diagnose_rule_mapped_stance(
-            spec.target,
-            context_id=context_id,
-            start=start,
-            end=end,
-            include_scores=False,
-            include_raw_states=True,
-            include_stabilized_states=True,
-            include_rule_case=True,
-            include_labels=True,
-        )
-
         transitions = pd.DataFrame(index=diagnostics.index)
         transitions["date"] = diagnostics.index
         for raw_col, state_col in zip(spec.raw_state_cols, spec.stabilized_state_cols):
@@ -7258,27 +7273,14 @@ class RegimeModule:
         )
         return distribution
 
-    def summarize_rule_mapped_stance_stability(
+    def _summarize_rule_mapped_stance_stability(
         self,
-        target: str,
-        context_id: str | None = None,
-        start=None,
-        end=None,
+        diagnostics: pd.DataFrame,
+        spec: RuleMappedDiagnosticSpec,
     ) -> dict:
-        context = self._resolve_rule_mapped_diagnostic_config(target)
-        spec = self._derive_rule_mapped_diagnostic_spec_from_context(context)
-        diagnostics = self.diagnose_rule_mapped_stance(
-            spec.target,
-            context_id=context_id,
-            start=start,
-            end=end,
-            include_scores=False,
-            include_raw_states=True,
-            include_stabilized_states=True,
-            include_rule_case=True,
-            include_labels=True,
-        )
-
+        """
+        Build stability summaries from precomputed unified state diagnostics.
+        """
         valid_cases = diagnostics[spec.rule_case_col].dropna()
         case_counts = valid_cases.value_counts()
         score = diagnostics[spec.final_score_col].dropna()
