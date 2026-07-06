@@ -7757,7 +7757,16 @@ class RegimeModule:
         include_detail: bool = True,
     ) -> dict:
         """
-        Compare smoothed production inputs against raw-input reconstructions.
+        Compare the effect of smoothing for a Module 1 target.
+    
+        For input-preparation smoothing, rebuild the rule-mapped stance from raw
+        inputs and compare it with the production smoothed-input result. The summary
+        reports decomposed differences, including both-valid changes, one-sided
+        missing observations, aligned changes, transition counts, and one-day spike
+        counts.
+    
+        Score-level smoothing diagnostics are recognized but currently reported as
+        not implemented.
         """
         allowed_layers = {"auto", "input_preparation", "score"}
         if smoothing_layer not in allowed_layers:
