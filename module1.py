@@ -136,6 +136,40 @@ class RuleMappedDiagnosticSpec:
 
 
 @dataclass(frozen=True)
+class SmoothingDiagnosticComponentScorePair:
+    source_score_col: str
+    raw_col: str
+    smoothed_col: str
+    metric_prefix: str
+
+
+@dataclass(frozen=True)
+class SmoothingDiagnosticContextColumn:
+    output_col: str
+    feature_col: str | None = None
+    data_col: str | None = None
+
+
+@dataclass(frozen=True)
+class SmoothingDiagnosticTargetProfile:
+    target: str
+    display_target: str
+    spec: RuleMappedDiagnosticSpec
+    component_score_pairs: tuple[SmoothingDiagnosticComponentScorePair, ...]
+    context_columns: tuple[SmoothingDiagnosticContextColumn, ...]
+    raw_final_score_col: str
+    smoothed_final_score_col: str
+    raw_stance_label_col: str
+    smoothed_stance_label_col: str
+    raw_strength_label_col: str
+    smoothed_strength_label_col: str
+    score_diff_col: str
+    final_score_metric_prefix: str
+    score_change_metric_prefix: str
+    changed_count_mode: str
+
+
+@dataclass(frozen=True)
 class _RuleMappedStateInputSpec:
     name: str
     source_score_col: str
@@ -7495,6 +7529,208 @@ class RegimeModule:
             return "score"
         return smoothing_layer
 
+    def _smoothing_context_columns(
+        self,
+        target: str,
+        spec: RuleMappedDiagnosticSpec,
+    ) -> tuple[SmoothingDiagnosticContextColumn, ...]:
+        if target == "credit":
+            component_by_score_output = self._component_by_score_output()
+            components = self.component_config["components"]
+            context_columns = []
+            for score_col in spec.score_input_cols:
+                component_name = component_by_score_output.get(score_col)
+                if component_name is None:
+                    continue
+                score_config = components[component_name].get("score", {})
+                features = self._score_input_features_for_diagnostic_component(
+                    component_name,
+                    score_config,
+                )
+                for feature in features:
+                    feature_config = self.feature_config["features"].get(feature, {})
+                    data_col = (
+                        feature_config.get("input")
+                        if feature_config.get("method") == "level"
+                        else None
+                    )
+                    output_col = data_col if data_col is not None else feature
+                    context_columns.append(
+                        SmoothingDiagnosticContextColumn(
+                            output_col=output_col,
+                            feature_col=feature,
+                            data_col=data_col,
+                        )
+                    )
+            return tuple(
+                column
+                for idx, column in enumerate(context_columns)
+                if column.output_col
+                not in {prior.output_col for prior in context_columns[:idx]}
+            )
+
+        component_names = self._diagnostic_component_names_for_target(target)
+        return tuple(
+            SmoothingDiagnosticContextColumn(
+                output_col=feature,
+                feature_col=feature,
+            )
+            for feature in self._score_input_features_for_diagnostic_components(
+                component_names or (),
+            )
+        )
+
+    def _smoothing_diagnostic_target_profile(
+        self,
+        target: str,
+    ) -> SmoothingDiagnosticTargetProfile:
+        context = self._resolve_rule_mapped_diagnostic_config(target)
+        spec = self._derive_rule_mapped_diagnostic_spec_from_context(context)
+        component_score_pairs = tuple(
+            SmoothingDiagnosticComponentScorePair(
+                source_score_col=score_col,
+                raw_col=f"raw_{score_col}",
+                smoothed_col=f"smoothed_{score_col}",
+                metric_prefix=score_col,
+            )
+            for score_col in spec.score_input_cols
+        )
+        changed_count_mode = (
+            "aligned_pairs"
+            if spec.target == "curve_positioning"
+            else "valid_pairs"
+        )
+        return SmoothingDiagnosticTargetProfile(
+            target=spec.target,
+            display_target="curve" if spec.target == "curve_positioning" else spec.target,
+            spec=spec,
+            component_score_pairs=component_score_pairs,
+            context_columns=self._smoothing_context_columns(spec.target, spec),
+            raw_final_score_col=f"raw_{spec.final_score_col}",
+            smoothed_final_score_col=f"smoothed_{spec.final_score_col}",
+            raw_stance_label_col=f"raw_{spec.stance_label_col}",
+            smoothed_stance_label_col=f"smoothed_{spec.stance_label_col}",
+            raw_strength_label_col=f"raw_{spec.strength_label_col}",
+            smoothed_strength_label_col=f"smoothed_{spec.strength_label_col}",
+            score_diff_col=(
+                "score_diff"
+                if spec.target == "curve_positioning"
+                else f"{spec.final_score_col}_diff"
+            ),
+            final_score_metric_prefix=spec.final_score_col,
+            score_change_metric_prefix=(
+                "curve" if spec.target == "curve_positioning" else spec.target
+            ),
+            changed_count_mode=changed_count_mode,
+        )
+
+    def _validate_input_smoothing_detail_prerequisites(self, target: str) -> None:
+        if self.features is None:
+            raise ValueError(
+                f"Run calculate_features() before comparing {target} input smoothing."
+            )
+        if self.scores is None:
+            raise ValueError(
+                "Run calculate_component_scores() before comparing "
+                f"{target} input smoothing."
+            )
+        if self.exposure_stance is None:
+            raise ValueError(
+                "Run calculate_exposure_stance() before comparing "
+                f"{target} input smoothing."
+            )
+        if self.component_config is None or self.exposure_stance_config is None:
+            raise ValueError(
+                "Run load_module1_config() before comparing "
+                f"{target} input smoothing."
+            )
+
+    def _add_smoothing_context_columns(
+        self,
+        detail: pd.DataFrame,
+        profile: SmoothingDiagnosticTargetProfile,
+    ) -> None:
+        for column in profile.context_columns:
+            if column.data_col is not None and self.data is not None:
+                if column.data_col in self.data.columns:
+                    detail[column.output_col] = (
+                        self.data[column.data_col].reindex(detail.index).ffill()
+                    )
+                    continue
+            if (
+                column.feature_col is not None
+                and column.feature_col in self.features.columns
+            ):
+                detail[column.output_col] = self.features[column.feature_col]
+
+    def _rule_mapped_input_smoothing_effect_detail(
+        self,
+        target: str,
+        profile: SmoothingDiagnosticTargetProfile | None = None,
+    ) -> pd.DataFrame:
+        profile = profile or self._smoothing_diagnostic_target_profile(target)
+        self._validate_input_smoothing_detail_prerequisites(profile.display_target)
+
+        required_stance_cols = [
+            profile.spec.final_score_col,
+            profile.spec.stance_label_col,
+            profile.spec.strength_label_col,
+        ]
+        missing_stance_cols = [
+            col
+            for col in required_stance_cols
+            if col is None or col not in self.exposure_stance.columns
+        ]
+        if missing_stance_cols:
+            raise ValueError(
+                f"{profile.target} exposure stance outputs are missing: "
+                f"{missing_stance_cols}"
+            )
+
+        raw_scores = self._recalculate_component_scores_for_input_preparation_diagnostic(
+            profile.target,
+            apply_input_preparation=False,
+            output_prefix="raw_",
+        )
+        detail = pd.DataFrame(index=self.features.index)
+        self._add_smoothing_context_columns(detail, profile)
+        detail = pd.concat(
+            [
+                detail,
+                self._prepared_filtered_input_columns(profile.target).reindex(
+                    detail.index
+                ),
+            ],
+            axis=1,
+        )
+        detail = pd.concat([detail, raw_scores], axis=1)
+        for pair in profile.component_score_pairs:
+            detail[pair.smoothed_col] = self.scores[pair.source_score_col]
+
+        raw_stance = (
+            self._reconstruct_rule_mapped_stance_for_input_preparation_diagnostic(
+                profile.target,
+                raw_scores,
+            )
+        )
+        detail[profile.raw_final_score_col] = raw_stance["score"]
+        detail[profile.smoothed_final_score_col] = self.exposure_stance[
+            profile.spec.final_score_col
+        ]
+        detail[profile.score_diff_col] = (
+            detail[profile.smoothed_final_score_col]
+            - detail[profile.raw_final_score_col]
+        )
+        detail[profile.raw_stance_label_col] = raw_stance["direction"]
+        detail[profile.raw_strength_label_col] = raw_stance["strength"]
+        detail[profile.smoothed_stance_label_col] = self.exposure_stance[
+            profile.spec.stance_label_col
+        ]
+        detail[profile.smoothed_strength_label_col] = self.exposure_stance[
+            profile.spec.strength_label_col
+        ]
+        return detail
+
     def _smoothing_effect_result(
         self,
         detail: pd.DataFrame,
@@ -7575,7 +7811,11 @@ class RegimeModule:
 
         resolved_windows = self._smoothing_diagnostic_windows(windows)
         if resolved_target == "credit":
-            detail = self._credit_input_smoothing_effect_detail(resolved_target)
+            profile = self._smoothing_diagnostic_target_profile(resolved_target)
+            detail = self._rule_mapped_input_smoothing_effect_detail(
+                resolved_target,
+                profile,
+            )
             return self._smoothing_effect_result(
                 detail,
                 resolved_windows,
@@ -7583,7 +7823,11 @@ class RegimeModule:
                 include_detail,
             )
         if resolved_target == "curve_positioning":
-            detail = self._curve_input_smoothing_effect_detail(resolved_target)
+            profile = self._smoothing_diagnostic_target_profile(resolved_target)
+            detail = self._rule_mapped_input_smoothing_effect_detail(
+                resolved_target,
+                profile,
+            )
             return self._smoothing_effect_result(
                 detail,
                 resolved_windows,
@@ -7646,75 +7890,6 @@ class RegimeModule:
         stance_config: dict,
     ) -> tuple[pd.Series, pd.Series]:
         return self._stance_labels_for_score(score, stance_config)
-
-    def _raw_credit_component_scores_for_input_smoothing_comparison(
-        self,
-    ) -> pd.DataFrame:
-        return self._recalculate_component_scores_for_input_preparation_diagnostic(
-            "credit",
-            apply_input_preparation=False,
-            output_prefix="raw_",
-        )
-
-    def _credit_input_smoothing_effect_detail(self, target: str) -> pd.DataFrame:
-        if self.features is None:
-            raise ValueError(
-                "Run calculate_features() before comparing credit input smoothing."
-            )
-        if self.scores is None:
-            raise ValueError(
-                "Run calculate_component_scores() before comparing credit input smoothing."
-            )
-        if self.exposure_stance is None:
-            raise ValueError(
-                "Run calculate_exposure_stance() before comparing credit input smoothing."
-            )
-        if self.component_config is None or self.exposure_stance_config is None:
-            raise ValueError(
-                "Run load_module1_config() before comparing credit input smoothing."
-            )
-
-        raw_scores = self._raw_credit_component_scores_for_input_smoothing_comparison()
-        detail = pd.DataFrame(index=self.features.index)
-        if "baa10y_change" in self.features.columns:
-            detail["baa10y_change"] = self.features["baa10y_change"]
-        if self.data is not None and "baa10y" in self.data.columns:
-            detail["baa10y"] = self.data["baa10y"].reindex(detail.index).ffill()
-        elif "baa10y_level" in self.features.columns:
-            detail["baa10y"] = self.features["baa10y_level"]
-
-        detail = pd.concat(
-            [detail, self._prepared_filtered_input_columns(target).reindex(detail.index)],
-            axis=1,
-        )
-        detail = pd.concat([detail, raw_scores], axis=1)
-        detail["smoothed_credit_spread_change_score"] = self.scores[
-            "credit_spread_change_score"
-        ]
-        detail["smoothed_credit_spread_state_score"] = self.scores[
-            "credit_spread_state_score"
-        ]
-        raw_stance = (
-            self._reconstruct_rule_mapped_stance_for_input_preparation_diagnostic(
-                target,
-                raw_scores,
-            )
-        )
-        detail["raw_credit_stance_score"] = raw_stance["score"]
-        detail["smoothed_credit_stance_score"] = self.exposure_stance[
-            "credit_stance_score"
-        ]
-        detail["credit_stance_score_diff"] = (
-            detail["smoothed_credit_stance_score"]
-            - detail["raw_credit_stance_score"]
-        )
-        detail["raw_credit_stance"] = raw_stance["direction"]
-        detail["raw_credit_stance_strength"] = raw_stance["strength"]
-        detail["smoothed_credit_stance"] = self.exposure_stance["credit_stance"]
-        detail["smoothed_credit_stance_strength"] = self.exposure_stance[
-            "credit_stance_strength"
-        ]
-        return detail
 
     def _credit_input_smoothing_summary_row(
         self,
@@ -7988,95 +8163,6 @@ class RegimeModule:
         ]
         score.loc[front_end.isna() | long_end.isna()] = pd.NA
         return score
-
-    def _raw_curve_component_scores_for_input_smoothing_comparison(
-        self,
-    ) -> pd.DataFrame:
-        return self._recalculate_component_scores_for_input_preparation_diagnostic(
-            "curve_positioning",
-            apply_input_preparation=False,
-            output_prefix="raw_",
-        )
-
-    def _curve_input_smoothing_effect_detail(self, target: str) -> pd.DataFrame:
-        if self.features is None:
-            raise ValueError(
-                "Run calculate_features() before comparing curve input smoothing."
-            )
-        if self.scores is None:
-            raise ValueError(
-                "Run calculate_component_scores() before comparing curve input smoothing."
-            )
-        if self.exposure_stance is None:
-            raise ValueError(
-                "Run calculate_exposure_stance() before comparing curve input smoothing."
-            )
-        if self.component_config is None or self.exposure_stance_config is None:
-            raise ValueError(
-                "Run load_module1_config() before comparing curve input smoothing."
-            )
-
-        rule_mapped_context = self._resolve_rule_mapped_diagnostic_config(
-            "curve_positioning"
-        )
-        diagnostic_spec = self._derive_rule_mapped_diagnostic_spec_from_context(
-            rule_mapped_context
-        )
-        score_output = diagnostic_spec.final_score_col
-        stance_output = diagnostic_spec.stance_label_col
-        strength_output = diagnostic_spec.strength_label_col
-        required_stance_cols = [score_output, stance_output, strength_output]
-        missing_stance_cols = [
-            col
-            for col in required_stance_cols
-            if col is None or col not in self.exposure_stance.columns
-        ]
-        if missing_stance_cols:
-            raise ValueError(
-                "Curve positioning exposure stance outputs are missing: "
-                f"{missing_stance_cols}"
-            )
-
-        raw_scores = self._raw_curve_component_scores_for_input_smoothing_comparison()
-
-        detail = pd.DataFrame(index=self.features.index)
-        component_names = self._diagnostic_component_names_for_target(target)
-        for column in self._score_input_features_for_diagnostic_components(
-            component_names or (),
-        ):
-            if column in self.features.columns:
-                detail[column] = self.features[column]
-        detail = pd.concat(
-            [detail, self._prepared_filtered_input_columns(target).reindex(detail.index)],
-            axis=1,
-        )
-        detail = pd.concat([detail, raw_scores], axis=1)
-        detail["smoothed_curve_change_score"] = self.scores["curve_change_score"]
-        detail["smoothed_curve_state_score"] = self.scores["curve_state_score"]
-        detail["smoothed_curve_move_driver_score"] = self.scores[
-            "curve_move_driver_score"
-        ]
-        raw_stance = (
-            self._reconstruct_rule_mapped_stance_for_input_preparation_diagnostic(
-                target,
-                raw_scores,
-            )
-        )
-        detail["raw_curve_positioning_score"] = raw_stance["score"]
-        detail["smoothed_curve_positioning_score"] = self.exposure_stance[
-            score_output
-        ]
-        detail["score_diff"] = (
-            detail["smoothed_curve_positioning_score"]
-            - detail["raw_curve_positioning_score"]
-        )
-        detail["raw_curve_positioning"] = raw_stance["direction"]
-        detail["raw_curve_positioning_strength"] = raw_stance["strength"]
-        detail["smoothed_curve_positioning"] = self.exposure_stance[stance_output]
-        detail["smoothed_curve_positioning_strength"] = self.exposure_stance[
-            strength_output
-        ]
-        return detail
 
     def _curve_input_smoothing_summary_row(
         self,
