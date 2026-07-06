@@ -7419,13 +7419,187 @@ class RegimeModule:
             f"Unsupported stance trace function for {stance_name}: {function}"
         )
 
-    def _default_credit_input_smoothing_windows(self) -> dict:
-        return {
-            "global_financial_crisis": ("2007-07-01", "2009-06-30"),
-            "covid_shock": ("2020-02-01", "2020-06-30"),
-            "fed_hiking_2022": ("2022-03-01", "2022-12-31"),
-            "full_history": (None, None),
+    def _smoothing_diagnostic_windows(self, windows: dict | None) -> dict:
+        if windows is not None:
+            return windows
+        if self.historical_context is None:
+            raise ValueError(
+                "Run load_historical_context(...) before using default smoothing "
+                "diagnostic windows, or pass explicit windows."
+            )
+
+        events = self.historical_context.get("events")
+        if events is None or events.empty:
+            raise ValueError(
+                "historical_context events are required for default smoothing "
+                "diagnostic windows."
+            )
+
+        resolved = {
+            row["context_id"]: (row["start"], row["end"])
+            for _, row in events.iterrows()
         }
+        resolved["full_history"] = (None, None)
+        return resolved
+
+    def _not_applicable_smoothing_result(
+        self,
+        target: str,
+        smoothing_layer: str,
+        status: str,
+        reason: str,
+    ) -> dict:
+        row = {
+            "target": target,
+            "smoothing_layer": smoothing_layer,
+            "status": status,
+            "reason": reason,
+        }
+        return {
+            "summary": pd.DataFrame([row]),
+            "window_summary": pd.DataFrame(columns=list(row.keys())),
+        }
+
+    def _normalize_smoothing_target(self, target: str) -> str | None:
+        if target == "curve":
+            return "curve_positioning"
+        if target in {"credit", "curve_positioning", "duration"}:
+            return target
+        return None
+
+    def _target_smoothing_layers(self, target: str) -> set[str]:
+        if self.module1_config is None:
+            raise ValueError("Run load_module1_config() before smoothing diagnostics.")
+
+        target_group = "curve" if target == "curve_positioning" else target
+        groups = self.module1_config.get("model_metadata", {}).get("target_groups", {})
+        components = groups.get(target_group, {}).get("component", [])
+        component_config = self.module1_config.get("components", {})
+
+        layers = set()
+        for component in components:
+            score_config = component_config.get(component, {}).get("score", {})
+            input_preparation = score_config.get("input_preparation") or {}
+            if input_preparation.get("smoothing") is not None:
+                layers.add("input_preparation")
+            if score_config.get("smoothing") is not None:
+                layers.add("score")
+        return layers
+
+    def _resolve_smoothing_layer(self, target: str, smoothing_layer: str) -> str:
+        if smoothing_layer != "auto":
+            return smoothing_layer
+        if target in {"credit", "curve_positioning"}:
+            return "input_preparation"
+        if target == "duration":
+            return "score"
+        return smoothing_layer
+
+    def _smoothing_effect_result(
+        self,
+        detail: pd.DataFrame,
+        windows: dict,
+        summary_row_builder,
+        include_detail: bool,
+    ) -> dict:
+        summary = pd.DataFrame([summary_row_builder(detail)])
+        window_rows = []
+        for window_id, window in windows.items():
+            start, end = window
+            window_detail = self._inclusive_window_slice(detail, start, end)
+            row = summary_row_builder(window_detail)
+            window_rows.append(
+                self._window_summary_row(window_id, start, end, row)
+            )
+
+        result = {
+            "summary": summary,
+            "window_summary": pd.DataFrame(window_rows),
+        }
+        if include_detail:
+            result["detail"] = detail
+        return result
+
+    def compare_smoothing_effect(
+        self,
+        target: str,
+        smoothing_layer: str = "auto",
+        windows: dict | None = None,
+        include_detail: bool = True,
+    ) -> dict:
+        """
+        Compare smoothed production inputs against raw-input reconstructions.
+        """
+        allowed_layers = {"auto", "input_preparation", "score"}
+        if smoothing_layer not in allowed_layers:
+            allowed = ", ".join(
+                f'"{allowed_layer}"' for allowed_layer in sorted(allowed_layers)
+            )
+            raise ValueError(
+                f"Unsupported smoothing_layer {smoothing_layer!r}. "
+                f"Allowed values are: {allowed}."
+            )
+
+        resolved_target = self._normalize_smoothing_target(target)
+        if resolved_target is None:
+            return self._not_applicable_smoothing_result(
+                target,
+                smoothing_layer,
+                "not_applicable",
+                f"No smoothing-effect diagnostic is defined for target {target!r}.",
+            )
+
+        effective_layer = self._resolve_smoothing_layer(
+            resolved_target,
+            smoothing_layer,
+        )
+        available_layers = self._target_smoothing_layers(resolved_target)
+        if effective_layer not in available_layers:
+            return self._not_applicable_smoothing_result(
+                resolved_target,
+                effective_layer,
+                "not_applicable",
+                (
+                    f"Target {resolved_target!r} does not use "
+                    f"{effective_layer!r} smoothing."
+                ),
+            )
+
+        if effective_layer == "score":
+            return self._not_applicable_smoothing_result(
+                resolved_target,
+                effective_layer,
+                "not_implemented",
+                "Score-level smoothing comparison is not implemented.",
+            )
+
+        resolved_windows = self._smoothing_diagnostic_windows(windows)
+        if resolved_target == "credit":
+            detail = self._credit_input_smoothing_effect_detail(resolved_target)
+            return self._smoothing_effect_result(
+                detail,
+                resolved_windows,
+                self._credit_input_smoothing_summary_row,
+                include_detail,
+            )
+        if resolved_target == "curve_positioning":
+            detail = self._curve_input_smoothing_effect_detail(resolved_target)
+            return self._smoothing_effect_result(
+                detail,
+                resolved_windows,
+                self._curve_input_smoothing_summary_row,
+                include_detail,
+            )
+
+        return self._not_applicable_smoothing_result(
+            resolved_target,
+            effective_layer,
+            "not_applicable",
+            (
+                f"No {effective_layer!r} smoothing-effect diagnostic is defined "
+                f"for target {resolved_target!r}."
+            ),
+        )
 
     def _credit_stance_config(self) -> dict:
         if self.exposure_stance_config is None:
@@ -7625,37 +7799,6 @@ class RegimeModule:
             ),
         }
 
-    def compare_credit_input_smoothing_effect(
-        self,
-        windows: dict | None = None,
-        include_detail: bool = True,
-    ) -> dict:
-        """
-        Compare production credit logic with prepared inputs against a raw-input
-        reconstruction. Differences are expected; this is a review diagnostic.
-        """
-        target = "credit"
-        detail = self._credit_input_smoothing_effect_detail(target)
-        windows = windows or self._default_credit_input_smoothing_windows()
-        summary = pd.DataFrame([self._credit_input_smoothing_summary_row(detail)])
-
-        window_rows = []
-        for window_id, window in windows.items():
-            start, end = window
-            window_detail = self._inclusive_window_slice(detail, start, end)
-            row = self._credit_input_smoothing_summary_row(window_detail)
-            window_rows.append(
-                self._window_summary_row(window_id, start, end, row)
-            )
-
-        result = {
-            "summary": summary,
-            "window_summary": pd.DataFrame(window_rows),
-        }
-        if include_detail:
-            result["detail"] = detail
-        return result
-
     def _ratio_or_na(self, numerator, denominator):
         return numerator / denominator if denominator else pd.NA
 
@@ -7825,13 +7968,6 @@ class RegimeModule:
             "taper_tantrum_review": ("2012-08-01", "2014-06-01"),
             "fed_hiking_2022": ("2022-03-01", "2022-12-31"),
             "covid_shock_2020": ("2020-02-01", "2020-06-30"),
-            "full_history": (None, None),
-        }
-
-    def _default_curve_input_smoothing_windows(self) -> dict:
-        return {
-            "taper_tantrum_review": ("2012-08-01", "2014-06-01"),
-            "fed_hiking_2022": ("2022-03-01", "2022-12-31"),
             "full_history": (None, None),
         }
 
@@ -8033,37 +8169,6 @@ class RegimeModule:
                 raw_one_day_spike_count,
             ),
         }
-
-    def compare_curve_input_smoothing_effect(
-        self,
-        windows: dict | None = None,
-        include_detail: bool = True,
-    ) -> dict:
-        """
-        Compare production curve logic with prepared inputs against a raw-input
-        reconstruction. Differences are expected; this is a review diagnostic.
-        """
-        target = "curve_positioning"
-        detail = self._curve_input_smoothing_effect_detail(target)
-        windows = windows or self._default_curve_input_smoothing_windows()
-
-        summary = pd.DataFrame([self._curve_input_smoothing_summary_row(detail)])
-        window_rows = []
-        for window_id, window in windows.items():
-            start, end = window
-            window_detail = self._inclusive_window_slice(detail, start, end)
-            row = self._curve_input_smoothing_summary_row(window_detail)
-            window_rows.append(
-                self._window_summary_row(window_id, start, end, row)
-            )
-
-        result = {
-            "summary": summary,
-            "window_summary": pd.DataFrame(window_rows),
-        }
-        if include_detail:
-            result["detail"] = detail
-        return result
 
     def compare_curve_move_driver_threshold_effect(
         self,

@@ -40,6 +40,16 @@ historical_context:
       use_for_validation: true
       notes: Useful for inflation pressure and duration review; realized policy may lag because formal policy uses FEDFUNDS
 
+    - context_id: taper_tantrum_review
+      start: 2012-08-01
+      end: 2014-06-01
+      context_type: rates
+      description: Taper tantrum and curve repricing review window
+      reference: Saved curve smoothing diagnostic window from the prior hard-coded defaults
+      validation_confidence: medium
+      use_for_validation: false
+      notes: Event-only context used for smoothing diagnostics; no historical expectation rows are defined
+
     - context_id: fed_hiking_2022
       start: 2022-03-01
       end: 2022-12-31
