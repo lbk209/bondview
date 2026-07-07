@@ -21,6 +21,7 @@ from module1_schema import (
     _rule_mapped_bucket_classification_from_score,
     validate_module1_config,
 )
+from module1_result import Module1Result
 
 @dataclass
 class FredSeries:
@@ -3425,6 +3426,67 @@ class RegimeModule:
         self.calculate_component_labels()
         self.calculate_exposure_stance()
         return self.exposure_stance
+
+
+    @staticmethod
+    def _copy_module1_result_value(value):
+        if value is None:
+            return None
+        if isinstance(value, pd.DataFrame):
+            return value.copy(deep=True)
+        if isinstance(value, pd.Series):
+            return value.copy(deep=True)
+        return copy.deepcopy(value)
+
+
+    def to_module1_result(self) -> Module1Result:
+        """
+        Return a safe snapshot of completed Module 1 runtime outputs.
+
+        This method does not run or rerun any pipeline step. It only validates
+        that the completed-output tables already exist and copies the current
+        state into a Module1Result.
+        """
+        required_outputs = {
+            "features": self.features,
+            "scores": self.scores,
+            "labels": self.labels,
+            "stance_scores": self.stance_scores,
+            "exposure_stance": self.exposure_stance,
+        }
+        missing = [
+            name
+            for name, value in required_outputs.items()
+            if value is None
+        ]
+        if missing:
+            missing_text = ", ".join(missing)
+            raise ValueError(
+                "Cannot build Module1Result before completed Module 1 outputs "
+                f"exist. Missing: {missing_text}. Run run_module1_pipeline() or "
+                "the required calculation steps first."
+            )
+
+        return Module1Result(
+            data=self._copy_module1_result_value(self.data),
+            features=self._copy_module1_result_value(self.features),
+            scores=self._copy_module1_result_value(self.scores),
+            labels=self._copy_module1_result_value(self.labels),
+            stance_scores=self._copy_module1_result_value(self.stance_scores),
+            exposure_stance=self._copy_module1_result_value(self.exposure_stance),
+            module1_config=self._copy_module1_result_value(self.module1_config),
+            feature_config=self._copy_module1_result_value(self.feature_config),
+            component_config=self._copy_module1_result_value(self.component_config),
+            exposure_stance_config=self._copy_module1_result_value(
+                self.exposure_stance_config
+            ),
+            horizons=self._copy_module1_result_value(self.horizons),
+            default_horizons=self._copy_module1_result_value(self.default_horizons),
+            horizon_overrides=self._copy_module1_result_value(self.horizon_overrides),
+            module1_config_validation=self._copy_module1_result_value(
+                self.module1_config_validation
+            ),
+        )
 
 
     def load_historical_context(
