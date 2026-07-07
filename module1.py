@@ -21,6 +21,12 @@ from module1_schema import (
     _rule_mapped_bucket_classification_from_score,
     validate_module1_config,
 )
+from module1_analysis import (
+    _first_valid_dates_by_column,
+    _inspect_module1_result_tables,
+    _label_distributions,
+    _latest_valid_dates_by_column,
+)
 from module1_result import Module1Result
 
 @dataclass
@@ -4984,31 +4990,15 @@ class RegimeModule:
 
 
     def _first_valid_dates_by_column(self, table: pd.DataFrame | None) -> pd.Series | None:
-        if table is None:
-            return None
-
-        return table.apply(lambda col: col.first_valid_index())
+        return _first_valid_dates_by_column(table)
 
 
     def _latest_valid_dates_by_column(self, table: pd.DataFrame | None) -> pd.Series | None:
-        if table is None:
-            return None
-
-        return table.apply(lambda col: col.last_valid_index())
+        return _latest_valid_dates_by_column(table)
 
 
     def _label_distributions(self, table: pd.DataFrame | None) -> dict | None:
-        if table is None:
-            return None
-
-        distributions = {}
-
-        for col in table.columns:
-            counts = table[col].dropna().value_counts()
-            if not counts.empty:
-                distributions[col] = counts
-
-        return distributions
+        return _label_distributions(table)
 
 
     def inspect_module1_results(self, n=10) -> dict:
@@ -5019,77 +5009,13 @@ class RegimeModule:
         valid dates, latest complete exposure-stance date, and label distributions.
         This is an internal-output inspection tool, not a historical-context review.
         """
-        tables = {
-            "features": self.features,
-            "scores": self.scores,
-            "labels": self.labels,
-            "exposure_stance": self.exposure_stance,
-        }
-
-        combined_parts = [
-            table
-            for table in [self.scores, self.labels, self.exposure_stance]
-            if table is not None
-        ]
-        recent_combined_snapshot = (
-            None if not combined_parts else pd.concat(combined_parts, axis=1).tail(n)
+        return _inspect_module1_result_tables(
+            features=self.features,
+            scores=self.scores,
+            labels=self.labels,
+            exposure_stance=self.exposure_stance,
+            n=n,
         )
-
-        exposure_label_cols = None
-
-        if self.exposure_stance is not None:
-            exposure_label_cols = [
-                col
-                for col in self.exposure_stance.columns
-                if not pd.api.types.is_numeric_dtype(self.exposure_stance[col])
-            ]
-
-        latest_complete_exposure_stance_date = None
-
-        if self.exposure_stance is not None:
-            complete_exposure = self.exposure_stance.dropna(how="any")
-            if not complete_exposure.empty:
-                latest_complete_exposure_stance_date = complete_exposure.index.max()
-
-        review = {
-            "recent_combined_snapshot": recent_combined_snapshot,
-            "recent_scores": None if self.scores is None else self.scores.tail(n),
-            "recent_labels": None if self.labels is None else self.labels.tail(n),
-            "recent_exposure_stance": (
-                None if self.exposure_stance is None else self.exposure_stance.tail(n)
-            ),
-            "non_null_counts": {
-                name: None if table is None else table.notna().sum()
-                for name, table in tables.items()
-            },
-            "non_null_ratio": {
-                name: None if table is None else table.notna().mean()
-                for name, table in tables.items()
-            },
-            "first_valid_dates": {
-                name: self._first_valid_dates_by_column(table)
-                for name, table in tables.items()
-            },
-            "latest_valid_dates": {
-                name: self._latest_valid_dates_by_column(table)
-                for name, table in tables.items()
-            },
-            "latest_dates": {
-                name: None
-                if table is None or table.dropna(how="all").empty
-                else table.dropna(how="all").index.max()
-                for name, table in tables.items()
-            },
-            "latest_complete_exposure_stance_date": latest_complete_exposure_stance_date,
-            "component_label_distributions": self._label_distributions(self.labels),
-            "exposure_stance_label_distributions": (
-                None
-                if self.exposure_stance is None or not exposure_label_cols
-                else self._label_distributions(self.exposure_stance[exposure_label_cols])
-            ),
-        }
-
-        return review
 
 
     def _target_resolution_from_canonical(
