@@ -5761,25 +5761,22 @@ class RegimeModule:
         }
 
 
-    def get_target_context(
+    def _get_target_context_explicit_window(
         self,
         target,
         level,
         dependency_level="auto",
         include_labels=True,
         include_strength=True,
-        context_id=None,
         start=None,
         end=None,
         ffill_inputs=True,
     ) -> TargetContextResult:
         """
-        Retrieve target outputs and lower-level dependencies without display modes.
+        Build target outputs and lower-level dependencies for explicit dates.
 
-        This is the shared, consumer-neutral retrieval interface for plots,
-        diagnostics, reports, documentation, and future utilities. It only reads
-        already-generated output tables and never calculates features, component
-        scores, labels, or exposure stances.
+        This helper is result-only: it does not resolve historical context IDs,
+        calculate outputs, or mutate runtime state.
         """
         normalized_level = self._normalize_target_level(level)
         normalized_dependency_level = self._normalize_dependency_level(
@@ -5792,7 +5789,6 @@ class RegimeModule:
             resolution,
             dependency_level=normalized_dependency_level,
         )
-        start, end = self._resolve_historical_event_window(context_id, start, end)
 
         parts = []
         column_roles = {}
@@ -6032,7 +6028,7 @@ class RegimeModule:
             "effective_dependency_level": normalized_dependency_level,
             "include_labels": include_labels,
             "include_strength": include_strength,
-            "context_id": context_id,
+            "context_id": None,
             "start": start,
             "end": end,
         }
@@ -6063,8 +6059,52 @@ class RegimeModule:
             source_column_mapping=source_column_mapping,
             start=start,
             end=end,
-            context_id=context_id,
+            context_id=None,
             metadata=metadata,
+        )
+
+
+    def get_target_context(
+        self,
+        target,
+        level,
+        dependency_level="auto",
+        include_labels=True,
+        include_strength=True,
+        context_id=None,
+        start=None,
+        end=None,
+        ffill_inputs=True,
+    ) -> TargetContextResult:
+        """
+        Retrieve target outputs and lower-level dependencies without display modes.
+
+        This is the shared, consumer-neutral retrieval interface for plots,
+        diagnostics, reports, documentation, and future utilities. It only reads
+        already-generated output tables and never calculates features, component
+        scores, labels, or exposure stances.
+        """
+        start, end = self._resolve_historical_event_window(context_id, start, end)
+        ctx = self._get_target_context_explicit_window(
+            target,
+            level,
+            dependency_level=dependency_level,
+            include_labels=include_labels,
+            include_strength=include_strength,
+            start=start,
+            end=end,
+            ffill_inputs=ffill_inputs,
+        )
+
+        if context_id is None:
+            return ctx
+
+        request_metadata = ctx.request.copy()
+        request_metadata["context_id"] = context_id
+        return replace(
+            ctx,
+            request=request_metadata,
+            context_id=context_id,
         )
 
 
