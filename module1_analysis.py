@@ -1,6 +1,7 @@
 import pandas as pd
 
 from module1_context import (
+    TargetCompareDataset,
     TargetContextResult,
     TargetDependency,
     TargetResolution,
@@ -954,6 +955,71 @@ class Module1Analysis:
             n=n,
         )
 
+    def _resolve_target_compare(
+        self,
+        level: str,
+        compare: str | None,
+    ) -> tuple[str, str]:
+        target_level = self._normalize_target_level(level)
+        requested = "auto" if compare is None else str(compare)
+        normalized_compare = self._normalize_review_label(requested)
+
+        supported = {"auto", "components", "features", "raw_inputs", "full"}
+        if normalized_compare not in supported:
+            raise ValueError(
+                f"Unsupported compare value: {compare}. Use one of: auto, "
+                "components, features, raw_inputs, full."
+            )
+
+        if target_level == "raw_input":
+            raise ValueError(
+                "raw_input targets do not have a lower comparison layer."
+            )
+
+        if normalized_compare == "auto":
+            effective = {
+                "feature": "raw_inputs",
+                "component": "features",
+                "stance": "components",
+            }[target_level]
+            return normalized_compare, effective
+
+        if target_level == "feature":
+            if normalized_compare in {"components", "features"}:
+                raise ValueError(
+                    f"feature targets cannot compare against {compare}."
+                )
+            return normalized_compare, normalized_compare
+
+        if target_level == "component":
+            if normalized_compare == "components":
+                raise ValueError("component targets cannot compare against components.")
+            return normalized_compare, normalized_compare
+
+        if target_level == "stance":
+            return normalized_compare, normalized_compare
+
+        raise ValueError(f"Unsupported target level: {level}")
+
+    def _comparison_normalization_recommendation(
+        self,
+        target_level: str,
+        effective_compare: str,
+        comparison_columns: tuple[str, ...],
+        source_layer_mapping: dict[str, str],
+    ) -> bool:
+        if not comparison_columns:
+            return False
+        if target_level == "stance" and effective_compare == "components":
+            return False
+        if effective_compare == "full":
+            comparison_layers = {
+                source_layer_mapping.get(col)
+                for col in comparison_columns
+            }
+            return not comparison_layers.issubset({"component_score"})
+        return effective_compare in {"features", "raw_inputs"}
+
     def get_target_context(
         self,
         target,
@@ -1262,3 +1328,139 @@ class Module1Analysis:
             context_id=None,
             metadata=metadata,
         )
+
+    def build_target_comparison_dataset(
+        self,
+        target,
+        level,
+        compare="auto",
+        context_id=None,
+        start=None,
+        end=None,
+        include_labels=True,
+        include_strength=True,
+        ffill_inputs=True,
+    ) -> TargetCompareDataset:
+        """
+        Build a consumer-neutral target comparison dataset from result outputs.
+        """
+        if context_id is not None:
+            raise ValueError(
+                "Module1Analysis.build_target_comparison_dataset(...) accepts "
+                "explicit start/end only; resolve context_id before calling it."
+            )
+
+        target_level = self._normalize_target_level(level)
+        requested_compare, effective_compare = self._resolve_target_compare(
+            target_level,
+            compare,
+        )
+        dependency_level = effective_compare
+        ctx = self.get_target_context(
+            target,
+            target_level,
+            dependency_level=dependency_level,
+            include_labels=include_labels,
+            include_strength=include_strength,
+            start=start,
+            end=end,
+            ffill_inputs=ffill_inputs,
+        )
+
+        returned = ctx.returned_columns
+        target_columns = tuple(returned.get("target", ()))
+        if effective_compare == "components":
+            comparison_columns = tuple(returned.get("component_scores", ()))
+        elif effective_compare == "features":
+            comparison_columns = tuple(returned.get("features", ()))
+        elif effective_compare == "raw_inputs":
+            comparison_columns = tuple(returned.get("raw_inputs", ()))
+        elif effective_compare == "full":
+            comparison_columns = tuple(
+                dict.fromkeys(
+                    tuple(returned.get("component_scores", ()))
+                    + tuple(returned.get("features", ()))
+                    + tuple(returned.get("raw_inputs", ()))
+                )
+            )
+        else:
+            raise ValueError(f"Unsupported effective compare value: {effective_compare}")
+
+        target_set = set(target_columns)
+        comparison_columns = tuple(
+            col for col in comparison_columns if col not in target_set
+        )
+        label_columns = tuple(returned.get("labels", ())) if include_labels else ()
+        strength_columns = (
+            tuple(returned.get("strength", ())) if include_strength else ()
+        )
+
+        for group_name, columns in {
+            "target_columns": target_columns,
+            "comparison_columns": comparison_columns,
+            "label_columns": label_columns,
+            "strength_columns": strength_columns,
+        }.items():
+            missing = [col for col in columns if col not in ctx.data.columns]
+            if missing:
+                raise ValueError(
+                    f"{group_name} contains columns not present in comparison data: "
+                    f"{missing}"
+                )
+
+        comparison_source_layers = {
+            col: ctx.source_layer_mapping.get(col)
+            for col in comparison_columns
+        }
+        normalization_recommendation = self._comparison_normalization_recommendation(
+            target_level,
+            effective_compare,
+            comparison_columns,
+            ctx.source_layer_mapping,
+        )
+        metadata = {
+            "requested_compare": requested_compare,
+            "effective_compare": effective_compare,
+            "dependency_level": dependency_level,
+            "target_level": target_level,
+            "canonical_target": ctx.resolution.get("canonical_target"),
+            "target_source_layer": ctx.resolution.get("source_layer"),
+            "target_source_table": ctx.resolution.get("source_table"),
+            "comparison_source_layers": comparison_source_layers,
+            "normalization_recommendation": normalization_recommendation,
+            "returned_columns": returned,
+            "resolved_path": ctx.resolved_path,
+        }
+
+        return TargetCompareDataset(
+            data=ctx.data,
+            target_columns=target_columns,
+            comparison_columns=comparison_columns,
+            label_columns=label_columns,
+            strength_columns=strength_columns,
+            returned_columns=returned,
+            resolved_path=ctx.resolved_path,
+            resolution=ctx.resolution,
+            compare=requested_compare,
+            effective_compare=effective_compare,
+            target_level=target_level,
+            source_layer_mapping=ctx.source_layer_mapping,
+            source_column_mapping=ctx.source_column_mapping,
+            start=ctx.start,
+            end=ctx.end,
+            context_id=ctx.context_id,
+            metadata=metadata,
+        )
+
+    def raw_inputs_for_target(self, target: str, level: str) -> list[str]:
+        """
+        Return raw input columns used directly or indirectly by a target.
+        """
+        retrieval = self.get_target_context(
+            target,
+            level,
+            dependency_level="raw_inputs",
+            include_labels=False,
+            include_strength=False,
+        )
+        return list(retrieval.returned_columns["raw_inputs"])
