@@ -628,7 +628,7 @@ class RegimeModule:
 
     def load_series_config(self, path="data/fred_series_config.csv") -> dict:
         df = pd.read_csv(path)
-    
+
         self.series_config = {
             row["key"]: FredSeries(
                 fred_id=row["fred_id"],
@@ -638,10 +638,10 @@ class RegimeModule:
             )
             for _, row in df.iterrows()
         }
-    
+
         return self.series_config
 
-    
+
     def download_series(self, key: str, start=None, end=None) -> pd.Series | None:
         cfg = self.series_config[key]
 
@@ -678,7 +678,7 @@ class RegimeModule:
             if median_gap > 7:
                 print(f"[WARN] {key} expected daily/business-daily, median gap = {median_gap} days")
 
-    
+
     def load_local_data(self, path_from, start=None, end=None) -> pd.DataFrame:
         """
         Load previously saved input data from a local CSV file.
@@ -7758,13 +7758,13 @@ class RegimeModule:
     ) -> dict:
         """
         Compare the effect of smoothing for a Module 1 target.
-    
+
         For input-preparation smoothing, rebuild the rule-mapped stance from raw
         inputs and compare it with the production smoothed-input result. The summary
         reports decomposed differences, including both-valid changes, one-sided
         missing observations, aligned changes, transition counts, and one-day spike
         counts.
-    
+
         Score-level smoothing diagnostics are recognized but currently reported as
         not implemented.
         """
