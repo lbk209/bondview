@@ -1,5 +1,10 @@
 import pandas as pd
 
+from module1_context import (
+    TargetContextResult,
+    TargetDependency,
+    TargetResolution,
+)
 from module1_result import Module1Result
 
 
@@ -116,6 +121,818 @@ class Module1Analysis:
     def __init__(self, result: Module1Result):
         self.result = result
 
+    def _normalize_review_label(self, value):
+        if pd.isna(value):
+            return pd.NA
+
+        return str(value).strip().lower()
+
+    def _historical_review_target_aliases(self, level: str | None = None) -> dict:
+        aliases = {}
+        normalized_level = (
+            None if level is None else self._normalize_review_label(level)
+        )
+
+        if normalized_level in {None, "component"}:
+            if self.result.component_config is None:
+                raise ValueError("Run load_module1_config() before historical review.")
+
+            for component_name, component_config in self.result.component_config[
+                "components"
+            ].items():
+                score_col = component_config.get("score", {}).get("output")
+                label_col = component_config.get("label", {}).get("output")
+                canonical = ("component", component_name)
+
+                for alias in [component_name, score_col, label_col]:
+                    if alias is not None:
+                        aliases[self._normalize_review_label(alias)] = canonical
+
+        if normalized_level in {None, "stance"}:
+            if self.result.exposure_stance_config is None:
+                raise ValueError("Run load_module1_config() before historical review.")
+
+            for stance_name, stance_config in self.result.exposure_stance_config[
+                "exposure_stances"
+            ].items():
+                score_col = stance_config.get("score_output")
+                label_col = stance_config.get("stance_output")
+                canonical = ("stance", stance_name)
+
+                for alias in [stance_name, score_col, label_col]:
+                    if alias is not None:
+                        aliases[self._normalize_review_label(alias)] = canonical
+
+        if normalized_level not in {None, "component", "stance"}:
+            raise ValueError(f"Unsupported historical review level: {level}")
+
+        return aliases
+
+    def _historical_review_target_groups(self) -> dict:
+        if self.result.module1_config is None:
+            raise ValueError("Run load_module1_config() before historical review.")
+
+        target_groups = (
+            self.result.module1_config
+            .get("model_metadata", {})
+            .get("target_groups", {})
+        )
+        return {
+            group_name: {
+                "component": list(group.get("component", [])),
+                "stance": list(group.get("stance", [])),
+            }
+            for group_name, group in target_groups.items()
+        }
+
+    def _target_resolution_from_canonical(
+        self,
+        requested_target: str,
+        normalized_target: str,
+        level: str,
+        canonical_target: str,
+        *,
+        kind: str = "target",
+    ) -> TargetResolution:
+        if level == "stance":
+            stance_config = self.result.exposure_stance_config["exposure_stances"][
+                canonical_target
+            ]
+            score_col = stance_config.get("score_output")
+            label_col = stance_config.get("stance_output")
+            strength_col = stance_config.get("strength_output")
+            component_score_cols = tuple(
+                item.get("component")
+                for item in stance_config.get("inputs", [])
+                if item.get("component") is not None
+            )
+            return TargetResolution(
+                requested_target=requested_target,
+                normalized_target=normalized_target,
+                level="stance",
+                kind=kind,
+                canonical_target=canonical_target,
+                score_col=score_col,
+                label_col=label_col,
+                strength_col=strength_col,
+                config=stance_config,
+                related_score_cols=tuple(
+                    col for col in [score_col] if col is not None
+                ),
+                related_label_cols=tuple(
+                    col for col in [label_col] if col is not None
+                ),
+                related_strength_cols=tuple(
+                    col for col in [strength_col] if col is not None
+                ),
+                related_component_score_cols=component_score_cols,
+                related_targets=((level, canonical_target),),
+                has_stance_score=score_col is not None,
+                source_layer="stance",
+                source_table="exposure_stance",
+                available_output_fields=tuple(
+                    col
+                    for col in [score_col, label_col, strength_col]
+                    if col is not None
+                ),
+            )
+
+        component_config = self.result.component_config["components"][canonical_target]
+        score_col = component_config.get("score", {}).get("output")
+        label_col = component_config.get("label", {}).get("output")
+        return TargetResolution(
+            requested_target=requested_target,
+            normalized_target=normalized_target,
+            level="component",
+            kind=kind,
+            canonical_target=canonical_target,
+            score_col=score_col,
+            label_col=label_col,
+            strength_col=None,
+            config=component_config,
+            related_score_cols=tuple(col for col in [score_col] if col is not None),
+            related_label_cols=tuple(col for col in [label_col] if col is not None),
+            related_targets=((level, canonical_target),),
+            has_stance_score=False,
+            source_layer="component",
+            source_table="scores",
+            available_output_fields=tuple(
+                col for col in [score_col, label_col] if col is not None
+            ),
+        )
+
+    def _target_resolution_for_raw_input(
+        self,
+        requested_target: str,
+        normalized_target: str,
+        canonical_target: str,
+    ) -> TargetResolution:
+        return TargetResolution(
+            requested_target=requested_target,
+            normalized_target=normalized_target,
+            level="raw_input",
+            kind="target",
+            canonical_target=canonical_target,
+            score_col=canonical_target,
+            label_col=None,
+            strength_col=None,
+            config=None,
+            related_score_cols=(canonical_target,),
+            related_targets=(("raw_input", canonical_target),),
+            source_layer="raw_input",
+            source_table="data",
+            available_output_fields=(canonical_target,),
+        )
+
+    def _target_resolution_for_feature(
+        self,
+        requested_target: str,
+        normalized_target: str,
+        canonical_target: str,
+    ) -> TargetResolution:
+        if self.result.feature_config is None:
+            raise ValueError("Run load_module1_config() before resolving features.")
+
+        feature_def = self.result.feature_config["features"][canonical_target]
+        return TargetResolution(
+            requested_target=requested_target,
+            normalized_target=normalized_target,
+            level="feature",
+            kind="target",
+            canonical_target=canonical_target,
+            score_col=canonical_target,
+            label_col=None,
+            strength_col=None,
+            config=feature_def,
+            related_score_cols=(canonical_target,),
+            related_targets=(("feature", canonical_target),),
+            source_layer="feature",
+            source_table="features",
+            available_output_fields=(canonical_target,),
+        )
+
+    def _normalize_target_level(self, level: str | None) -> str:
+        if level is None:
+            raise ValueError(
+                "Target level is required. Use one of: raw_input, feature, "
+                "component, stance."
+            )
+
+        normalized_level = self._normalize_review_label(level)
+        aliases = {
+            "raw": "raw_input",
+            "input": "raw_input",
+            "inputs": "raw_input",
+            "raw_inputs": "raw_input",
+            "features": "feature",
+            "components": "component",
+            "stances": "stance",
+        }
+        normalized_level = aliases.get(normalized_level, normalized_level)
+
+        if normalized_level not in {"raw_input", "feature", "component", "stance"}:
+            raise ValueError(
+                f"Unsupported level: {level}. Use one of: raw_input, feature, "
+                "component, stance."
+            )
+
+        return normalized_level
+
+    def _resolve_target_for_context(self, target: str, level: str) -> TargetResolution:
+        normalized_level = self._normalize_target_level(level)
+        normalized_target = self._normalize_review_label(target)
+
+        if normalized_level == "raw_input":
+            if self.result.data is None:
+                raise ValueError("Run load_data() before resolving raw inputs.")
+            matches = {
+                self._normalize_review_label(col): col
+                for col in self.result.data.columns
+            }
+            canonical = matches.get(normalized_target)
+            if canonical is None:
+                raise ValueError(f"Unknown raw_input target: {target}")
+            return self._target_resolution_for_raw_input(
+                target,
+                normalized_target,
+                canonical,
+            )
+
+        if normalized_level == "feature":
+            if self.result.feature_config is None:
+                raise ValueError("Run load_module1_config() before resolving features.")
+            matches = {
+                self._normalize_review_label(col): col
+                for col in self.result.feature_config["features"]
+            }
+            canonical = matches.get(normalized_target)
+            if canonical is None:
+                raise ValueError(f"Unknown feature target: {target}")
+            return self._target_resolution_for_feature(
+                target,
+                normalized_target,
+                canonical,
+            )
+
+        return self._resolve_target(target, normalized_level)
+
+    def _resolve_target(
+        self,
+        target: str,
+        level: str | None = None,
+        *,
+        allow_group: bool = False,
+    ) -> TargetResolution:
+        normalized_level = (
+            None if level is None else self._normalize_review_label(level)
+        )
+        if normalized_level not in {None, "stance", "component"}:
+            if level is None:
+                raise ValueError(f"Unsupported historical review level: {level}")
+            raise ValueError(
+                f'level must be either "stance" or "component"; got: {level}'
+            )
+
+        normalized_target = self._normalize_review_label(target)
+        aliases = self._historical_review_target_aliases(normalized_level)
+        groups = self._historical_review_target_groups()
+
+        if normalized_target in groups:
+            resolved = []
+            group = groups[normalized_target]
+            levels = (
+                ["component", "stance"]
+                if normalized_level is None
+                else [normalized_level]
+            )
+
+            for level_name in levels:
+                level_aliases = (
+                    aliases
+                    if normalized_level == level_name
+                    else self._historical_review_target_aliases(level_name)
+                )
+                for member in group.get(level_name, []):
+                    canonical = level_aliases.get(self._normalize_review_label(member))
+                    if canonical is not None:
+                        resolved.append(canonical)
+
+            resolved = tuple(sorted(set(resolved)))
+            if not resolved:
+                if normalized_level is None:
+                    raise ValueError(
+                        f"Unable to resolve historical review target group: {target} "
+                        f"for level={level}."
+                    )
+                raise ValueError(
+                    f"Unable to resolve target group '{target}' for "
+                    f"level='{normalized_level}'."
+                )
+            if allow_group:
+                has_stance_score = any(
+                    level_name == "stance" for level_name, _ in resolved
+                )
+                related_score_cols = []
+                related_label_cols = []
+                related_strength_cols = []
+                related_component_score_cols = []
+                for level_name, canonical_target in resolved:
+                    member = self._target_resolution_from_canonical(
+                        target,
+                        normalized_target,
+                        level_name,
+                        canonical_target,
+                        kind="target_group_member",
+                    )
+                    related_score_cols.extend(member.related_score_cols)
+                    related_label_cols.extend(member.related_label_cols)
+                    related_strength_cols.extend(member.related_strength_cols)
+                    related_component_score_cols.extend(
+                        member.related_component_score_cols
+                    )
+                return TargetResolution(
+                    requested_target=target,
+                    normalized_target=normalized_target,
+                    level=normalized_level,
+                    kind="target_group",
+                    canonical_target=None,
+                    score_col=None,
+                    label_col=None,
+                    strength_col=None,
+                    config=None,
+                    related_score_cols=tuple(dict.fromkeys(related_score_cols)),
+                    related_label_cols=tuple(dict.fromkeys(related_label_cols)),
+                    related_strength_cols=tuple(dict.fromkeys(related_strength_cols)),
+                    related_component_score_cols=tuple(
+                        dict.fromkeys(related_component_score_cols)
+                    ),
+                    related_targets=resolved,
+                    supported=True,
+                    has_stance_score=has_stance_score,
+                    source_layer="target_group",
+                    source_table=None,
+                    available_output_fields=tuple(
+                        dict.fromkeys(
+                            related_score_cols
+                            + related_label_cols
+                            + related_strength_cols
+                        )
+                    ),
+                )
+            if len(resolved) > 1:
+                available = [canonical_target for _, canonical_target in resolved]
+                raise ValueError(
+                    f"Target group '{target}' is ambiguous for "
+                    f"level='{normalized_level}'. Matching targets: {available}. "
+                    "Use a more specific target."
+                )
+
+            resolved_level, canonical_target = resolved[0]
+            return self._target_resolution_from_canonical(
+                target,
+                normalized_target,
+                resolved_level,
+                canonical_target,
+                kind="target_group_member",
+            )
+
+        canonical = aliases.get(normalized_target)
+        if canonical is None:
+            available = sorted(aliases)
+            level_for_error = (
+                "historical review" if normalized_level is None else normalized_level
+            )
+            raise ValueError(
+                f"Unable to resolve {level_for_error} target: {target}. "
+                f"Available targets and aliases: {available}"
+            )
+
+        resolved_level, canonical_target = canonical
+        return self._target_resolution_from_canonical(
+            target,
+            normalized_target,
+            resolved_level,
+            canonical_target,
+        )
+
+    def _features_for_component_score(self, component_score: str) -> list[str]:
+        if self.result.component_config is None:
+            raise ValueError("Run load_module1_config() first.")
+
+        for component_name, component_config in self.result.component_config[
+            "components"
+        ].items():
+            score_config = component_config.get("score", {})
+
+            if score_config.get("output") != component_score:
+                continue
+
+            function = score_config.get("function")
+
+            if function == "single_feature_score":
+                feature = score_config.get("input")
+                return [] if feature is None else [feature]
+
+            if function == "weighted_feature_score":
+                return [
+                    item["feature"]
+                    for item in score_config.get("inputs", [])
+                    if "feature" in item
+                ]
+
+            if function == "curve_move_driver_score":
+                return [
+                    item["feature"]
+                    for item in score_config.get("inputs", [])
+                    if "feature" in item
+                ]
+
+            raise ValueError(
+                f"Unsupported score function for {component_name}: {function}"
+            )
+
+        raise ValueError(f"Component score not found in component_config: {component_score}")
+
+    def _raw_input_dependencies_for_feature(
+        self,
+        feature_name: str,
+        visited=None,
+    ) -> tuple[tuple[str, ...], dict[str, tuple[str, ...]]]:
+        if visited is None:
+            visited = set()
+
+        if feature_name in visited:
+            raise ValueError(f"Circular feature dependency detected: {feature_name}")
+
+        visited.add(feature_name)
+
+        if self.result.data is not None and feature_name in self.result.data.columns:
+            return (feature_name,), {feature_name: (feature_name,)}
+
+        if self.result.feature_config is None:
+            raise ValueError("Run load_module1_config() first.")
+
+        feature_defs = self.result.feature_config["features"]
+
+        if feature_name not in feature_defs:
+            raise ValueError(f"Feature not found in feature_config: {feature_name}")
+
+        definition = feature_defs[feature_name]
+        method = definition.get("method")
+
+        if method in {"change", "pct_change", "level"}:
+            input_name = definition.get("input")
+            if input_name is None:
+                raise ValueError(f"Feature {feature_name} is missing input.")
+
+            raw_inputs, dependency_map = self._raw_input_dependencies_for_feature(
+                input_name,
+                visited,
+            )
+            dependency_map = dependency_map.copy()
+            dependency_map[feature_name] = raw_inputs
+            return raw_inputs, dependency_map
+
+        if method == "spread":
+            inputs = definition.get("inputs")
+            if not isinstance(inputs, list) or len(inputs) != 2:
+                raise ValueError(
+                    f"Spread feature {feature_name} requires exactly two inputs."
+                )
+
+            raw_inputs = []
+            dependency_map = {}
+            for input_name in inputs:
+                input_raw_inputs, input_dependency_map = (
+                    self._raw_input_dependencies_for_feature(
+                        input_name,
+                        visited.copy(),
+                    )
+                )
+                raw_inputs.extend(input_raw_inputs)
+                dependency_map.update(input_dependency_map)
+
+            raw_inputs = tuple(dict.fromkeys(raw_inputs))
+            dependency_map[feature_name] = raw_inputs
+            return raw_inputs, dependency_map
+
+        raise ValueError(f"Unsupported feature method for {feature_name}: {method}")
+
+    def _component_label_columns_for_scores(
+        self,
+        component_score_cols: list[str],
+    ) -> list[str]:
+        if self.result.component_config is None:
+            raise ValueError("Run load_module1_config() before stance diagnostics.")
+
+        label_cols = []
+        for component_score_col in component_score_cols:
+            for component in self.result.component_config["components"].values():
+                score_output = component.get("score", {}).get("output")
+                if score_output != component_score_col:
+                    continue
+
+                label_output = component.get("label", {}).get("output")
+                if label_output is not None:
+                    label_cols.append(label_output)
+                break
+            else:
+                raise ValueError(
+                    "Unable to resolve component label for score column: "
+                    f"{component_score_col}"
+                )
+
+        return label_cols
+
+    def _normalize_dependency_level(
+        self,
+        target_level: str | None,
+        dependency_level: str | None,
+    ) -> str:
+        requested = "auto" if dependency_level is None else str(dependency_level)
+        normalized = self._normalize_review_label(requested)
+        if normalized == "labels":
+            raise ValueError(
+                'dependency_level="labels" is not supported. Labels are selected '
+                "with include_labels, not as a dependency level."
+            )
+
+        aliases = {
+            "raw": "raw_inputs",
+            "raw_input": "raw_inputs",
+            "inputs": "raw_inputs",
+            "component": "components",
+            "feature": "features",
+            "none": "none",
+        }
+        normalized = aliases.get(normalized, normalized)
+
+        if target_level == "raw_input":
+            if normalized in {"auto", "none"}:
+                return "none"
+            raise ValueError("raw_input targets do not have lower-level dependencies.")
+
+        if target_level == "feature":
+            if normalized == "auto":
+                return "raw_inputs"
+            if normalized in {"none", "raw_inputs", "full"}:
+                return normalized
+            if normalized in {"components", "stances", "stance"}:
+                raise ValueError(
+                    f"feature targets cannot request {dependency_level} dependencies."
+                )
+            raise ValueError(f"Unsupported dependency_level for feature: {dependency_level}")
+
+        if target_level == "component":
+            if normalized == "auto":
+                return "features"
+            if normalized in {"none", "features", "raw_inputs", "full"}:
+                return normalized
+            if normalized in {"stance", "stances", "components"}:
+                raise ValueError(
+                    f"component targets cannot request {dependency_level} dependencies."
+                )
+            raise ValueError(
+                f"Unsupported dependency_level for component: {dependency_level}"
+            )
+
+        if target_level == "stance":
+            if normalized == "auto":
+                return "components"
+            if normalized in {
+                "none",
+                "components",
+                "features",
+                "raw_inputs",
+                "full",
+            }:
+                return normalized
+            if normalized in {"stance", "stances"}:
+                raise ValueError(
+                    f"stance targets cannot request {dependency_level} dependencies."
+                )
+            raise ValueError(f"Unsupported dependency_level for stance: {dependency_level}")
+
+        raise ValueError(f"Unsupported target level: {target_level}")
+
+    def _dependencies_for_resolution(
+        self,
+        resolution: TargetResolution,
+        *,
+        dependency_level: str = "raw_inputs",
+    ) -> TargetDependency:
+        normalized_dependency_level = self._normalize_dependency_level(
+            resolution.level,
+            dependency_level,
+        )
+
+        if resolution.kind == "target_group":
+            component_score_cols = []
+            component_label_cols = []
+            feature_cols = []
+            raw_input_cols = []
+            feature_dependency_map = {}
+
+            for level, canonical_target in resolution.related_targets:
+                member = self._target_resolution_from_canonical(
+                    resolution.requested_target,
+                    resolution.normalized_target,
+                    level,
+                    canonical_target,
+                    kind="target_group_member",
+                )
+                member_dependency = self._dependencies_for_resolution(
+                    member,
+                    dependency_level=normalized_dependency_level,
+                )
+                component_score_cols.extend(member_dependency.component_score_cols)
+                component_label_cols.extend(member_dependency.component_label_cols)
+                feature_cols.extend(member_dependency.feature_cols)
+                raw_input_cols.extend(member_dependency.raw_input_cols)
+                feature_dependency_map.update(
+                    member_dependency.feature_dependency_map
+                )
+
+            return TargetDependency(
+                resolution=resolution,
+                target_members=resolution.related_targets,
+                component_score_cols=tuple(dict.fromkeys(component_score_cols)),
+                component_label_cols=tuple(dict.fromkeys(component_label_cols)),
+                feature_cols=tuple(dict.fromkeys(feature_cols)),
+                raw_input_cols=tuple(sorted(dict.fromkeys(raw_input_cols))),
+                feature_dependency_map=feature_dependency_map,
+                supported=resolution.supported,
+            )
+
+        if resolution.level == "raw_input":
+            if normalized_dependency_level not in {"none"}:
+                raise ValueError(
+                    "raw_input targets do not have lower-level dependencies."
+                )
+            return TargetDependency(
+                resolution=resolution,
+                target_members=resolution.related_targets,
+                supported=resolution.supported,
+            )
+
+        if resolution.level == "feature":
+            feature_cols = tuple(
+                col
+                for col in [resolution.score_col]
+                if col is not None and normalized_dependency_level == "full"
+            )
+            raw_input_cols = []
+            feature_dependency_map = {}
+            if normalized_dependency_level in {"raw_inputs", "full"}:
+                raw_inputs, feature_dependency_map = (
+                    self._raw_input_dependencies_for_feature(
+                        resolution.canonical_target
+                    )
+                )
+                raw_input_cols.extend(raw_inputs)
+
+            return TargetDependency(
+                resolution=resolution,
+                target_members=resolution.related_targets,
+                feature_cols=feature_cols,
+                raw_input_cols=tuple(sorted(dict.fromkeys(raw_input_cols))),
+                feature_dependency_map=feature_dependency_map,
+                supported=resolution.supported,
+            )
+
+        if normalized_dependency_level == "none":
+            return TargetDependency(
+                resolution=resolution,
+                target_members=resolution.related_targets,
+                supported=resolution.supported,
+            )
+
+        if resolution.level == "stance":
+            component_score_cols = resolution.related_component_score_cols
+            component_label_cols = tuple(
+                self._component_label_columns_for_scores(list(component_score_cols))
+            )
+        elif resolution.level == "component":
+            component_score_cols = tuple(
+                col for col in [resolution.score_col] if col is not None
+            )
+            component_label_cols = tuple(
+                col for col in [resolution.label_col] if col is not None
+            )
+        else:
+            component_score_cols = ()
+            component_label_cols = ()
+
+        feature_cols = []
+        raw_input_cols = []
+        feature_dependency_map = {}
+
+        if normalized_dependency_level in {"features", "raw_inputs", "full"}:
+            for component_score_col in component_score_cols:
+                component_features = self._features_for_component_score(
+                    component_score_col
+                )
+                feature_cols.extend(component_features)
+
+        if normalized_dependency_level in {"raw_inputs", "full"}:
+            for feature_name in feature_cols:
+                feature_raw_inputs, feature_map = (
+                    self._raw_input_dependencies_for_feature(feature_name)
+                )
+                raw_input_cols.extend(feature_raw_inputs)
+                feature_dependency_map.update(feature_map)
+
+        return TargetDependency(
+            resolution=resolution,
+            target_members=resolution.related_targets,
+            component_score_cols=tuple(dict.fromkeys(component_score_cols)),
+            component_label_cols=tuple(dict.fromkeys(component_label_cols)),
+            feature_cols=tuple(dict.fromkeys(feature_cols)),
+            raw_input_cols=tuple(sorted(dict.fromkeys(raw_input_cols))),
+            feature_dependency_map=feature_dependency_map,
+            supported=resolution.supported,
+        )
+
+    def _required_output_table(
+        self,
+        table_name: str,
+        *,
+        purpose: str,
+    ) -> pd.DataFrame:
+        table = getattr(self.result, table_name)
+        if table is not None:
+            return table
+
+        missing_steps = {
+            "data": "load_data()",
+            "features": "calculate_features()",
+            "scores": "calculate_component_scores()",
+            "labels": "calculate_component_labels()",
+            "exposure_stance": "calculate_exposure_stance()",
+        }
+        step = missing_steps.get(table_name, f"create {table_name}")
+        raise ValueError(f"Run {step} before {purpose}; missing self.{table_name}.")
+
+    def _window_series_or_frame(self, obj, start=None, end=None):
+        if obj is None:
+            return None
+        result = obj.copy()
+        if start is not None:
+            result = result.loc[result.index >= pd.to_datetime(start)]
+        if end is not None:
+            result = result.loc[result.index <= pd.to_datetime(end)]
+        return result
+
+    def _add_context_frame(
+        self,
+        parts: list[pd.DataFrame],
+        column_roles: dict[str, str],
+        source_layer_mapping: dict[str, str],
+        source_column_mapping: dict[str, str],
+        frame: pd.DataFrame | None,
+        *,
+        role: str,
+        source_layer: str,
+        source_table: str,
+        columns: list[str],
+        target_list: list[str],
+    ) -> None:
+        if frame is None or not columns:
+            return
+
+        missing = [col for col in columns if col not in frame.columns]
+        if missing:
+            raise ValueError(
+                f"Missing {source_layer} column(s) in self.{source_table}: {missing}"
+            )
+
+        available_cols = [col for col in columns if col not in column_roles]
+        if not available_cols:
+            return
+
+        parts.append(frame[available_cols].copy())
+        for col in available_cols:
+            column_roles[col] = role
+            source_layer_mapping[col] = source_layer
+            source_column_mapping[col] = f"{source_table}.{col}"
+            target_list.append(col)
+
+    def _resolved_path_metadata(
+        self,
+        resolution: TargetResolution,
+        dependency: TargetDependency,
+    ) -> dict:
+        return {
+            "target_members": dependency.target_members,
+            "component_scores": dependency.component_score_cols,
+            "component_labels": dependency.component_label_cols,
+            "features": dependency.feature_cols,
+            "raw_inputs": dependency.raw_input_cols,
+            "feature_to_raw_inputs": dependency.feature_dependency_map,
+            "supported": dependency.supported,
+            "target_level": resolution.level,
+        }
+
     def _first_valid_dates_by_column(self, table: pd.DataFrame | None) -> pd.Series | None:
         return _first_valid_dates_by_column(table)
 
@@ -135,4 +952,313 @@ class Module1Analysis:
             labels=self.result.labels,
             exposure_stance=self.result.exposure_stance,
             n=n,
+        )
+
+    def get_target_context(
+        self,
+        target,
+        level,
+        dependency_level="auto",
+        include_labels=True,
+        include_strength=True,
+        context_id=None,
+        start=None,
+        end=None,
+        ffill_inputs=True,
+    ) -> TargetContextResult:
+        """
+        Retrieve target outputs and lower-level dependencies for explicit dates.
+
+        Module1Analysis is result-only and does not resolve historical
+        context_id windows.
+        """
+        if context_id is not None:
+            raise ValueError(
+                "Module1Analysis.get_target_context(...) accepts explicit "
+                "start/end only; resolve context_id before calling it."
+            )
+
+        normalized_level = self._normalize_target_level(level)
+        normalized_dependency_level = self._normalize_dependency_level(
+            normalized_level,
+            dependency_level,
+        )
+
+        resolution = self._resolve_target_for_context(target, normalized_level)
+        dependency = self._dependencies_for_resolution(
+            resolution,
+            dependency_level=normalized_dependency_level,
+        )
+
+        parts = []
+        column_roles = {}
+        source_layer_mapping = {}
+        source_column_mapping = {}
+        target_columns = []
+        component_score_columns = []
+        component_label_columns = []
+        feature_columns = []
+        raw_input_columns = []
+        label_columns = []
+        strength_columns = []
+
+        if normalized_level == "raw_input":
+            data = self._required_output_table("data", purpose="target context retrieval")
+            frame = self._window_series_or_frame(data, start, end)
+            self._add_context_frame(
+                parts,
+                column_roles,
+                source_layer_mapping,
+                source_column_mapping,
+                frame,
+                role="target_raw_input",
+                source_layer="raw_input",
+                source_table="data",
+                columns=[resolution.score_col],
+                target_list=target_columns,
+            )
+
+        if normalized_level == "feature":
+            features = self._required_output_table(
+                "features",
+                purpose="target context retrieval",
+            )
+            frame = self._window_series_or_frame(features, start, end)
+            self._add_context_frame(
+                parts,
+                column_roles,
+                source_layer_mapping,
+                source_column_mapping,
+                frame,
+                role="target_feature",
+                source_layer="feature",
+                source_table="features",
+                columns=[resolution.score_col],
+                target_list=target_columns,
+            )
+            feature_columns.extend(target_columns)
+
+        if normalized_level == "component":
+            scores = self._required_output_table(
+                "scores",
+                purpose="target context retrieval",
+            )
+            score_frame = self._window_series_or_frame(scores, start, end)
+            self._add_context_frame(
+                parts,
+                column_roles,
+                source_layer_mapping,
+                source_column_mapping,
+                score_frame,
+                role="target_component_score",
+                source_layer="component_score",
+                source_table="scores",
+                columns=[resolution.score_col],
+                target_list=target_columns,
+            )
+            component_score_columns.extend(target_columns)
+            if include_labels and resolution.label_col is not None:
+                labels = self._required_output_table(
+                    "labels",
+                    purpose="target context retrieval",
+                )
+                label_frame = self._window_series_or_frame(labels, start, end)
+                self._add_context_frame(
+                    parts,
+                    column_roles,
+                    source_layer_mapping,
+                    source_column_mapping,
+                    label_frame,
+                    role="target_component_label",
+                    source_layer="component_label",
+                    source_table="labels",
+                    columns=[resolution.label_col],
+                    target_list=label_columns,
+                )
+                component_label_columns.extend(label_columns)
+
+        if normalized_level == "stance":
+            exposure_stance = self._required_output_table(
+                "exposure_stance",
+                purpose="target context retrieval",
+            )
+            stance_frame = self._window_series_or_frame(exposure_stance, start, end)
+            self._add_context_frame(
+                parts,
+                column_roles,
+                source_layer_mapping,
+                source_column_mapping,
+                stance_frame,
+                role="target_stance_score",
+                source_layer="stance_score",
+                source_table="exposure_stance",
+                columns=[resolution.score_col],
+                target_list=target_columns,
+            )
+            if include_labels and resolution.label_col is not None:
+                self._add_context_frame(
+                    parts,
+                    column_roles,
+                    source_layer_mapping,
+                    source_column_mapping,
+                    stance_frame,
+                    role="target_stance_label",
+                    source_layer="stance_label",
+                    source_table="exposure_stance",
+                    columns=[resolution.label_col],
+                    target_list=label_columns,
+                )
+            if include_strength and resolution.strength_col is not None:
+                self._add_context_frame(
+                    parts,
+                    column_roles,
+                    source_layer_mapping,
+                    source_column_mapping,
+                    stance_frame,
+                    role="target_stance_strength",
+                    source_layer="stance_strength",
+                    source_table="exposure_stance",
+                    columns=[resolution.strength_col],
+                    target_list=strength_columns,
+                )
+
+        should_include_components = normalized_dependency_level in {
+            "components",
+            "full",
+        }
+        if normalized_level == "stance" and should_include_components:
+            scores = self._required_output_table(
+                "scores",
+                purpose="target context retrieval",
+            )
+            score_frame = self._window_series_or_frame(scores, start, end)
+            self._add_context_frame(
+                parts,
+                column_roles,
+                source_layer_mapping,
+                source_column_mapping,
+                score_frame,
+                role="component_score",
+                source_layer="component_score",
+                source_table="scores",
+                columns=list(dependency.component_score_cols),
+                target_list=component_score_columns,
+            )
+            if include_labels and dependency.component_label_cols:
+                labels = self._required_output_table(
+                    "labels",
+                    purpose="target context retrieval",
+                )
+                label_frame = self._window_series_or_frame(labels, start, end)
+                self._add_context_frame(
+                    parts,
+                    column_roles,
+                    source_layer_mapping,
+                    source_column_mapping,
+                    label_frame,
+                    role="component_label",
+                    source_layer="component_label",
+                    source_table="labels",
+                    columns=list(dependency.component_label_cols),
+                    target_list=component_label_columns,
+                )
+                label_columns.extend(
+                    col for col in component_label_columns if col not in label_columns
+                )
+
+        should_include_features = normalized_dependency_level in {
+            "features",
+            "full",
+        }
+        if normalized_level in {"component", "stance"} and should_include_features:
+            features = self._required_output_table(
+                "features",
+                purpose="target context retrieval",
+            )
+            feature_frame = self._window_series_or_frame(features, start, end)
+            self._add_context_frame(
+                parts,
+                column_roles,
+                source_layer_mapping,
+                source_column_mapping,
+                feature_frame,
+                role="feature",
+                source_layer="feature",
+                source_table="features",
+                columns=list(dependency.feature_cols),
+                target_list=feature_columns,
+            )
+
+        should_include_raw_inputs = normalized_dependency_level in {
+            "raw_inputs",
+            "full",
+        }
+        if should_include_raw_inputs and dependency.raw_input_cols:
+            data = self._required_output_table("data", purpose="target context retrieval")
+            raw_frame = self._window_series_or_frame(data, start, end)
+            if ffill_inputs:
+                raw_frame = raw_frame.ffill()
+            self._add_context_frame(
+                parts,
+                column_roles,
+                source_layer_mapping,
+                source_column_mapping,
+                raw_frame,
+                role="raw_input",
+                source_layer="raw_input",
+                source_table="data",
+                columns=list(dependency.raw_input_cols),
+                target_list=raw_input_columns,
+            )
+
+        data = pd.concat(parts, axis=1) if parts else pd.DataFrame()
+        data = data.loc[:, ~data.columns.duplicated()]
+
+        resolution_metadata = resolution.to_target_info()
+        resolution_metadata.update(
+            {
+                "requested_target": resolution.requested_target,
+                "normalized_target": resolution.normalized_target,
+                "kind": resolution.kind,
+                "related_targets": resolution.related_targets,
+            }
+        )
+        request_metadata = {
+            "requested_dependency_level": dependency_level,
+            "effective_dependency_level": normalized_dependency_level,
+            "include_labels": include_labels,
+            "include_strength": include_strength,
+            "context_id": None,
+            "start": start,
+            "end": end,
+        }
+        resolved_path_metadata = self._resolved_path_metadata(resolution, dependency)
+        returned_columns = {
+            "target": tuple(dict.fromkeys(target_columns)),
+            "component_scores": tuple(dict.fromkeys(component_score_columns)),
+            "component_labels": tuple(dict.fromkeys(component_label_columns)),
+            "features": tuple(dict.fromkeys(feature_columns)),
+            "raw_inputs": tuple(dict.fromkeys(raw_input_columns)),
+            "labels": tuple(dict.fromkeys(label_columns)),
+            "strength": tuple(dict.fromkeys(strength_columns)),
+        }
+        metadata = {
+            "target": target,
+            "level": normalized_level,
+            "ffill_inputs": ffill_inputs,
+            "column_roles": column_roles,
+        }
+
+        return TargetContextResult(
+            resolution=resolution_metadata,
+            request=request_metadata,
+            resolved_path=resolved_path_metadata,
+            returned_columns=returned_columns,
+            data=data,
+            source_layer_mapping=source_layer_mapping,
+            source_column_mapping=source_column_mapping,
+            start=start,
+            end=end,
+            context_id=None,
+            metadata=metadata,
         )
