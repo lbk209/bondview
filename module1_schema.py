@@ -2252,11 +2252,11 @@ def validate_module1_config(config: dict) -> dict:
             "threshold_bucket",
             "score_bucket",
         }
-        optional_output_fields = {
+        required_state_input_output_fields = (
             "raw_output",
             "stabilized_output",
             "stabilization_changed_output",
-        }
+        )
 
         state_inputs = rule_mapped.get("state_inputs")
         ordered_names = []
@@ -2323,16 +2323,37 @@ def validate_module1_config(config: dict) -> dict:
                     "rule_mapped classification must be threshold_state, threshold_bucket, or score_bucket.",
                 )
 
-            for output_field in optional_output_fields:
+            for output_field in required_state_input_output_fields:
                 output_name = state_input.get(output_field)
-                if output_name is not None and not non_empty_string(output_name):
+                if output_field not in state_input:
+                    add_issue(
+                        section_name,
+                        stance_name,
+                        f"{input_prefix}.{output_field}",
+                        "missing",
+                        f"rule_mapped state input {output_field} is required.",
+                    )
+                elif not non_empty_string(output_name):
                     add_issue(
                         section_name,
                         stance_name,
                         f"{input_prefix}.{output_field}",
                         "invalid",
-                        f"rule_mapped state input {output_field} must be a non-empty string when present.",
+                        f"rule_mapped state input {output_field} must be a non-empty string.",
                     )
+
+            diagnostic_component = state_input.get("diagnostic_component")
+            if (
+                diagnostic_component is not None
+                and not non_empty_string(diagnostic_component)
+            ):
+                add_issue(
+                    section_name,
+                    stance_name,
+                    f"{input_prefix}.diagnostic_component",
+                    "invalid",
+                    "rule_mapped state input diagnostic_component must be a non-empty string when present.",
+                )
 
             values = []
             if classification == "threshold_state":
