@@ -148,6 +148,11 @@ class RegimeModule:
         "default_horizons",
         "horizon_overrides",
         "horizons",
+        "features",
+        "scores",
+        "labels",
+        "stance_scores",
+        "exposure_stance",
     )
 
     def __init__(
@@ -660,37 +665,10 @@ class RegimeModule:
 
 
     def calculate_features(self) -> pd.DataFrame:
-        if self.data is None:
-            raise ValueError("Run load_data() before calculate_features().")
-
-        if self.feature_config is None:
-            raise ValueError("Run load_module1_config() before calculate_features().")
-
-        definitions = self.feature_config["features"]
-        features = pd.DataFrame(index=self.data.index)
-        unresolved = dict(definitions)
-
-        while unresolved:
-            progressed = False
-
-            for name, definition in list(unresolved.items()):
-                try:
-                    features[name] = self._calculate_feature_from_definition(
-                        definition,
-                        features,
-                    )
-                except KeyError:
-                    continue
-
-                del unresolved[name]
-                progressed = True
-
-            if not progressed:
-                unresolved_names = ", ".join(sorted(unresolved))
-                raise ValueError(f"Unable to resolve feature dependencies: {unresolved_names}")
-
-        self.features = features
-        return features
+        self._sync_setup_to_calculator()
+        result = self.calculator.calculate_features()
+        self._sync_setup_from_calculator()
+        return result
 
 
     def _normalize_score_input(
@@ -880,18 +858,10 @@ class RegimeModule:
 
 
     def align_component_scores(self) -> pd.DataFrame:
-        """
-        Align component scores to the Module 1 output index.
-
-        Raw data and feature construction remain sparse. This alignment happens only
-        after component scores are calculated so monthly-driven component scores can
-        be used on daily output rows without back-filling.
-        """
-        if self.scores is None:
-            raise ValueError("Run calculate_component_scores() before align_component_scores().")
-
-        self.scores = self.scores.reindex(self.features.index).ffill()
-        return self.scores
+        self._sync_setup_to_calculator()
+        result = self.calculator.align_component_scores()
+        self._sync_setup_from_calculator()
+        return result
 
 
     def _calculate_single_feature_component_score(
@@ -1891,151 +1861,17 @@ class RegimeModule:
 
 
     def calculate_component_scores(self) -> pd.DataFrame:
-        if self.features is None:
-            raise ValueError("Run calculate_features() before calculate_component_scores().")
-
-        if self.component_config is None:
-            raise ValueError(
-                "Run load_module1_config() before calculate_component_scores()."
-            )
-
-        scores = pd.DataFrame(index=self.features.index)
-        for component_name, component in self.component_config["components"].items():
-            score_config = component.get("score", {})
-            output = score_config.get("output")
-            function = score_config.get("function")
-
-            if output is None:
-                raise ValueError(f"Component {component_name} score is missing output.")
-
-            normalization = score_config.get("normalization")
-            normalization_horizon = score_config.get(
-                "normalization_horizon",
-                "normalization",
-            )
-
-            if score_config.get("state_transform") == "fixed_anchor":
-                score = self._calculate_current_state_component_score(
-                    component_name,
-                    score_config,
-                )
-                score = self._clip_score(score, score_config.get("clip"))
-                scores[output] = score
-                continue
-
-            if function == "single_feature_score":
-                score = self._calculate_single_feature_component_score(
-                    component_name,
-                    score_config,
-                    normalization,
-                    normalization_horizon,
-                )
-
-            elif function == "weighted_feature_score":
-                score = self._calculate_weighted_feature_component_score(
-                    component_name,
-                    score_config,
-                    normalization,
-                    normalization_horizon,
-                )
-
-            elif function == "curve_move_driver_score":
-                score = self._calculate_curve_move_driver_score(
-                    component_name,
-                    score_config,
-                )
-
-            else:
-                raise ValueError(
-                    f"Unsupported score function for {component_name}: {function}"
-                )
-
-            score = self._smooth_score(score, score_config.get("smoothing"))
-            score = self._clip_score(score, score_config.get("clip"))
-            scores[output] = score
-
-        self.scores = scores
-        self.align_component_scores()
-        return self.scores
+        self._sync_setup_to_calculator()
+        result = self.calculator.calculate_component_scores()
+        self._sync_setup_from_calculator()
+        return result
 
 
     def calculate_component_labels(self) -> pd.DataFrame:
-        if self.scores is None:
-            raise ValueError("Run calculate_component_scores() before calculate_component_labels().")
-
-        if self.component_config is None:
-            raise ValueError(
-                "Run load_module1_config() before calculate_component_labels()."
-            )
-
-        labels = pd.DataFrame(index=self.scores.index)
-
-        def calculate_threshold_labels(component_name, source, label_config):
-            thresholds = label_config.get("thresholds", {})
-            label_names = label_config.get("labels", {})
-            positive_threshold = thresholds.get("positive")
-            negative_threshold = thresholds.get("negative")
-
-            if positive_threshold is None or negative_threshold is None:
-                raise ValueError(
-                    f"Component {component_name} label thresholds are incomplete."
-                )
-
-            def label_score(value):
-                if pd.isna(value):
-                    return pd.NA
-                if value >= positive_threshold:
-                    return label_names.get("positive")
-                if value <= negative_threshold:
-                    return label_names.get("negative")
-                return label_names.get("neutral")
-
-            return self.scores[source].apply(label_score)
-
-        def calculate_bucket_labels(component_name, source, label_config):
-            label_names = label_config.get("labels", {})
-            bucket_config = self._component_bucket_config(component_name)
-            bucket_to_label_key = self._component_bucket_labels(component_name)
-
-            def label_score(value):
-                if pd.isna(value):
-                    return pd.NA
-                bucket_name = self._component_bucket_for_score(value, bucket_config)
-                return label_names.get(bucket_to_label_key[bucket_name])
-
-            return self.scores[source].apply(label_score)
-
-        for component_name, component in self.component_config["components"].items():
-            label_config = component.get("label", {})
-            output = label_config.get("output")
-            source = label_config.get("source")
-            mode = label_config.get("mode")
-
-            if output is None or source is None:
-                raise ValueError(f"Component {component_name} label is missing output/source.")
-
-            if source not in self.scores.columns:
-                raise ValueError(f"Missing score for {component_name} label: {source}")
-
-            if mode == "threshold":
-                labels[output] = calculate_threshold_labels(
-                    component_name,
-                    source,
-                    label_config,
-                )
-            elif mode == "bucket":
-                labels[output] = calculate_bucket_labels(
-                    component_name,
-                    source,
-                    label_config,
-                )
-            else:
-                raise ValueError(
-                    f"Unsupported label mode for {component_name}: {mode}"
-                )
-
-        self.labels = labels
-        return labels
+        self._sync_setup_to_calculator()
+        result = self.calculator.calculate_component_labels()
+        self._sync_setup_from_calculator()
+        return result
 
 
     def _label_stance_direction(
@@ -3091,88 +2927,19 @@ class RegimeModule:
 
 
     def calculate_exposure_stance(self) -> pd.DataFrame:
-        if self.scores is None:
-            raise ValueError("Run calculate_component_scores() before calculate_exposure_stance().")
-
-        if self.exposure_stance_config is None:
-            raise ValueError(
-                "Run load_module1_config() before calculate_exposure_stance()."
-            )
-
-        rules = self.exposure_stance_config["stance_label_rules"]
-        direction_thresholds = rules.get("direction_thresholds", {})
-        strength_thresholds = rules.get("strength_thresholds", {})
-        neutral_strength = rules.get("neutral_strength", "weak")
-
-        for key in ["positive_min", "negative_max"]:
-            if key not in direction_thresholds:
-                raise ValueError(f"Missing direction threshold: {key}")
-
-        for key in ["weak_max_abs", "moderate_max_abs", "strong_min_abs"]:
-            if key not in strength_thresholds:
-                raise ValueError(f"Missing strength threshold: {key}")
-
-        stance_scores = pd.DataFrame(index=self.scores.index)
-        exposure_stance = pd.DataFrame(index=self.scores.index)
-
-        for stance_name, stance_config in self.exposure_stance_config[
-            "exposure_stances"
-        ].items():
-            score_output = stance_config.get("score_output")
-            stance_output = stance_config.get("stance_output")
-            strength_output = stance_config.get("strength_output")
-
-            if score_output is None or stance_output is None or strength_output is None:
-                raise ValueError(f"Exposure stance {stance_name} outputs are incomplete.")
-
-            score = self._calculate_exposure_stance_score(
-                stance_name,
-                stance_config,
-            )
-            labels = stance_config.get("labels", {})
-            direction_labels = labels.get("direction", {})
-            strength_labels = labels.get("strength", {})
-
-            direction = score.apply(
-                lambda value: self._label_stance_direction(
-                    value,
-                    direction_thresholds,
-                    direction_labels,
-                )
-            )
-            strength = pd.Series(index=score.index, dtype="object")
-
-            for idx, value in score.items():
-                strength.loc[idx] = self._label_stance_strength(
-                    value,
-                    direction.loc[idx],
-                    direction_labels,
-                    strength_thresholds,
-                    strength_labels,
-                    neutral_strength,
-                )
-
-            stance_scores[score_output] = score
-            exposure_stance[score_output] = score
-            exposure_stance[stance_output] = direction
-            exposure_stance[strength_output] = strength
-
-        self.stance_scores = stance_scores
-        self.exposure_stance = exposure_stance
-        return exposure_stance
+        self._sync_setup_to_calculator()
+        result = self.calculator.calculate_exposure_stance()
+        self._sync_setup_from_calculator()
+        return result
 
 
     def run_module1_pipeline(
         self,
     ) -> pd.DataFrame:
-        """
-        Calculate Module 1 outputs from loaded core files.
-        """
-        self.calculate_features()
-        self.calculate_component_scores()
-        self.calculate_component_labels()
-        self.calculate_exposure_stance()
-        return self.exposure_stance
+        self._sync_setup_to_calculator()
+        result = self.calculator.run_module1_pipeline()
+        self._sync_setup_from_calculator()
+        return result
 
 
     @staticmethod
@@ -3187,53 +2954,10 @@ class RegimeModule:
 
 
     def to_module1_result(self) -> Module1Result:
-        """
-        Return a safe snapshot of completed Module 1 runtime outputs.
-
-        This method does not run or rerun any pipeline step. It only validates
-        that the completed-output tables already exist and copies the current
-        state into a Module1Result.
-        """
-        required_outputs = {
-            "features": self.features,
-            "scores": self.scores,
-            "labels": self.labels,
-            "stance_scores": self.stance_scores,
-            "exposure_stance": self.exposure_stance,
-        }
-        missing = [
-            name
-            for name, value in required_outputs.items()
-            if value is None
-        ]
-        if missing:
-            missing_text = ", ".join(missing)
-            raise ValueError(
-                "Cannot build Module1Result before completed Module 1 outputs "
-                f"exist. Missing: {missing_text}. Run run_module1_pipeline() or "
-                "the required calculation steps first."
-            )
-
-        return Module1Result(
-            data=self._copy_module1_result_value(self.data),
-            features=self._copy_module1_result_value(self.features),
-            scores=self._copy_module1_result_value(self.scores),
-            labels=self._copy_module1_result_value(self.labels),
-            stance_scores=self._copy_module1_result_value(self.stance_scores),
-            exposure_stance=self._copy_module1_result_value(self.exposure_stance),
-            module1_config=self._copy_module1_result_value(self.module1_config),
-            feature_config=self._copy_module1_result_value(self.feature_config),
-            component_config=self._copy_module1_result_value(self.component_config),
-            exposure_stance_config=self._copy_module1_result_value(
-                self.exposure_stance_config
-            ),
-            horizons=self._copy_module1_result_value(self.horizons),
-            default_horizons=self._copy_module1_result_value(self.default_horizons),
-            horizon_overrides=self._copy_module1_result_value(self.horizon_overrides),
-            module1_config_validation=self._copy_module1_result_value(
-                self.module1_config_validation
-            ),
-        )
+        self._sync_setup_to_calculator()
+        result = self.calculator.to_module1_result()
+        self._sync_setup_from_calculator()
+        return result
 
 
     def load_historical_context(
