@@ -75,10 +75,9 @@ class Module1Calculator:
     config/input paths, FRED client setup, core input loading, Module 1 config
     loading, config validation storage, and horizon resolution.
 
-    Core runtime calculation remains in RegimeModule for this migration step.
-    Later split steps are expected to move feature calculation, component score
-    calculation, component label calculation, stance score calculation, exposure
-    stance calculation, and Module1Result production here.
+    Core runtime calculation now lives here. RegimeModule remains a temporary
+    compatibility path for historical review, plotting, tracing, sensitivity
+    diagnostics, and target-context workflows that have not yet moved.
     """
 
     def __init__(
