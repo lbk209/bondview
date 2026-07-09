@@ -1,4 +1,5 @@
 import pandas as pd
+import matplotlib.pyplot as plt
 
 from module1_context import (
     TargetCompareDataset,
@@ -1464,3 +1465,227 @@ class Module1Analysis:
             include_strength=False,
         )
         return list(retrieval.returned_columns["raw_inputs"])
+
+    def _normalize_for_comparison_plot(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Normalize numeric plot columns while preserving unusable columns as NaN.
+        """
+        if df.empty:
+            return df.copy()
+
+        numeric = df.apply(pd.to_numeric, errors="coerce")
+        mean = numeric.mean()
+        std = numeric.std().replace(0, pd.NA)
+        return (numeric - mean) / std
+
+    def _resolve_compare_plot_normalize(
+        self,
+        normalize,
+        dataset: TargetCompareDataset,
+    ) -> bool:
+        if normalize == "auto":
+            return bool(dataset.metadata.get("normalization_recommendation", False))
+        if isinstance(normalize, bool):
+            return normalize
+        raise ValueError('normalize must be one of: "auto", True, False.')
+
+    def _render_compare_dataset_on_axes(
+        self,
+        ax_target,
+        ax_comparison,
+        dataset: TargetCompareDataset,
+        *,
+        normalize: bool,
+        title: str | None = None,
+    ) -> dict:
+        if ax_target is None or ax_comparison is None:
+            raise ValueError("Both target and comparison axes are required.")
+        if not dataset.target_columns:
+            raise ValueError("TargetCompareDataset has no target columns to plot.")
+        if not dataset.comparison_columns:
+            raise ValueError("TargetCompareDataset has no comparison columns to plot.")
+
+        missing_target_cols = [
+            col for col in dataset.target_columns if col not in dataset.data.columns
+        ]
+        missing_comparison_cols = [
+            col for col in dataset.comparison_columns if col not in dataset.data.columns
+        ]
+        if missing_target_cols:
+            raise ValueError(f"Target plot columns are missing: {missing_target_cols}")
+        if missing_comparison_cols:
+            raise ValueError(
+                f"Comparison plot columns are missing: {missing_comparison_cols}"
+            )
+
+        target_plot = dataset.data.loc[:, list(dataset.target_columns)].copy()
+        comparison_plot = dataset.data.loc[:, list(dataset.comparison_columns)].copy()
+
+        target_plot = target_plot.select_dtypes(include="number")
+        comparison_plot = comparison_plot.select_dtypes(include="number")
+        if target_plot.empty:
+            raise ValueError("No numeric target columns are available for plotting.")
+        if comparison_plot.empty:
+            raise ValueError("No numeric comparison columns are available for plotting.")
+
+        if normalize:
+            target_plot = self._normalize_for_comparison_plot(target_plot)
+            comparison_plot = self._normalize_for_comparison_plot(comparison_plot)
+
+        for index, col in enumerate(target_plot.columns):
+            plot_kwargs = {"linewidth": 2.0, "label": f"target: {col}"}
+            if index == 0:
+                plot_kwargs["color"] = "grey"
+            ax_target.plot(target_plot.index, target_plot[col], **plot_kwargs)
+
+        ax_target.axhline(0, linewidth=1, linestyle="--", color="grey")
+        ax_target.set_ylabel(
+            "normalized target" if normalize else "target raw values"
+        )
+
+        for col in comparison_plot.columns:
+            ax_comparison.plot(
+                comparison_plot.index,
+                comparison_plot[col],
+                linewidth=1.2,
+                alpha=0.75,
+                label=f"comparison: {col}",
+            )
+        ax_comparison.set_ylabel(
+            "normalized comparisons" if normalize else "comparison raw values"
+        )
+
+        if title is None:
+            title = (
+                f"{dataset.resolution.get('canonical_target')} "
+                f"({dataset.target_level}) vs {dataset.effective_compare}"
+            )
+            if dataset.context_id is not None:
+                title = f"{title} [{dataset.context_id}]"
+        ax_target.set_title(title)
+
+        lines_1, labels_1 = ax_target.get_legend_handles_labels()
+        lines_2, labels_2 = ax_comparison.get_legend_handles_labels()
+        ax_target.legend(lines_1 + lines_2, labels_1 + labels_2, loc="best")
+
+        plotted_data = pd.concat([target_plot, comparison_plot], axis=1)
+        return {
+            "target_plot": target_plot.copy(),
+            "comparison_plot": comparison_plot.copy(),
+            "plotted_data": plotted_data.copy(),
+            "target_cols": tuple(target_plot.columns),
+            "comparison_cols": tuple(comparison_plot.columns),
+            "axes": {
+                "target": ax_target,
+                "comparison": ax_comparison,
+            },
+        }
+
+    def plot_target_comparison_dataset(
+        self,
+        dataset: TargetCompareDataset,
+        *,
+        target_label: str | None = None,
+        normalize="auto",
+        return_data: bool = False,
+        ax=None,
+        figsize=(12, 6),
+        title: str | None = None,
+    ):
+        normalize_resolved = self._resolve_compare_plot_normalize(
+            normalize,
+            dataset,
+        )
+
+        if ax is None:
+            fig, ax_target = plt.subplots(figsize=figsize)
+        else:
+            ax_target = ax
+            fig = ax_target.figure
+        ax_comparison = ax_target.twinx()
+
+        if title is None and target_label is not None:
+            title = (
+                f"{target_label} ({dataset.target_level}) vs "
+                f"{dataset.effective_compare}"
+                + (
+                    f" [{dataset.context_id}]"
+                    if dataset.context_id is not None
+                    else ""
+                )
+            )
+
+        rendered = self._render_compare_dataset_on_axes(
+            ax_target,
+            ax_comparison,
+            dataset,
+            normalize=normalize_resolved,
+            title=title,
+        )
+
+        if return_data:
+            plt.close(fig)
+            return {
+                "fig": fig,
+                "axes": rendered["axes"],
+                "dataset": dataset,
+                "plotted_data": rendered["plotted_data"].copy(),
+                "target_plot": rendered["target_plot"].copy(),
+                "comparison_plot": rendered["comparison_plot"].copy(),
+                "target_columns": rendered["target_cols"],
+                "comparison_columns": rendered["comparison_cols"],
+                "compare": dataset.compare,
+                "effective_compare": dataset.effective_compare,
+                "normalize": normalize,
+                "normalize_resolved": normalize_resolved,
+                "start": dataset.start,
+                "end": dataset.end,
+            }
+
+        return fig, (ax_target, ax_comparison)
+
+    def plot_target_comparison(
+        self,
+        target: str,
+        level: str,
+        compare="auto",
+        context_id=None,
+        start=None,
+        end=None,
+        normalize="auto",
+        include_labels: bool = True,
+        include_strength: bool = True,
+        ffill_inputs: bool = True,
+        return_data: bool = False,
+        ax=None,
+        figsize=(12, 6),
+    ):
+        """
+        Plot a target against a lower-layer comparison dataset.
+
+        Module1Analysis accepts explicit start/end only. Resolve historical
+        context_id windows before calling this method.
+        """
+        if context_id is not None:
+            raise ValueError(
+                "Module1Analysis.plot_target_comparison(...) accepts explicit "
+                "start/end only; resolve context_id before calling it."
+            )
+        dataset = self.build_target_comparison_dataset(
+            target=target,
+            level=level,
+            compare=compare,
+            start=start,
+            end=end,
+            include_labels=include_labels,
+            include_strength=include_strength,
+            ffill_inputs=ffill_inputs,
+        )
+        return self.plot_target_comparison_dataset(
+            dataset,
+            target_label=target,
+            normalize=normalize,
+            return_data=return_data,
+            ax=ax,
+            figsize=figsize,
+        )
