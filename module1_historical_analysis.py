@@ -7,9 +7,8 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import yaml
 
-from module1_analysis import Module1Analysis
-from module1_context import TargetCompareDataset, TargetContextResult
-from module1_result import Module1Result
+from module1_analysis import Module1Analysis, TargetCompareDataset, TargetContextResult
+from module1_calculator import Module1Result
 
 
 class Module1HistoricalAnalysis:
