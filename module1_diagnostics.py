@@ -4,10 +4,8 @@ from collections.abc import Mapping
 
 import pandas as pd
 
-from module1_analysis import Module1Analysis
-from module1_context import TargetContextResult
-from module1_calculator import Module1Calculator
-from module1_result import Module1Result
+from module1_analysis import Module1Analysis, TargetContextResult
+from module1_calculator import Module1Calculator, Module1Result
 
 
 @dataclass(frozen=True)
