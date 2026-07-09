@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from numbers import Real
 from pathlib import Path
 from collections.abc import Mapping
+from typing import Any
 
 import pandas as pd
 import yaml
@@ -18,7 +19,24 @@ from module1_schema import (
     _rule_mapped_bucket_classification_from_score,
     validate_module1_config,
 )
-from module1_result import Module1Result
+
+
+@dataclass(frozen=True)
+class Module1Result:
+    data: Any
+    features: Any
+    scores: Any
+    labels: Any
+    stance_scores: Any
+    exposure_stance: Any
+    module1_config: Any
+    feature_config: Any
+    component_config: Any
+    exposure_stance_config: Any
+    horizons: Any
+    default_horizons: Any
+    horizon_overrides: Any
+    module1_config_validation: Any
 
 
 @dataclass
