@@ -69,15 +69,11 @@ class _RuleMappedStanceSpec:
 
 class Module1Calculator:
     """
-    Future owner of the Module 1 runtime pipeline.
+    Owner of the Module 1 runtime pipeline.
 
-    This class now owns the safest mechanical setup responsibilities:
-    config/input paths, FRED client setup, core input loading, Module 1 config
-    loading, config validation storage, and horizon resolution.
-
-    Core runtime calculation now lives here. RegimeModule remains a temporary
-    compatibility path for historical review, plotting, tracing, sensitivity
-    diagnostics, and target-context workflows that have not yet moved.
+    This class owns setup responsibilities, including config/input paths, FRED
+    client setup, core input loading, Module 1 config loading, config validation
+    storage, horizon resolution, and runtime calculation.
     """
 
     def __init__(
@@ -91,9 +87,9 @@ class Module1Calculator:
         """
         Initialize Module 1 setup state and load the core input files.
 
-        The constructor preserves the previous RegimeModule setup behavior: it
-        loads series config, module1 config, and input data, then resolves
-        horizons from YAML defaults plus optional constructor overrides.
+        The constructor loads series config, module1 config, and input data,
+        then resolves horizons from YAML defaults plus optional constructor
+        overrides.
         """
         load_dotenv()
 
@@ -362,6 +358,36 @@ class Module1Calculator:
 
         self.data = df
         return df
+
+    def save_data(self, file, overwrite: bool = False):
+        """
+        Save self.data to CSV.
+
+        If overwrite=False and the file already exists, append a numeric suffix:
+        data.csv -> data_1.csv -> data_2.csv
+        """
+        if self.data is None:
+            return print("ERROR: No data to save")
+
+        path = Path(file)
+
+        if path.exists() and not overwrite:
+            stem = path.stem
+            suffix = path.suffix
+            parent = path.parent
+
+            i = 1
+            while True:
+                new_path = parent / f"{stem}_{i}{suffix}"
+                if not new_path.exists():
+                    path = new_path
+                    break
+                i += 1
+
+        self.data.to_csv(path)
+        print(f"Saved data to: {path}")
+
+        return None
 
     def _load_yaml_config(self, path) -> dict:
         path = Path(path)

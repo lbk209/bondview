@@ -250,8 +250,8 @@ class Module1SensitivityDiagnostics:
         Compare multiple horizon configurations with historical review outputs.
 
         This batch diagnostic creates temporary calculators for local
-        counterfactual runs. It does not mutate any caller-owned calculator,
-        result, or RegimeModule facade state.
+        counterfactual runs. It does not mutate any caller-owned calculator or
+        result state.
         """
         normalized_output = (
             output if pd.isna(output) else str(output).strip().lower()
