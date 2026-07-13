@@ -2,105 +2,63 @@
 
 ## 1. Purpose and Scope
 
-This document explains how Module 1 converts component scores into exposure stance outputs.
+This document explains how Module 1 derives exposure stance scores from component scores.
 
-The stance layer begins after component scores have been calculated. Its responsibility is to produce:
-
-```text
-component scores
-→ numeric stance score
-→ stance direction
-→ stance strength
-```
-
-This document focuses on stance calculation. Feature construction and component score calculation are outside its scope except where their outputs are consumed as stance inputs.
+Feature construction and component score calculation are outside the scope of this document.
 
 The current Module 1 exposure stances are:
 
-- `duration`
-- `credit`
-- `usd_exposure`
-- `curve_positioning`
+* `duration`
+* `credit`
+* `usd_exposure`
+* `curve_positioning`
+
 
 ---
 
 ## 2. Overall Calculation Architecture
 
-### 2.1 End-to-End Stance Flow
+### 2.1 Stance Calculation and Runtime Dispatch
 
-The runtime sequence is:
+`calculate_exposure_stance()` consumes the calculated component scores and processes each configured exposure stance.
+
+It delegates numeric score calculation according to the configured calculation path:
 
 ```text
-calculate_component_scores()
-→ calculate_exposure_stance()
-→ _calculate_exposure_stance_score()
-→ numeric stance score
-→ direction label
-→ strength label
+calculate_exposure_stance()
+└── _calculate_exposure_stance_score()
+    ├── _build_weighted_stance_score_breakdown()
+    └── _build_rule_mapped_stance_score_breakdown()
 ```
 
-`calculate_exposure_stance()` iterates through the configured `exposure_stances`.
+`calculate_exposure_stance()` coordinates calculation and storage of the stance outputs. `_calculate_exposure_stance_score()` selects the configured calculation path, and the corresponding builder calculates the numeric stance score.
 
-For each stance, it:
-
-1. reads the stance configuration;
-2. calculates the numeric stance score;
-3. converts the score into a stance-specific direction label;
-4. converts the score magnitude into a strength label;
-5. writes the score, direction, and strength outputs.
-
-The score calculation itself is routed by `_calculate_exposure_stance_score()`.
+After the score is calculated, `calculate_exposure_stance()` derives and stores the corresponding direction and strength labels.
 
 ### 2.2 Stance Score Calculation Paths
 
 Module 1 currently supports two stance score calculation paths:
 
-| Calculation path | Current stances |
-|---|---|
-| Weighted sum | `usd_exposure` |
-| Rule mapped | `duration`, `credit`, `curve_positioning` |
+| Calculation path | Current stances                           | How the score is produced                                                                                                 |
+|---|---|---|
+| Weighted sum     | `usd_exposure`                            | Direct arithmetic combination of component scores                                                                         |
+| Rule mapped      | `duration`, `credit`, `curve_positioning` | Classification of component scores into states or buckets, followed by rule-case construction and configured score lookup |
 
-The distinction is based on the calculation model, not on whether the implementation is reusable.
+The weighted-sum path combines numeric component scores directly.
 
-The weighted-sum path directly combines component scores numerically.
+The rule-mapped path is used when the relationship among component conditions is represented by a finite rule table rather than a direct arithmetic formula.
 
-The rule-mapped path converts component scores into states or buckets, builds a rule case, and looks up a configured rule score.
+### 2.3 Primary and Derived Outputs
 
-### 2.3 Configuration and Runtime Responsibilities
+The numeric stance score is the primary result of stance calculation and the information-preserving output available to downstream consumers.
 
-The YAML configuration defines the model structure, including:
-
-- stance inputs;
-- input weights;
-- state classifications;
-- state thresholds or buckets;
-- state stabilization settings;
-- rule-score tables;
-- optional score adjustment;
-- output column names;
-- direction labels;
-- strength labels.
-
-Python implements the reusable mechanics that:
-
-- interpret and validate the configuration;
-- select the configured component scores;
-- calculate weighted sums;
-- classify and stabilize rule states;
-- construct rule cases;
-- look up rule scores;
-- apply configured adjustment behavior;
-- assign direction and strength labels.
-
-The model-specific stance structure should remain in configuration where possible. Runtime code should provide the common calculation mechanics.
+Direction and strength labels are derived from that score for human-readable interpretation, diagnostics and audit, plotting and reporting, and historical review.
 
 ---
 
 ## 3. Weighted-Sum Calculation Path
 
-### 3.1 General Calculation
-
-A weighted-sum stance directly combines one or more component score columns:
+A weighted-sum stance multiplies each configured component score by its weight and sums the results.
 
 ```text
 stance_score =
@@ -109,139 +67,99 @@ stance_score =
   + ...
 ```
 
-The runtime sequence is:
+The current weighted-sum stance is `usd_exposure`.
+
+Implementation reference:
 
 ```text
-configured component inputs
-→ validate component columns and weights
-→ calculate each weighted contribution
-→ sum the contributions
-→ final stance score
+_build_weighted_stance_score_breakdown()
 ```
-
-The internal breakdown contains:
-
-- each source component score;
-- each configured weight;
-- each weighted contribution;
-- the final stance score.
-
-Conceptually:
-
-```text
-component contribution = component score × configured weight
-final stance score = sum of component contributions
-```
-
-### 3.2 Behavior of the Weighted-Sum Path
-
-The weighted-sum path does not use:
-
-- state classification;
-- state stabilization;
-- rule cases;
-- rule-score lookup;
-- base rule scores;
-- rule adjustments.
-
-The weighted sum is already the final numeric stance score used for direction and strength labeling.
-
-The weighted-sum implementation preserves missing inputs. If a required component score is missing for a row, the final weighted stance score is also missing for that row.
 
 ---
 
-## 4. Rule-Mapped Calculation Pipeline
+## 4. Rule-Mapped Calculation
 
-The rule-mapped path is used by duration, credit, and curve positioning.
+### 4.1 What Rule Mapping Does
 
-Although their outer configuration uses stance-specific function names, all three are routed to the same rule-mapped calculation builder:
+A rule-mapped stance converts numeric component scores into named conditions, stabilizes those conditions, combines them into one rule case, and looks up the configured base score for that case. If an adjustment is configured, it is applied after the lookup.
 
-```text
-duration_rule_stance
-credit_spread_stance
-curve_positioning_stance
-        ↓
-_build_rule_mapped_stance_score_breakdown()
-```
-
-Their common calculation sequence is:
+The conceptual flow is:
 
 ```text
-component scores
-→ state or bucket classification
-→ state stabilization
-→ rule-case construction
-→ base rule-score lookup
-→ optional score adjustment
+numeric component scores
+→ named states or buckets
+→ stabilized conditions
+→ combined rule case
+→ configured base score
+→ optional adjustment
 → final stance score
 ```
 
-### 4.1 Rule-Mapped Schema Resolution
-
-The rule-mapped calculation begins with:
+A duration example is:
 
 ```text
-_resolve_rule_mapped_stance_schema()
+duration_preference_score
+→ favorable
+
+duration_rate_shock_score
+→ no_shock
+
+inflation_pressure_score
+→ inflation_falling
+
+policy_stance_score
+→ policy_easing
 ```
 
-This resolves the configured `rule_mapped` block into internal specifications describing:
-
-- stance identity and outputs;
-- state inputs;
-- source component-score columns;
-- classification methods;
-- state output columns;
-- stabilization settings;
-- rule-case output;
-- rule-score mapping;
-- optional adjustment metadata.
-
-The primary internal specification types are:
+These conditions are combined into:
 
 ```text
-_RuleMappedStateInputSpec
-_RuleMappedAdjustmentSpec
-_RuleMappedStanceSpec
+favorable|no_shock|inflation_falling|policy_easing
 ```
 
-The resolved stance specification contains:
+The configured duration rule table then supplies the score assigned to that exact case.
+
+The same general mechanism is used by duration, credit, and curve positioning. Their differences are mainly:
+
+* which component scores they use;
+* how those scores are classified;
+* what names they assign to the classified conditions;
+* how many conditions form the rule case;
+* which rule-score table they use;
+* whether they apply a post-lookup adjustment.
+
+The complete runtime process is coordinated by:
 
 ```text
-adjustment: _RuleMappedAdjustmentSpec | None
+_build_rule_mapped_stance_score_breakdown()
 ```
 
-Therefore, adjustment is an optional extension of the rule-mapped path rather than a separate stance calculation architecture.
+It returns the final stance score together with explanatory breakdown data for the classifications, stabilization results, rule case, base score, and any configured adjustment.
 
-### 4.2 Required Component Scores
 
-Each configured rule state input points to a component score column.
 
-Before classification, the runtime verifies that every required score column exists.
+### 4.2 Step 1: Convert Component Scores into States or Buckets
 
-Examples include:
+A finite rule table cannot use every possible numeric score directly. Each rule input is therefore converted into a named condition.
+
+A condition may be a state or a bucket, depending on the input’s classification method.
+
+The current rule-mapped path supports three classification methods:
 
 ```text
-duration_preference
-    source score: duration_preference_score
+threshold_state
+    compare the score with positive and negative thresholds
 
-credit_spread_state
-    source score: credit_spread_state_score
+threshold_bucket
+    locate the score within configured numeric ranges
 
-curve_change
-    source score: curve_change_score
+score_bucket
+    match a discrete score value to its configured bucket
 ```
 
-The source scores are copied into the rule-mapped breakdown and remain available for diagnostics.
+#### 4.2.1 Threshold State
 
-### 4.3 State and Bucket Classification
-
-Each rule input defines one of three classification methods.
-
-#### 4.3.1 Threshold State
-
-`threshold_state` converts a numeric score into positive, neutral, or negative semantic states.
-
-Conceptually:
+`threshold_state` converts a numeric score into one of three semantic states:
 
 ```text
 if score >= positive threshold:
@@ -252,637 +170,484 @@ else:
     neutral state
 ```
 
-The semantic state names are stance-specific.
+The positive, neutral, and negative state names depend on the stance.
 
 Examples:
 
-```text
-duration_preference:
-    positive → favorable
-    neutral  → neutral
-    negative → unfavorable
+| Rule input            | Positive    | Neutral   | Negative      |
+| -------------------- | ---------- | ------- | ------------ |
+| `duration_preference` | `favorable` | `neutral` | `unfavorable` |
+| `credit_spread_state` | `wide`      | `normal`  | `tight`       |
 
-credit_spread_state:
-    positive → wide
-    neutral  → normal
-    negative → tight
-```
-
-Thresholds may come from stance-level state thresholds or from the relevant component label thresholds, depending on the stance configuration.
-
-#### 4.3.2 Threshold Bucket
-
-`threshold_bucket` classifies a score using the source component's configured numeric bucket ranges.
-
-Examples include:
+Conceptually:
 
 ```text
-curve_change:
-    steepening
-    stable
-    flattening
+duration_preference_score above its positive threshold
+→ favorable
 
-curve_state:
-    inverted
-    flat
-    normal
-    steep
+credit_spread_state_score below its negative threshold
+→ tight
 ```
 
-The bucket structure may use:
-
-- minimum boundaries;
-- maximum boundaries;
-- exclusive boundaries;
-- a default bucket;
-- ordered numeric ranges.
-
-#### 4.3.3 Score Bucket
-
-`score_bucket` maps an exact configured score value to a named bucket.
-
-This is used for discrete scores whose values already represent specific cases.
-
-For example, `curve_move_driver_score` maps to cases such as:
+Implementation reference:
 
 ```text
-bull_parallel
-bear_parallel
-front_end_down_long_end_up
-front_end_up_long_end_down
-mixed_or_unclear
+_threshold_state_from_score()
 ```
 
-### 4.4 State Stabilization
+#### 4.2.2 Threshold Bucket
 
-After raw classification, each rule input is stabilized.
+`threshold_bucket` locates a numeric score within one of several configured ranges.
 
-The stabilization settings are:
+Unlike `threshold_state`, it is not limited to three positive, neutral, and negative categories. It can represent several ordered conditions.
+
+Examples:
+
+| Rule input     | Ordered buckets                       |
+| ------------- | ------------------------------------ |
+| `curve_change` | `steepening`, `stable`, `flattening`  |
+| `curve_state`  | `inverted`, `flat`, `normal`, `steep` |
+
+Conceptually:
 
 ```text
-hysteresis_buffer
-min_state_persistence
+curve_change_score falls within the configured steepening range
+→ steepening
+
+curve_change_score falls within the configured central range
+→ stable
+
+curve_state_score falls within the configured inverted range
+→ inverted
 ```
 
-The sequence is:
+The exact boundaries, inclusiveness rules, and default bucket are defined by the component configuration.
+
+Implementation references:
+
+```text
+_threshold_bucket()
+```
+
+#### 4.2.3 Score Bucket
+
+`score_bucket` maps an exact discrete score value directly to its configured bucket.
+
+This method is used when the component score already represents a specific case rather than a position within a continuous numeric range.
+
+`curve_move_driver` uses this method because each configured score corresponds to a particular yield-move pattern.
+
+Examples:
+
+| Discrete score meaning                                                   | Resulting bucket             |
+| ----------------------------------------------------------------------- | -------------------------- |
+| Score configured for a parallel bullish move                             | `bull_parallel`              |
+| Score configured for a parallel bearish move                             | `bear_parallel`              |
+| Score configured for front-end yields falling while long-end yields rise | `front_end_down_long_end_up` |
+| Score configured for front-end yields rising while long-end yields fall  | `front_end_up_long_end_down` |
+| Score configured for no clear directional pattern                        | `mixed_or_unclear`           |
+
+Conceptually:
+
+```text
+curve_move_driver_score matches the configured bull-parallel score
+→ bull_parallel
+
+curve_move_driver_score matches the configured mixed-or-unclear score
+→ mixed_or_unclear
+```
+
+Implementation reference:
+
+```text
+_score_bucket()
+```
+
+### 4.3 Step 2: Stabilize the Classified Conditions
+
+In the rule-mapped path, threshold-based classification converts continuous component scores into discrete conditions. When a component score moves back and forth across a classification boundary, its condition changes each time, which changes the rule case and may repeatedly change the stance score.
+
+The stabilization process reduces this behavior:
 
 ```text
 numeric component score
-→ raw state
-→ hysteresis-aware candidate state
-→ persistence requirement
-→ stabilized state
+→ raw classified condition
+→ hysteresis
+→ minimum persistence
+→ stabilized condition
 ```
 
-#### 4.4.1 Hysteresis
+The stabilized condition, rather than the raw classified condition, is used to construct the rule case.
 
-Hysteresis reduces repeated state switching near a classification boundary.
+#### 4.3.1 Hysteresis
 
-The threshold required to enter a new state can differ from the threshold used to remain in the active state.
+Hysteresis gives the currently active condition some tolerance near a classification boundary.
 
-#### 4.4.2 Minimum State Persistence
+A score may therefore need to move farther across a boundary to enter a new condition than it needs to remain in the current condition.
 
-Minimum state persistence requires a candidate state to remain active for the configured number of observations before replacing the current state.
+This reduces repeated switching caused by small movements around the threshold.
 
-A value of `1` means that no additional persistence delay is required.
+#### 4.3.2 Minimum Persistence
 
-#### 4.4.3 Stabilization Outputs
-
-The breakdown records:
-
-- the raw state;
-- the stabilized state;
-- whether stabilization changed each state;
-- whether stabilization changed any state in the rule case.
-
-The rule case is built from stabilized states, not raw states.
-
-### 4.5 Rule-Case Construction
-
-For each row, the stabilized states are collected in configured input order:
+After hysteresis produces a candidate condition, minimum persistence determines how long that candidate must remain before it replaces the active condition.
 
 ```text
-state_tuple = (
-    stabilized_state_1,
-    stabilized_state_2,
-    ...
-)
+min_state_persistence = 1
+→ accept the candidate condition immediately
+
+min_state_persistence > 1
+→ switch only after the candidate persists for the required observations
 ```
 
-The tuple is converted into a pipe-delimited rule case:
+Hysteresis controls whether a new condition becomes a candidate. Minimum persistence controls when that candidate becomes the active stabilized condition.
+
+Implementation references:
 
 ```text
-_rule_case_from_states(state_tuple)
+_classify_state_series_with_hysteresis()
+_apply_state_persistence()
 ```
 
-Examples:
+### 4.4 Step 3: Construct the Rule Case and Look Up the Base Score
+
+The stabilized conditions are joined in the configured input order to form the rule case.
+
+For example:
 
 ```text
 favorable|no_shock|inflation_falling|policy_easing
-
-negative|tight
-
-steepening|flat|front_end_down_long_end_up
 ```
 
-The ordering of the rule-case parts is defined by the configured `state_inputs`.
-
-If any required state is missing, the rule case and resulting score remain missing.
-
-### 4.6 Base Rule-Score Lookup
-
-The base score is looked up from the configured rule-score table:
+The order is significant because the rule-score table uses this ordered combination as its lookup key:
 
 ```text
-base_score = rule_scores[state_tuple]
+base_score = rule_scores[rule_case]
 ```
 
-The lookup is performed by:
+The rule-score table defines the base score assigned to each valid rule case. If any required condition is missing, the rule case and its base score are also missing.
+
+Implementation references:
 
 ```text
+_rule_case_from_states()
 _lookup_rule_score()
 ```
 
-The YAML rule-score mapping is the model definition. Python does not calculate the base rule score from a generic formula.
 
-This allows different stances to express different economic relationships while using the same lookup mechanics.
+### 4.5 Step 4: Apply an Optional Adjustment
 
-### 4.7 Optional Score Adjustment
+After base-score lookup, the stance follows one of two paths.
 
-After the base score is found, the row is passed to:
+```text
+No adjustment:
+    final stance score = base score
+
+Configured adjustment:
+    final stance score = adjusted base score
+```
+
+Duration and curve positioning currently use the no-adjustment path.
+
+Credit currently adds an intensity-based adjustment.
+
+Implementation reference:
 
 ```text
 _rule_mapped_adjusted_row()
 ```
 
-This method has two behaviors.
-
-#### 4.7.1 No-Adjustment Behavior
-
-When the resolved stance specification has no adjustment configuration:
-
-```text
-spec.adjustment is None
-```
-
-the result is:
-
-```text
-final stance score = base rule score
-```
-
-No identity-adjustment object or no-op adjustment columns are created.
-
-Duration and curve positioning currently use this behavior.
-
-#### 4.7.2 Configured Adjustment Behavior
-
-When adjustment configuration exists, the base score is modified by the configured adjustment mechanics.
-
-The adjustment path may produce:
-
-- a base rule-score column;
-- adjustment input metadata;
-- an adjustment amount;
-- an adjusted final score.
-
-Credit currently uses this behavior.
-
-The current implementation of the adjustment math is credit-specific. Adjustment should therefore be understood as:
-
-```text
-common rule-mapped pipeline
-+ credit-specific score adjustment extension
-```
-
-It is not yet a fully generic adjustment framework for arbitrary rule-mapped stances.
-
 ---
 
 ## 5. Stance Configurations and Differences
 
-The shared calculation mechanisms are described above. This section lists the actual stances and explains only their configuration or behavior differences.
-
 ### 5.1 Configuration Summary
 
 | Stance | Calculation path | Component-score inputs | Classification | Adjustment | Final score output |
-|---|---|---|---|---|---|
+| --- | --- | --- | --- | --- | --- |
 | `duration` | Rule mapped | `duration_preference_score`, `duration_rate_shock_score`, `inflation_pressure_score`, `policy_stance_score` | Threshold states | No | `duration_rule_stance_score` |
 | `credit` | Rule mapped | `credit_spread_change_score`, `credit_spread_state_score` | Threshold states | Credit-specific | `credit_stance_score` |
-| `usd_exposure` | Weighted sum | `fx_score` | Not applicable | Not applicable | `usd_exposure_stance_score` |
 | `curve_positioning` | Rule mapped | `curve_change_score`, `curve_state_score`, `curve_move_driver_score` | Threshold buckets and score bucket | No | `curve_positioning_score` |
+| `usd_exposure` | Weighted sum | `fx_score` | Not applicable | Not applicable | `usd_exposure_stance_score` |
+
+Duration uses stance-level thresholds. Credit reuses component label thresholds, while curve positioning reuses component bucket definitions.
 
 ### 5.2 Duration Stance
 
-Duration uses four rule inputs:
+Duration uses four threshold-state inputs. Their configured order determines the order of conditions in the duration rule case.
+
+| Rule-case order | Rule input            | Source component score      | Positive condition  | Neutral condition  | Negative condition  |
+| -------------- | -------------------- | -------------------------- | ------------------ | ----------------- | ------------------ |
+| 1               | `duration_preference` | `duration_preference_score` | `favorable`         | `neutral`          | `unfavorable`       |
+| 2               | `duration_rate_shock` | `duration_rate_shock_score` | `bullish_shock`     | `no_shock`         | `bearish_shock`     |
+| 3               | `inflation`           | `inflation_pressure_score`  | `inflation_rising`  | `inflation_stable` | `inflation_falling` |
+| 4               | `policy`              | `policy_stance_score`       | `policy_tightening` | `policy_stable`    | `policy_easing`     |
+
+For example, the conditions selected from these four rows form a rule case in the same order:
 
 ```text
-duration_preference
-duration_rate_shock
-inflation
-policy
+favorable|no_shock|inflation_falling|policy_easing
 ```
 
-Their source scores are:
+The current input definitions, classification thresholds, stabilization settings, rule-score mapping, and output names are defined under `exposure_stances.duration` in the loaded Module 1 configuration. The main relevant fields are `rule_mapped.state_inputs`, `state_thresholds`, `state_stabilization`, and `rule_scores`.
 
-```text
-duration_preference_score
-duration_rate_shock_score
-inflation_pressure_score
-policy_stance_score
-```
+Duration uses the ordered four-condition rule table and its stabilization configuration without a post-lookup adjustment.
 
-The state names are:
-
-| Input | Positive | Neutral | Negative |
-|---|---|---|---|
-| `duration_preference` | `favorable` | `neutral` | `unfavorable` |
-| `duration_rate_shock` | `bullish_shock` | `no_shock` | `bearish_shock` |
-| `inflation` | `inflation_rising` | `inflation_stable` | `inflation_falling` |
-| `policy` | `policy_tightening` | `policy_stable` | `policy_easing` |
-
-Duration defines stance-level classification thresholds:
-
-```text
-positive: 0.25
-negative: -0.25
-```
-
-Its current stabilization settings use:
-
-- a `0.05` hysteresis buffer for every input;
-- persistence of `2` observations for duration preference, inflation, and policy;
-- persistence of `1` observation for the short-horizon duration shock.
-
-A duration rule case contains four parts:
-
-```text
-duration preference
-| duration rate shock
-| inflation
-| policy
-```
-
-The configured rule table maps all valid state combinations to base duration scores.
-
-Duration has no `rule_mapped.adjustment` block. Therefore:
-
-```text
-duration_rule_stance_score = base duration rule score
-```
-
-Duration-specific behavior is primarily its four-dimensional rule definition and stabilization settings. It does not use a separate post-lookup score formula.
 
 ### 5.3 Credit Stance
 
-Credit uses two rule inputs:
+Credit uses two threshold-state component-score inputs. Each component score contributes:
 
 ```text
-credit_spread_change
-credit_spread_state
+component score
+├── classified condition
+└── intensity within that condition
 ```
 
-Their source scores are:
+The two conditions form the credit rule case and select a base score. The two intensities preserve additional magnitude information used to adjust that base score.
+
+| Rule-case order | Rule input             | Source component score       | Positive condition | Neutral condition | Negative condition | Intensity output                 |
+| --------------- | ---------------------- | ---------------------------- | ------------------ | ----------------- | ------------------ | -------------------------------- |
+| 1               | `credit_spread_change` | `credit_spread_change_score` | `positive`         | `neutral`         | `negative`         | `credit_spread_change_intensity` |
+| 2               | `credit_spread_state`  | `credit_spread_state_score`  | `wide`             | `normal`          | `tight`            | `credit_spread_state_intensity`  |
+
+The input definitions, stabilization settings, rule-score mapping, adjustment configuration, and output names are defined under `exposure_stances.credit` in the loaded Module 1 configuration. Classification thresholds are taken from the label thresholds of the referenced components.
+
+#### 5.3.1 Conditions, Rule Case, and Intensity
+
+Each component score is classified into a condition. Its intensity measures how far the score lies inside that condition beyond the relevant classification threshold.
+
+For example, suppose the component scores produce:
 
 ```text
 credit_spread_change_score
+→ condition: negative
+→ intensity: 0.6
+
 credit_spread_state_score
+→ condition: tight
+→ intensity: 0.4
 ```
 
-The state names are:
-
-| Input | Positive | Neutral | Negative |
-|---|---|---|---|
-| `credit_spread_change` | `positive` | `neutral` | `negative` |
-| `credit_spread_state` | `wide` | `normal` | `tight` |
-
-Credit does not define separate stance-level state thresholds. Its threshold-state classification therefore uses the relevant component label thresholds.
-
-The current credit stabilization settings use:
+The conditions are combined in configured input order to form the rule case:
 
 ```text
-hysteresis_buffer: 0.0
-min_state_persistence: 1
-```
-
-for both inputs. The stabilization pipeline still runs, but these settings do not delay or buffer state changes.
-
-A credit rule case is a two-part state pair:
-
-```text
-credit spread change state
-| credit spread level state
-```
-
-Examples:
-
-```text
-positive|wide
-neutral|normal
 negative|tight
 ```
 
-The state pair selects the base credit rule score.
+This rule case selects the configured base credit score.
 
-#### 5.3.1 Credit Intensity
+The intensities retain magnitude information that the rule case alone does not contain.
 
-Credit adds a severity measure for each active threshold state.
+A neutral condition receives zero intensity. A non-neutral condition receives an intensity between `0.0` and `1.0`.
 
-For a neutral state:
-
-```text
-intensity = 0.0
-```
-
-For a positive state:
+The intensity calculation is implemented by:
 
 ```text
-intensity =
-    (score - positive_threshold)
-    / positive_threshold
+_credit_spread_state_intensity()
 ```
 
-For a negative state:
+#### 5.3.2 Credit Adjustment
+
+Unlike duration, credit does not necessarily use the rule-case score directly as its final stance score. It refines the base score using a weighted sum of the two intensities.
+
+The selected rule case determines:
+
+* the base rule score;
+* `change_intensity_weight`;
+* `level_intensity_weight`;
+* any configured score caps.
+
+The intensity adjustment is:
 
 ```text
-intensity =
-    (negative_threshold - score)
-    / abs(negative_threshold)
+intensity adjustment =
+    (credit_spread_change_intensity × change_intensity_weight)
+  + (credit_spread_state_intensity × level_intensity_weight)
 ```
 
-The result is clamped to:
+The intensity adjustment is added to the base rule score, and the result is restricted to the configured lower and upper caps.
+
+The `rule_adjustment` output records the actual difference between the capped final score and the base rule score.
+
+The adjustment calculation is implemented by:
 
 ```text
-[0.0, 1.0]
+_adjust_credit_spread_rule_score()
 ```
 
-This produces:
+### 5.4 Curve Positioning Stance
+
+Curve positioning uses three bucket-classified component-score inputs. Their configured order determines the order of conditions in the curve-positioning rule case.
+
+| Rule-case order | Rule input          | Source component score    | Classification     | Possible conditions                                                                                              |
+| -------------- | ------------------ | ------------------------ | ----------------- | --------------------------------------------------------------------------------------------------------------- |
+| 1               | `curve_change`      | `curve_change_score`      | `threshold_bucket` | `stable`, `steepening`, `flattening`                                                                             |
+| 2               | `curve_state`       | `curve_state_score`       | `threshold_bucket` | `inverted`, `flat`, `normal`, `steep`                                                                            |
+| 3               | `curve_move_driver` | `curve_move_driver_score` | `score_bucket`     | `bull_parallel`, `bear_parallel`, `front_end_down_long_end_up`, `front_end_up_long_end_down`, `mixed_or_unclear` |
+
+For example, suppose the first two component scores fall within the configured `steepening` and `flat` ranges:
 
 ```text
-credit_spread_change_intensity
-credit_spread_state_intensity
+curve_change_score
+→ steepening
+
+curve_state_score
+→ flat
 ```
 
-The state identifies the category. The intensity measures how far the score has moved into that active non-neutral category.
-
-#### 5.3.2 Credit Adjustment Formula
-
-Each credit state pair has configured weights for the two intensity values:
+The third input uses an exact discrete-score mapping. Under the current configuration:
 
 ```text
-raw adjustment =
-    change_intensity_weight × credit_spread_change_intensity
-  + level_intensity_weight × credit_spread_state_intensity
+curve_move_driver_score = 0.5
+→ front_end_down_long_end_up
 ```
 
-The adjusted score is then capped:
+The three conditions are combined in configured input order to form the rule case:
 
 ```text
-credit_stance_score =
-    clamp(
-        base_rule_score + raw adjustment,
-        lower cap,
-        upper cap
-    )
+steepening|flat|front_end_down_long_end_up
 ```
 
-The output `rule_adjustment` records the difference between the final capped score and the base score:
+The input definitions, classification methods, stabilization settings, rule-score mapping, and output names are defined under `exposure_stances.curve_positioning` in the loaded Module 1 configuration. The threshold ranges and discrete score-to-bucket mappings are defined by the referenced component configurations.
 
-```text
-rule_adjustment =
-    credit_stance_score - base_rule_score
-```
+Curve positioning combines two range-classified conditions with one exact-score-classified yield-move condition, without a post-lookup adjustment.
 
-A state pair may use the default cap or define its own cap.
 
-#### 5.3.3 Credit-Specific Implementation Constraint
+### 5.5 USD Exposure Stance
 
-The adjustment path currently assumes:
-
-- every adjustment input uses `threshold_state`;
-- intensity is calculated with credit threshold-state semantics;
-- there are two intensity values;
-- the first intensity belongs to credit-spread change;
-- the second intensity belongs to credit-spread level;
-- the final adjustment is calculated by `_adjust_credit_spread_rule_score()`.
-
-Therefore, the presence of an adjustment specification does not by itself make the implementation generic for other stances.
-
-### 5.4 USD Exposure Stance
-
-USD exposure is the only current weighted-sum stance.
-
-Its configuration is:
-
-```text
-input: fx_score
-weight: 1.0
-```
-
-Therefore:
+USD exposure is the current weighted-sum stance.
 
 ```text
 usd_exposure_stance_score = fx_score × 1.0
 ```
 
-It does not use state classification, stabilization, rule cases, rule-score lookup, or adjustment.
+No additional stance-specific calculation is applied after the weighted sum.
 
-### 5.5 Curve Positioning Stance
-
-Curve positioning uses three rule inputs:
-
-```text
-curve_change
-curve_state
-curve_move_driver
-```
-
-Their source scores are:
-
-```text
-curve_change_score
-curve_state_score
-curve_move_driver_score
-```
-
-The inputs use different classification methods:
-
-| Input | Classification | Cases |
-|---|---|---|
-| `curve_change` | `threshold_bucket` | `stable`, `steepening`, `flattening` |
-| `curve_state` | `threshold_bucket` | `inverted`, `flat`, `normal`, `steep` |
-| `curve_move_driver` | `score_bucket` | `bull_parallel`, `bear_parallel`, `front_end_down_long_end_up`, `front_end_up_long_end_down`, `mixed_or_unclear` |
-
-The current curve stabilization settings use:
-
-```text
-hysteresis_buffer: 0.0
-min_state_persistence: 1
-```
-
-for all three inputs.
-
-A curve rule case contains three parts:
-
-```text
-curve change
-| curve state
-| curve move driver
-```
-
-The configured rule table maps each valid combination to a curve-positioning score.
-
-Curve positioning has no `rule_mapped.adjustment` block. Therefore:
-
-```text
-curve_positioning_score = base curve rule score
-```
-
-Its stance-specific behavior lies in combining two range-based buckets with one discrete score bucket. It does not use a separate post-lookup score formula.
 
 ---
 
-## 6. Direction and Strength Outputs
+## 6. Derived Direction and Strength Labels
 
-The calculation paths produce numeric stance scores. `calculate_exposure_stance()` then derives direction and strength labels from those final scores.
+After the numeric stance score is calculated, Module 1 derives direction and strength labels.
+
+These labels are interpretations of the score, not additional stance-score calculations.
 
 ### 6.1 Direction Labels
 
-The current global direction thresholds are:
+Direction is derived from each stance’s final numeric score using the global direction thresholds:
 
 ```text
-positive score: score >= 0.5
-negative score: score <= -0.5
-neutral score:  -0.5 < score < 0.5
+score >= 0.5
+→ positive direction
+
+score <= -0.5
+→ negative direction
+
+otherwise
+→ neutral direction
 ```
 
-Each stance maps these generic categories to its own labels:
+Each stance maps the generic direction categories to its own labels:
 
-| Stance | Positive | Neutral | Negative |
-|---|---|---|---|
-| `duration` | `duration_positive` | `duration_neutral` | `duration_negative` |
-| `credit` | `credit_positive` | `credit_neutral` | `credit_negative` |
-| `usd_exposure` | `usd_positive` | `usd_neutral` | `usd_negative` |
-| `curve_positioning` | `long_end` | `neutral` | `short_end` |
+| Stance              | Positive            | Neutral            | Negative            |
+| ------------------- | ------------------- | ------------------ | ------------------- |
+| `duration`          | `duration_positive` | `duration_neutral` | `duration_negative` |
+| `credit`            | `credit_positive`   | `credit_neutral`   | `credit_negative`   |
+| `usd_exposure`      | `usd_positive`      | `usd_neutral`      | `usd_negative`      |
+| `curve_positioning` | `long_end`          | `neutral`          | `short_end`         |
 
-Direction is always based on the final numeric score:
-
-- the weighted-sum score for USD exposure;
-- the base rule score for duration and curve;
-- the adjusted score for credit.
 
 ### 6.2 Strength Labels
 
-The current strength labels are:
+Strength is derived from the final numeric score, with a configured override for neutral direction.
+
+A neutral direction receives the configured neutral strength:
 
 ```text
-weak
-moderate
-strong
+neutral direction
+→ weak
 ```
 
-Neutral direction always receives the configured neutral strength:
+Otherwise, strength is determined by the absolute score magnitude:
 
 ```text
-neutral direction → weak
+abs(score) <= 0.5
+→ weak
+
+0.5 < abs(score) <= 1.0
+→ moderate
+
+abs(score) > 1.0
+→ strong
 ```
 
-For a non-neutral stance, the current implementation evaluates score magnitude in this order:
+A magnitude of exactly `1.0` is therefore labeled `moderate`.
 
-```text
-abs(score) <= 0.5       → weak
-0.5 < abs(score) <= 1.0 → moderate
-abs(score) > 1.0        → strong
-```
 
-Because the moderate check is evaluated before the strong check, a score magnitude of exactly `1.0` is currently labeled `moderate`.
+### 6.3 Stored Outputs
 
-### 6.3 Output Tables
-
-The runtime stores numeric stance scores in:
+Numeric stance scores are stored in:
 
 ```text
 self.stance_scores
 ```
 
-It stores the full stance outputs in:
+The corresponding score, direction label, and strength label are stored together in:
 
 ```text
 self.exposure_stance
 ```
 
-For each stance, `self.exposure_stance` contains:
-
-```text
-numeric stance score
-stance direction
-stance strength
-```
 
 ---
 
 ## 7. Breakdown and Diagnostic Interpretation
 
-The calculation builders produce structured breakdown data that can explain how a stance score was obtained.
+The calculation builders produce explanatory breakdown data alongside the final stance score.
+
+These breakdowns support diagnostics, audit, plotting, and historical review. They describe the runtime calculation but do not define a separate scoring path.
 
 ### 7.1 Weighted-Sum Breakdown
 
-A weighted-sum breakdown can contain:
+A weighted-sum breakdown can expose:
 
-```text
-source component scores
-configured weights
-weighted contributions
-final stance score
-```
+* source component scores;
+* configured weights;
+* weighted contributions;
+* final stance score.
 
-For USD exposure, this explains the direct contribution from `fx_score`.
+These fields show how the arithmetic result was constructed.
 
 ### 7.2 Rule-Mapped Breakdown
 
-A rule-mapped breakdown can contain:
+A rule-mapped breakdown can expose:
 
-```text
-source component scores
-raw states or buckets
-stabilized states or buckets
-per-input stabilization-change flags
-any-state-changed flag
-rule case
-base rule score, when configured as an output
-adjustment metadata, when adjustment exists
-rule adjustment, when adjustment exists
-final stance score
-```
+* source component scores;
+* raw states or buckets;
+* stabilized states or buckets;
+* a per-input flag showing whether stabilization changed the classified condition;
+* a flag showing whether stabilization changed any condition in the rule case;
+* the combined rule case;
+* the base rule score, when configured as an output;
+* adjustment metadata, when an adjustment is configured;
+* the final stance score.
 
-Adjustment-related columns are produced only when the stance has adjustment configuration.
+The raw and stabilized conditions distinguish the immediate classification result from the condition actually used to construct the rule case.
 
-Therefore:
+Adjustment fields may be present for credit, but they are omitted for duration and curve positioning because those stances do not configure post-lookup adjustments.
 
-```text
-credit:
-    base score and adjustment fields can be present
-
-duration:
-    no adjustment fields
-
-curve positioning:
-    no adjustment fields
-```
-
-No no-op adjustment columns should be produced for duration or curve merely to make their diagnostics resemble credit.
 
 ### 7.3 Diagnostic Responsibility
 
-Diagnostics should explain the configured calculation path without redefining it.
+Diagnostics should explain the runtime calculation without redefining it.
 
 They should:
 
-- derive available fields from the resolved stance configuration;
-- preserve the distinction between weighted-sum and rule-mapped stances;
-- expose credit adjustment metadata only where configured;
-- use the same component-score and state definitions as runtime calculation;
-- avoid maintaining a separate scoring interpretation.
+* use the same configured inputs, classifications, and stabilization rules as runtime calculation;
+* derive available fields from the resolved stance configuration;
+* preserve the distinction between weighted-sum and rule-mapped stances;
+* expose adjustment metadata only when adjustment is configured;
+* avoid maintaining a parallel scoring interpretation.
 
 ---
 
@@ -891,68 +656,51 @@ They should:
 ### 8.1 Calculation Paths
 
 ```text
-weighted-sum stance:
-    component scores
-    → weighted contributions
-    → final score
+Weighted sum:
 
-rule-mapped stance without adjustment:
-    component scores
-    → raw states or buckets
-    → stabilized states or buckets
-    → rule case
-    → base rule score
-    → final score
+component scores
+→ apply configured weights
+→ sum contributions
+→ final stance score
+```
 
-rule-mapped stance with credit adjustment:
-    component scores
-    → raw states
-    → stabilized states
-    → state pair
-    → base rule score
-    → intensity-based credit adjustment
-    → capped final score
+```text
+Rule mapped without adjustment:
+
+component scores
+→ states or buckets
+→ stabilized conditions
+→ rule case
+→ configured base score
+→ final stance score
+```
+
+```text
+Credit rule mapped with adjustment:
+
+component scores
+→ states
+→ stabilized state pair
+→ configured base score
+→ intensity-based credit adjustment
+→ capped final stance score
 ```
 
 ### 8.2 Current Stance Mapping
 
-```text
-duration:
-    rule mapped
-    no adjustment
-    final score = base duration rule score
-
-credit:
-    rule mapped
-    credit-specific adjustment
-    final score = capped base score plus intensity-based adjustment
-
-usd_exposure:
-    weighted sum
-    final score = fx_score × 1.0
-
-curve_positioning:
-    rule mapped
-    no adjustment
-    final score = base curve rule score
-```
+| Stance | Result |
+| --- | --- |
+| `duration` | Rule-mapped base score |
+| `credit` | Rule-mapped base score plus credit-specific capped adjustment |
+| `usd_exposure` | `fx_score × 1.0` |
+| `curve_positioning` | Rule-mapped base score |
 
 ### 8.3 Main Runtime Functions
 
-```text
-calculate_exposure_stance()
-    calculates the score, direction, and strength outputs for every stance
-
-_calculate_exposure_stance_score()
-    routes a stance to the weighted-sum or rule-mapped calculation path
-
-_build_weighted_stance_score_breakdown()
-    builds weighted contributions and the final weighted stance score
-
-_build_rule_mapped_stance_score_breakdown()
-    builds classifications, stabilized states, rule cases, and rule-mapped scores
-
-_rule_mapped_adjusted_row()
-    returns the base score when adjustment is absent
-    or applies the current credit-specific adjustment when configured
-```
+| Function | Responsibility |
+| --- | --- |
+| `calculate_exposure_stance()` | Calculates each stance score and derives direction and strength labels |
+| `_calculate_exposure_stance_score()` | Routes each stance to the weighted-sum or rule-mapped path |
+| `_build_weighted_stance_score_breakdown()` | Calculates weighted contributions and the final weighted score |
+| `_build_rule_mapped_stance_score_breakdown()` | Coordinates classification, stabilization, rule-case construction, score lookup, and optional adjustment |
+| `_rule_mapped_adjusted_row()` | Returns the base score when adjustment is absent or applies the configured credit adjustment |
