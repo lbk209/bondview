@@ -50,7 +50,7 @@ The rule-mapped path is used when the relationship among component conditions is
 
 ### 2.3 Primary and Derived Outputs
 
-The numeric stance score is the primary result of stance calculation and the information-preserving output available to downstream consumers.
+The numeric stance score is the primary and most granular stance output available to downstream consumers.
 
 Direction and strength labels are derived from that score for human-readable interpretation, diagnostics and audit, plotting and reporting, and historical review.
 
@@ -276,6 +276,7 @@ numeric component score
 → minimum persistence
 → stabilized condition
 ```
+For score_bucket inputs, classification is based on exact discrete-score matching, so hysteresis does not alter the candidate condition.
 
 The stabilized condition, rather than the raw classified condition, is used to construct the rule case.
 
@@ -364,10 +365,10 @@ _rule_mapped_adjusted_row()
 
 | Stance | Calculation path | Component-score inputs | Classification | Adjustment | Final score output |
 | --- | --- | --- | --- | --- | --- |
-| `duration` | Rule mapped | `duration_preference_score`, `duration_rate_shock_score`, `inflation_pressure_score`, `policy_stance_score` | Threshold states | No | `duration_rule_stance_score` |
-| `credit` | Rule mapped | `credit_spread_change_score`, `credit_spread_state_score` | Threshold states | Credit-specific | `credit_stance_score` |
-| `curve_positioning` | Rule mapped | `curve_change_score`, `curve_state_score`, `curve_move_driver_score` | Threshold buckets and score bucket | No | `curve_positioning_score` |
-| `usd_exposure` | Weighted sum | `fx_score` | Not applicable | Not applicable | `usd_exposure_stance_score` |
+| `duration` | Rule mapped | `duration_preference_score`, `duration_rate_shock_score`, `inflation_pressure_score`, `policy_stance_score` | Threshold states | None | `duration_rule_stance_score` |
+| `credit` | Rule mapped | `credit_spread_change_score`, `credit_spread_state_score` | Threshold states | Intensity-based | `credit_stance_score` |
+| `curve_positioning` | Rule mapped | `curve_change_score`, `curve_state_score`, `curve_move_driver_score` | Threshold buckets and score bucket | None | `curve_positioning_score` |
+| `usd_exposure` | Weighted sum | `fx_score` | Not applicable | N/A | `usd_exposure_stance_score` |
 
 Duration uses stance-level thresholds. Credit reuses component label thresholds, while curve positioning reuses component bucket definitions.
 
@@ -389,8 +390,6 @@ favorable|no_shock|inflation_falling|policy_easing
 ```
 
 The current input definitions, classification thresholds, stabilization settings, rule-score mapping, and output names are defined under `exposure_stances.duration` in the loaded Module 1 configuration. The main relevant fields are `rule_mapped.state_inputs`, `state_thresholds`, `state_stabilization`, and `rule_scores`.
-
-Duration uses the ordered four-condition rule table and its stabilization configuration without a post-lookup adjustment.
 
 
 ### 5.3 Credit Stance
@@ -448,7 +447,7 @@ _credit_spread_state_intensity()
 
 #### 5.3.2 Credit Adjustment
 
-Unlike duration, credit does not necessarily use the rule-case score directly as its final stance score. It refines the base score using a weighted sum of the two intensities.
+Credit refines the base rule score using a weighted sum of the two intensities.
 
 The selected rule case determines:
 
@@ -510,18 +509,10 @@ steepening|flat|front_end_down_long_end_up
 
 The input definitions, classification methods, stabilization settings, rule-score mapping, and output names are defined under `exposure_stances.curve_positioning` in the loaded Module 1 configuration. The threshold ranges and discrete score-to-bucket mappings are defined by the referenced component configurations.
 
-Curve positioning combines two range-classified conditions with one exact-score-classified yield-move condition, without a post-lookup adjustment.
-
 
 ### 5.5 USD Exposure Stance
 
-USD exposure is the current weighted-sum stance.
-
-```text
-usd_exposure_stance_score = fx_score × 1.0
-```
-
-No additional stance-specific calculation is applied after the weighted sum.
+USD exposure is a weighted-sum stance that currently uses fx_score with a configured weight of 1.0.
 
 
 ---
@@ -650,57 +641,6 @@ They should:
 * avoid maintaining a parallel scoring interpretation.
 
 ---
+## 8. Core Invariant
 
-## 8. Summary
-
-### 8.1 Calculation Paths
-
-```text
-Weighted sum:
-
-component scores
-→ apply configured weights
-→ sum contributions
-→ final stance score
-```
-
-```text
-Rule mapped without adjustment:
-
-component scores
-→ states or buckets
-→ stabilized conditions
-→ rule case
-→ configured base score
-→ final stance score
-```
-
-```text
-Credit rule mapped with adjustment:
-
-component scores
-→ states
-→ stabilized state pair
-→ configured base score
-→ intensity-based credit adjustment
-→ capped final stance score
-```
-
-### 8.2 Current Stance Mapping
-
-| Stance | Result |
-| --- | --- |
-| `duration` | Rule-mapped base score |
-| `credit` | Rule-mapped base score plus credit-specific capped adjustment |
-| `usd_exposure` | `fx_score × 1.0` |
-| `curve_positioning` | Rule-mapped base score |
-
-### 8.3 Main Runtime Functions
-
-| Function | Responsibility |
-| --- | --- |
-| `calculate_exposure_stance()` | Calculates each stance score and derives direction and strength labels |
-| `_calculate_exposure_stance_score()` | Routes each stance to the weighted-sum or rule-mapped path |
-| `_build_weighted_stance_score_breakdown()` | Calculates weighted contributions and the final weighted score |
-| `_build_rule_mapped_stance_score_breakdown()` | Coordinates classification, stabilization, rule-case construction, score lookup, and optional adjustment |
-| `_rule_mapped_adjusted_row()` | Returns the base score when adjustment is absent or applies the configured credit adjustment |
+Each stance’s final score is calculated through either the weighted-sum or rule-mapped path. Direction and strength are derived from that score, while breakdown data explains the calculation without defining a separate scoring path.
