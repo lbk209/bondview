@@ -45,7 +45,25 @@ The coding agent must not complete or merge final session work into the project�
 * Do not change model outputs, scoring behavior, config interpretation, public APIs, or file formats unless explicitly requested.
 * Treat YAML configuration files, including `module*_config.yaml`, as behavior-sensitive files. If they are changed, report the intended behavior impact and whether model outputs changed.
 
-### Module boundaries
+### General implementation design rules
+
+* Use the simplest correct structure. Keep logic at its natural call site when a direct implementation has clear responsibility and control flow.
+* Avoid thin wrappers and speculative abstractions. Do not create helpers, factories, adapters, or public methods that only forward arguments, return another call, construct a simple object once, or build a one-use mapping.
+* Extract shared logic when multiple real consumers need the same stable behavior, or when the extracted unit owns meaningful validation, branching, transformation, policy, or resource handling.
+* When multiple real consumers need the same consumer-neutral data or logic and no existing component appropriately owns it, create a narrowly scoped shared layer. Consumers should depend on that layer rather than on each other, and consumer-specific behavior must remain outside it.
+* Do not introduce a new class, file, or architectural layer unless the current task requires a distinct responsibility that cannot be cleanly owned by the existing structure. A new boundary must reduce real duplication or coupling, not merely redistribute code.
+* Maintain one authoritative implementation for each concept. Reuse or narrowly extend the existing owner before creating a parallel path.
+* Keep public APIs purposeful. Supported workflows should not require callers to use private internals, but do not add a public wrapper unless it provides a distinct current caller-facing contract.
+* Prefer validated configuration over hard-coded names, lists, thresholds, or dispatch rules when variation is expected.
+* Preserve declaration, configuration, dependency, and user-defined order. Sort only when sorting is explicitly part of the contract.
+* Keep names, metadata, and relationships faithful to what the data represents.
+* Protect ownership and mutability boundaries. Do not expose mutable references that allow callers to modify state owned by another component unless mutation is explicitly part of the API.
+* Keep core logic, data preparation, and dependency resolution independent from plotting, formatting, reporting, and UI concerns.
+* Preserve established public signatures, return types, error behavior, ordering, side effects, and mutability unless the task intentionally changes the contract.
+
+### Bondview-specific implementation rules
+
+#### Module boundaries
 
 * Each module should preserve a clear internal processing hierarchy and expose formal outputs for downstream consumers.
 * Do not bypass a module’s formal intermediate or final outputs with raw or internal variables unless explicitly requested.
@@ -56,25 +74,22 @@ The coding agent must not complete or merge final session work into the project�
 * For Module 1, preserve the current raw input → feature → component → stance hierarchy.
 * Future modules may use different internal layer names, but the same principle applies: keep intermediate responsibilities explicit, reviewable, and behavior-sensitive where they affect downstream decisions.
 
-### Model structure and implementation code
+#### Model structure and implementation code
 
 * Separate model structure from implementation code wherever practical.
 * Configuration files should describe model structure where the module is configuration-driven: inputs, components or signals, scoring rules, thresholds, labels, outputs, and relationships between model parts.
 * Python code should implement the reusable mechanics that interpret, validate, calculate, diagnose, and report those structures.
 * Do not hard-code model-specific structure in Python when it belongs in configuration.
-* When a module needs new model logic, first decide whether the change belongs in configuration, shared interpretation code, validation/schema logic, runtime calculation code, diagnostics, or reporting code.
+* When a module needs new model logic, first determine whether it belongs in configuration, shared interpretation code, validation/schema logic, runtime calculation code, diagnostics, or reporting code.
 * Validation should protect the contract between configuration and code. Runtime code should not silently compensate for malformed or incomplete model structure unless that fallback is explicitly part of the design.
 
-### Architecture and reuse rules
+#### Reuse, diagnostics, and consumer layers
 
-* Reuse existing helpers within the current module and across related modules before creating new shared layers or duplicating logic.
-* If another module already contains similar reusable mechanics, consider whether the logic should remain module-local, be extracted into a shared helper, or be reused through an existing interface.
-* Do not extract shared helpers merely because two implementations look similar. Extract only when the behavior is stable, genuinely reusable, and the change can be made without broadening the task scope or changing behavior unexpectedly.
-* Do not create duplicate data, configuration, diagnostics, reporting, or review paths within a module or across related modules when an existing path can be safely extended.
-* Do not create thin wrapper layers, pass-through helpers, or new abstraction modules unless they remove real duplication or clarify a stable boundary.
-* Prefer extending an existing interface narrowly over introducing a new architecture for a local requirement.
-* Shared data retrieval, data preparation, and reusable calculation mechanics should remain consumer-neutral.
-* Plotting, display, reporting, and review-specific behavior should stay in consumer-specific layers.
+* Reuse existing helpers and interfaces before duplicating logic or introducing a new shared layer.
+* Do not extract shared code merely because implementations look similar. The shared behavior must be stable and genuinely reusable.
+* Do not create duplicate data, configuration, diagnostics, reporting, or review paths when an existing path can be safely extended.
+* Shared data retrieval, data preparation, dependency resolution, and reusable calculation mechanics must remain consumer-neutral.
+* Plotting, display, reporting, and review-specific behavior must remain in consumer-specific layers.
 * Diagnostics should explain existing model behavior. Do not change scoring, labels, stance logic, decision logic, or model outputs merely to make diagnostics easier.
 * If a task appears to require moving responsibilities across module boundaries, stop and report the design issue instead of silently changing the architecture.
 * Do not bundle cleanup, formatting, import reorganization, or unrelated refactors into behavior-sensitive changes unless explicitly requested.
@@ -320,4 +335,3 @@ If a report file is created, the PR description must:
 * state why the separate report file was needed
 
 Do not use report files as a substitute for a clear PR description.
-
