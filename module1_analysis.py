@@ -1343,9 +1343,8 @@ class Module1Analysis:
         }
         if should_include_raw_inputs and dependency.raw_input_cols:
             data = self._required_output_table("data", purpose="target context retrieval")
-            raw_frame = self._window_series_or_frame(data, start, end)
-            if ffill_inputs:
-                raw_frame = raw_frame.ffill()
+            raw_frame = data.ffill() if ffill_inputs else data
+            raw_frame = self._window_series_or_frame(raw_frame, start, end)
             self._add_context_frame(
                 parts,
                 column_roles,
@@ -1536,11 +1535,22 @@ class Module1Analysis:
 
     def raw_inputs_for_target(self, target: str, level: str) -> list[str]:
         """
-        Return raw input columns used directly or indirectly by a target.
+        Return lower-level raw-input dependencies for a feature, component,
+        or stance target.
+
+        Raw-input targets are unsupported because they have no lower-level
+        dependencies.
         """
+        normalized_level = self._normalize_target_level(level)
+        if normalized_level == "raw_input":
+            raise ValueError(
+                "raw_inputs_for_target() requires a feature, component, or stance "
+                "target; raw_input targets have no lower-level dependencies."
+            )
+
         retrieval = self.get_target_context(
             target,
-            level,
+            normalized_level,
             dependency_level="raw_inputs",
             include_labels=False,
             include_strength=False,
