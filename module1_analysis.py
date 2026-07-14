@@ -501,7 +501,7 @@ class Module1Analysis:
                     if canonical is not None:
                         resolved.append(canonical)
 
-            resolved = tuple(sorted(set(resolved)))
+            resolved = tuple(dict.fromkeys(resolved))
             if not resolved:
                 if normalized_level is None:
                     raise ValueError(
@@ -833,7 +833,7 @@ class Module1Analysis:
                 component_score_cols=tuple(dict.fromkeys(component_score_cols)),
                 component_label_cols=tuple(dict.fromkeys(component_label_cols)),
                 feature_cols=tuple(dict.fromkeys(feature_cols)),
-                raw_input_cols=tuple(sorted(dict.fromkeys(raw_input_cols))),
+                raw_input_cols=tuple(dict.fromkeys(raw_input_cols)),
                 feature_dependency_map=feature_dependency_map,
                 supported=resolution.supported,
             )
@@ -869,7 +869,7 @@ class Module1Analysis:
                 resolution=resolution,
                 target_members=resolution.related_targets,
                 feature_cols=feature_cols,
-                raw_input_cols=tuple(sorted(dict.fromkeys(raw_input_cols))),
+                raw_input_cols=tuple(dict.fromkeys(raw_input_cols)),
                 feature_dependency_map=feature_dependency_map,
                 supported=resolution.supported,
             )
@@ -922,7 +922,7 @@ class Module1Analysis:
             component_score_cols=tuple(dict.fromkeys(component_score_cols)),
             component_label_cols=tuple(dict.fromkeys(component_label_cols)),
             feature_cols=tuple(dict.fromkeys(feature_cols)),
-            raw_input_cols=tuple(sorted(dict.fromkeys(raw_input_cols))),
+            raw_input_cols=tuple(dict.fromkeys(raw_input_cols)),
             feature_dependency_map=feature_dependency_map,
             supported=resolution.supported,
         )
