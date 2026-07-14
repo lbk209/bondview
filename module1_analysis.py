@@ -1,3 +1,4 @@
+import copy
 from dataclasses import dataclass, field
 
 import pandas as pd
@@ -38,7 +39,7 @@ class TargetResolution:
             "score_col": self.score_col,
             "label_col": self.label_col,
             "strength_col": self.strength_col,
-            "config": self.config,
+            "config": copy.deepcopy(self.config),
             "available_output_fields": self.available_output_fields,
         }
 
@@ -500,7 +501,7 @@ class Module1Analysis:
                     if canonical is not None:
                         resolved.append(canonical)
 
-            resolved = tuple(sorted(set(resolved)))
+            resolved = tuple(dict.fromkeys(resolved))
             if not resolved:
                 if normalized_level is None:
                     raise ValueError(
@@ -599,42 +600,43 @@ class Module1Analysis:
         )
 
     def _features_for_component_score(self, component_score: str) -> list[str]:
+        component_name, component_config = self._component_for_score_output(
+            component_score
+        )
+        score_config = component_config.get("score", {})
+        function = score_config.get("function")
+
+        if function == "single_feature_score":
+            feature = score_config.get("input")
+            return [] if feature is None else [feature]
+
+        if function in {"weighted_feature_score", "curve_move_driver_score"}:
+            return [
+                item["feature"]
+                for item in score_config.get("inputs", [])
+                if "feature" in item
+            ]
+
+        raise ValueError(
+            f"Unsupported score function for {component_name}: {function}"
+        )
+
+    def _component_for_score_output(
+        self,
+        component_score: str,
+    ) -> tuple[str, dict]:
         if self.result.component_config is None:
             raise ValueError("Run load_module1_config() first.")
 
         for component_name, component_config in self.result.component_config[
             "components"
         ].items():
-            score_config = component_config.get("score", {})
+            if component_config.get("score", {}).get("output") == component_score:
+                return component_name, component_config
 
-            if score_config.get("output") != component_score:
-                continue
-
-            function = score_config.get("function")
-
-            if function == "single_feature_score":
-                feature = score_config.get("input")
-                return [] if feature is None else [feature]
-
-            if function == "weighted_feature_score":
-                return [
-                    item["feature"]
-                    for item in score_config.get("inputs", [])
-                    if "feature" in item
-                ]
-
-            if function == "curve_move_driver_score":
-                return [
-                    item["feature"]
-                    for item in score_config.get("inputs", [])
-                    if "feature" in item
-                ]
-
-            raise ValueError(
-                f"Unsupported score function for {component_name}: {function}"
-            )
-
-        raise ValueError(f"Component score not found in component_config: {component_score}")
+        raise ValueError(
+            f"Component score not found in component_config: {component_score}"
+        )
 
     def _raw_input_dependencies_for_feature(
         self,
@@ -650,7 +652,7 @@ class Module1Analysis:
         visited.add(feature_name)
 
         if self.result.data is not None and feature_name in self.result.data.columns:
-            return (feature_name,), {feature_name: (feature_name,)}
+            return (feature_name,), {}
 
         if self.result.feature_config is None:
             raise ValueError("Run load_module1_config() first.")
@@ -705,25 +707,14 @@ class Module1Analysis:
         self,
         component_score_cols: list[str],
     ) -> list[str]:
-        if self.result.component_config is None:
-            raise ValueError("Run load_module1_config() before stance diagnostics.")
-
         label_cols = []
         for component_score_col in component_score_cols:
-            for component in self.result.component_config["components"].values():
-                score_output = component.get("score", {}).get("output")
-                if score_output != component_score_col:
-                    continue
-
-                label_output = component.get("label", {}).get("output")
-                if label_output is not None:
-                    label_cols.append(label_output)
-                break
-            else:
-                raise ValueError(
-                    "Unable to resolve component label for score column: "
-                    f"{component_score_col}"
-                )
+            _, component_config = self._component_for_score_output(
+                component_score_col
+            )
+            label_output = component_config.get("label", {}).get("output")
+            if label_output is not None:
+                label_cols.append(label_output)
 
         return label_cols
 
@@ -842,7 +833,7 @@ class Module1Analysis:
                 component_score_cols=tuple(dict.fromkeys(component_score_cols)),
                 component_label_cols=tuple(dict.fromkeys(component_label_cols)),
                 feature_cols=tuple(dict.fromkeys(feature_cols)),
-                raw_input_cols=tuple(sorted(dict.fromkeys(raw_input_cols))),
+                raw_input_cols=tuple(dict.fromkeys(raw_input_cols)),
                 feature_dependency_map=feature_dependency_map,
                 supported=resolution.supported,
             )
@@ -878,7 +869,7 @@ class Module1Analysis:
                 resolution=resolution,
                 target_members=resolution.related_targets,
                 feature_cols=feature_cols,
-                raw_input_cols=tuple(sorted(dict.fromkeys(raw_input_cols))),
+                raw_input_cols=tuple(dict.fromkeys(raw_input_cols)),
                 feature_dependency_map=feature_dependency_map,
                 supported=resolution.supported,
             )
@@ -931,7 +922,7 @@ class Module1Analysis:
             component_score_cols=tuple(dict.fromkeys(component_score_cols)),
             component_label_cols=tuple(dict.fromkeys(component_label_cols)),
             feature_cols=tuple(dict.fromkeys(feature_cols)),
-            raw_input_cols=tuple(sorted(dict.fromkeys(raw_input_cols))),
+            raw_input_cols=tuple(dict.fromkeys(raw_input_cols)),
             feature_dependency_map=feature_dependency_map,
             supported=resolution.supported,
         )
@@ -1015,15 +1006,6 @@ class Module1Analysis:
             "supported": dependency.supported,
             "target_level": resolution.level,
         }
-
-    def _first_valid_dates_by_column(self, table: pd.DataFrame | None) -> pd.Series | None:
-        return _first_valid_dates_by_column(table)
-
-    def _latest_valid_dates_by_column(self, table: pd.DataFrame | None) -> pd.Series | None:
-        return _latest_valid_dates_by_column(table)
-
-    def _label_distributions(self, table: pd.DataFrame | None) -> dict | None:
-        return _label_distributions(table)
 
     def inspect_module1_results(self, n=10) -> dict:
         """
