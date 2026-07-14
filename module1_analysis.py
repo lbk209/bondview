@@ -264,56 +264,6 @@ class Module1Analysis:
             ),
         )
 
-    def _target_resolution_for_raw_input(
-        self,
-        requested_target: str,
-        normalized_target: str,
-        canonical_target: str,
-    ) -> TargetResolution:
-        return TargetResolution(
-            requested_target=requested_target,
-            normalized_target=normalized_target,
-            level="raw_input",
-            kind="target",
-            canonical_target=canonical_target,
-            score_col=canonical_target,
-            label_col=None,
-            strength_col=None,
-            config=None,
-            related_score_cols=(canonical_target,),
-            related_targets=(("raw_input", canonical_target),),
-            source_layer="raw_input",
-            source_table="data",
-            available_output_fields=(canonical_target,),
-        )
-
-    def _target_resolution_for_feature(
-        self,
-        requested_target: str,
-        normalized_target: str,
-        canonical_target: str,
-    ) -> TargetResolution:
-        if self.result.feature_config is None:
-            raise ValueError("Run load_module1_config() before resolving features.")
-
-        feature_def = self.result.feature_config["features"][canonical_target]
-        return TargetResolution(
-            requested_target=requested_target,
-            normalized_target=normalized_target,
-            level="feature",
-            kind="target",
-            canonical_target=canonical_target,
-            score_col=canonical_target,
-            label_col=None,
-            strength_col=None,
-            config=feature_def,
-            related_score_cols=(canonical_target,),
-            related_targets=(("feature", canonical_target),),
-            source_layer="feature",
-            source_table="features",
-            available_output_fields=(canonical_target,),
-        )
-
     def _normalize_target_level(self, level: str | None) -> str:
         if level is None:
             raise ValueError(
@@ -355,10 +305,21 @@ class Module1Analysis:
             canonical = matches.get(normalized_target)
             if canonical is None:
                 raise ValueError(f"Unknown raw_input target: {target}")
-            return self._target_resolution_for_raw_input(
-                target,
-                normalized_target,
-                canonical,
+            return TargetResolution(
+                requested_target=target,
+                normalized_target=normalized_target,
+                level="raw_input",
+                kind="target",
+                canonical_target=canonical,
+                score_col=canonical,
+                label_col=None,
+                strength_col=None,
+                config=None,
+                related_score_cols=(canonical,),
+                related_targets=(("raw_input", canonical),),
+                source_layer="raw_input",
+                source_table="data",
+                available_output_fields=(canonical,),
             )
 
         if normalized_level == "feature":
@@ -371,10 +332,22 @@ class Module1Analysis:
             canonical = matches.get(normalized_target)
             if canonical is None:
                 raise ValueError(f"Unknown feature target: {target}")
-            return self._target_resolution_for_feature(
-                target,
-                normalized_target,
-                canonical,
+            feature_def = self.result.feature_config["features"][canonical]
+            return TargetResolution(
+                requested_target=target,
+                normalized_target=normalized_target,
+                level="feature",
+                kind="target",
+                canonical_target=canonical,
+                score_col=canonical,
+                label_col=None,
+                strength_col=None,
+                config=feature_def,
+                related_score_cols=(canonical,),
+                related_targets=(("feature", canonical),),
+                source_layer="feature",
+                source_table="features",
+                available_output_fields=(canonical,),
             )
 
         return self._resolve_target(target, normalized_level)
@@ -910,22 +883,6 @@ class Module1Analysis:
             source_column_mapping[col] = f"{source_table}.{col}"
             target_list.append(col)
 
-    def _resolved_path_metadata(
-        self,
-        resolution: TargetResolution,
-        dependency: TargetDependency,
-    ) -> dict:
-        return {
-            "target_members": dependency.target_members,
-            "component_scores": dependency.component_score_cols,
-            "component_labels": dependency.component_label_cols,
-            "features": dependency.feature_cols,
-            "raw_inputs": dependency.raw_input_cols,
-            "feature_to_raw_inputs": dependency.feature_dependency_map,
-            "supported": dependency.supported,
-            "target_level": resolution.level,
-        }
-
     def inspect_module1_results(self, n=10) -> dict:
         """
         Inspect completed Module 1 result outputs for sanity checking.
@@ -1350,7 +1307,16 @@ class Module1Analysis:
             "start": start,
             "end": end,
         }
-        resolved_path_metadata = self._resolved_path_metadata(resolution, dependency)
+        resolved_path_metadata = {
+            "target_members": dependency.target_members,
+            "component_scores": dependency.component_score_cols,
+            "component_labels": dependency.component_label_cols,
+            "features": dependency.feature_cols,
+            "raw_inputs": dependency.raw_input_cols,
+            "feature_to_raw_inputs": dependency.feature_dependency_map,
+            "supported": dependency.supported,
+            "target_level": resolution.level,
+        }
         returned_columns = {
             "target": tuple(dict.fromkeys(target_columns)),
             "component_scores": tuple(dict.fromkeys(component_score_columns)),
