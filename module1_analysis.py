@@ -652,7 +652,7 @@ class Module1Analysis:
         visited.add(feature_name)
 
         if self.result.data is not None and feature_name in self.result.data.columns:
-            return (feature_name,), {feature_name: (feature_name,)}
+            return (feature_name,), {}
 
         if self.result.feature_config is None:
             raise ValueError("Run load_module1_config() first.")
