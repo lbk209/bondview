@@ -222,7 +222,6 @@ class Module1Diagnostics:
 
     def _score_input_features_for_diagnostic_component(
         self,
-        component_name: str,
         score_config: dict,
     ) -> tuple[str, ...]:
         input_name = score_config.get("input")
@@ -252,7 +251,6 @@ class Module1Diagnostics:
         for component_name in component_names:
             score_config = components[component_name].get("score", {})
             for feature in self._score_input_features_for_diagnostic_component(
-                component_name,
                 score_config,
             ):
                 if feature not in seen:
@@ -287,7 +285,6 @@ class Module1Diagnostics:
 
             score_config = component.get("score", {})
             sources = self._score_input_features_for_diagnostic_component(
-                component_name,
                 score_config,
             )
             if not sources:
@@ -427,9 +424,6 @@ class Module1Diagnostics:
             )
 
         return prepared
-
-
-
 
     def _trace_weighted_stance_score(
         self,
