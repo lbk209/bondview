@@ -58,7 +58,8 @@ class Module1HistoricalAnalysis:
     def _resolve_target(self, target: str, level: str | None, allow_group: bool = False):
         return self.analysis.resolve_target(target, level, allow_group=allow_group)
 
-    def _resolve_historical_event_window(self, context_id=None, start=None, end=None):
+    def resolve_historical_event_window(self, context_id=None, start=None, end=None):
+        """Resolve one historical context ID to an explicit event window."""
         if context_id is None:
             return start, end
         if self.historical_context is None:
@@ -91,7 +92,7 @@ class Module1HistoricalAnalysis:
         end=None,
         ffill_inputs=True,
     ) -> TargetContextResult:
-        start, end = self._resolve_historical_event_window(
+        start, end = self.resolve_historical_event_window(
             context_id=context_id,
             start=start,
             end=end,
@@ -124,7 +125,7 @@ class Module1HistoricalAnalysis:
         include_strength=True,
         ffill_inputs=True,
     ) -> TargetCompareDataset:
-        start, end = self._resolve_historical_event_window(
+        start, end = self.resolve_historical_event_window(
             context_id=context_id,
             start=start,
             end=end,
@@ -1962,8 +1963,13 @@ class Module1HistoricalAnalysis:
             case_df = detail_for_case.set_index("date").sort_index()
             case_df["model_label"] = case_df["actual_label"]
             case_df["model_strength"] = case_df["actual_strength"]
-            case_df.attrs["start"] = pd.to_datetime(case["start"])
-            case_df.attrs["end"] = pd.to_datetime(case["end"])
+            context_start, context_end = self.resolve_historical_event_window(
+                context_id
+            )
+            context_start = pd.to_datetime(context_start)
+            context_end = pd.to_datetime(context_end)
+            case_df.attrs["start"] = context_start
+            case_df.attrs["end"] = context_end
 
             if expected_label is None:
                 decomposition = windows_for_case
@@ -1984,8 +1990,6 @@ class Module1HistoricalAnalysis:
                 )
                 decomposition = self._decompose_match_windows(case_df)
 
-            context_start = pd.to_datetime(case["start"])
-            context_end = pd.to_datetime(case["end"])
             display_start, display_end = self._resolve_historical_display_window(
                 context_start=context_start,
                 context_end=context_end,
