@@ -1,5 +1,5 @@
 import copy
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from collections.abc import Mapping
 
 import pandas as pd
@@ -82,20 +82,16 @@ class Module1SensitivityDiagnostics:
         "default_horizons", "horizon_overrides", "module1_config_validation",
     )
     _CALCULATOR_HELPERS = {
-        "_prepare_component_input_series",
         "_clip_score",
         "_calculate_single_feature_component_score",
         "_calculate_weighted_feature_component_score",
         "_calculate_curve_move_driver_score",
         "_curve_move_driver_bucket_scores",
         "_component_score_bucket_config",
-        "_resolve_rule_mapped_stance_schema",
         "_score_bucket",
         "_calculate_current_state_component_score",
         "_label_stance_direction",
         "_label_stance_strength",
-        "_build_weighted_stance_score_breakdown",
-        "_build_rule_mapped_stance_score_breakdown",
         "calculate_exposure_stance",
         "_curve_move_driver_score_from_prepared_inputs",
     }
@@ -155,44 +151,18 @@ class Module1SensitivityDiagnostics:
         raise AttributeError(name)
 
     def _resolve_target(self, target: str, level: str | None, allow_group: bool = False):
-        return self.analysis._resolve_target(target, level, allow_group=allow_group)
-
-    def _resolve_historical_event_window(self, context_id=None, start=None, end=None):
-        if context_id is None:
-            return start, end
-        if self.historical_context is None:
-            raise ValueError("Run load_historical_context() before resolving context_id.")
-        events = self.historical_context.get("events")
-        if events is None or events.empty:
-            raise ValueError("historical_context events are not loaded.")
-        matched = events[events["context_id"] == context_id]
-        if matched.empty:
-            raise ValueError(f"Unknown historical context_id: {context_id}")
-        if len(matched) > 1:
-            raise ValueError(f"Historical context_id must be unique: {context_id}")
-        row = matched.iloc[0]
-        resolved_start = row["start"] if start is None else start
-        resolved_end = row["end"] if end is None else end
-        return resolved_start, resolved_end
+        return self.analysis.resolve_target(target, level, allow_group=allow_group)
 
     def get_target_context(
         self, target, level, dependency_level="auto", include_labels=True,
-        include_strength=True, context_id=None, start=None, end=None,
+        include_strength=True, start=None, end=None,
         ffill_inputs=True,
     ) -> TargetContextResult:
-        start, end = self._resolve_historical_event_window(
-            context_id=context_id, start=start, end=end
-        )
-        result = self.analysis.get_target_context(
+        return self.analysis.get_target_context(
             target=target, level=level, dependency_level=dependency_level,
             include_labels=include_labels, include_strength=include_strength,
             start=start, end=end, ffill_inputs=ffill_inputs,
         )
-        if context_id is not None:
-            request = result.request.copy()
-            request["context_id"] = context_id
-            result = replace(result, request=request, context_id=context_id)
-        return result
 
     def _rule_mapped_trace_supported_functions(self) -> set[str]:
         return {
@@ -202,7 +172,7 @@ class Module1SensitivityDiagnostics:
         }
 
     def trace_stance_score(
-        self, target: str, context_id: str | None = None, start=None, end=None,
+        self, target: str, start=None, end=None,
         include_raw_input: bool = True, include_labels: bool = True,
     ) -> pd.DataFrame:
         if target is None or str(target).strip() == "":
@@ -213,7 +183,7 @@ class Module1SensitivityDiagnostics:
         function = stance_config.get("function")
         if function in self._rule_mapped_trace_supported_functions():
             return self._trace_rule_mapped_stance_score(
-                stance_name, context_id=context_id, start=start, end=end,
+                stance_name, start=start, end=end,
                 include_raw_input=include_raw_input, include_labels=include_labels,
             )
         raise ValueError(
@@ -587,15 +557,13 @@ class Module1SensitivityDiagnostics:
                     )
                 temporary_scores[score_col] = alternate_scores[alternate_col]
 
-            original_scores = self.scores
-            try:
-                self.scores = temporary_scores
-                reconstruction = self._build_rule_mapped_stance_score_breakdown(
-                    spec.target,
-                    stance_config,
-                )
-            finally:
-                self.scores = original_scores
+            reconstruction = Module1Calculator._build_rule_mapped_stance_score_breakdown(
+                temporary_scores,
+                self.component_config,
+                spec.target,
+                stance_config,
+                context["rule_mapped_spec"],
+            )
 
             score = reconstruction[spec.final_score_col]
             direction, strength = self._stance_labels_for_score(score, stance_config)
@@ -911,9 +879,10 @@ class Module1SensitivityDiagnostics:
                 if spec.source not in self.features.columns:
                     continue
                 score_config = components.get(spec.component, {}).get("score", {})
-                prepared[spec.output] = self._prepare_component_input_series(
+                prepared[spec.output] = Module1Calculator._prepare_component_input_series(
                     self.features[spec.source],
                     score_config.get("input_preparation"),
+                    self.horizons,
                 )
 
             for spec in (spec for spec in specs if spec.kind == "filtered"):
@@ -951,9 +920,10 @@ class Module1SensitivityDiagnostics:
                     f"Unsupported rule-mapped stance diagnostic target {target}: "
                     f"{function}. Schema-backed rule_mapped config is required."
                 )
-            rule_mapped_spec = self._resolve_rule_mapped_stance_schema(
+            rule_mapped_spec = Module1Calculator._resolve_rule_mapped_stance_schema(
                 stance_name,
                 stance_config,
+                self.component_config,
             )
             score_input_cols = tuple(
                 state_input.source_score_col
@@ -1029,7 +999,6 @@ class Module1SensitivityDiagnostics:
     def _trace_rule_mapped_stance_score(
             self,
             target: str,
-            context_id: str | None = None,
             start=None,
             end=None,
             include_raw_input: bool = True,
@@ -1080,9 +1049,12 @@ class Module1SensitivityDiagnostics:
                     f"{missing_stance_cols}"
                 )
 
-            diagnostics = self._build_rule_mapped_stance_score_breakdown(
+            diagnostics = Module1Calculator._build_rule_mapped_stance_score_breakdown(
+                self.scores,
+                self.component_config,
                 spec.target,
                 stance_config,
+                context["rule_mapped_spec"],
             )
             diagnostics = pd.concat(
                 [
@@ -1118,7 +1090,6 @@ class Module1SensitivityDiagnostics:
                 if context_parts:
                     diagnostics = pd.concat([diagnostics, *context_parts], axis=1)
 
-            start, end = self._resolve_historical_event_window(context_id, start, end)
             if start is not None:
                 diagnostics = diagnostics.loc[diagnostics.index >= pd.to_datetime(start)]
             if end is not None:
@@ -1211,9 +1182,13 @@ class Module1SensitivityDiagnostics:
                     "diagnostic windows."
                 )
 
+            historical = Module1HistoricalAnalysis(
+                self.result,
+                historical_context=self.historical_context,
+            )
             resolved = {
-                row["context_id"]: (row["start"], row["end"])
-                for _, row in events.iterrows()
+                context_id: historical.resolve_historical_event_window(context_id)
+                for context_id in events["context_id"]
             }
             resolved["full_history"] = (None, None)
             return resolved
@@ -2150,15 +2125,25 @@ class Module1SensitivityDiagnostics:
             case_stabilization_overrides: dict,
             detail_columns: dict,
         ) -> pd.DataFrame:
-            spec = self._resolve_rule_mapped_stance_schema(stance_name, stance_config)
-            baseline_diag = self._build_rule_mapped_stance_score_breakdown(
+            spec = Module1Calculator._resolve_rule_mapped_stance_schema(
                 stance_name,
                 stance_config,
+                self.component_config,
+            )
+            baseline_diag = Module1Calculator._build_rule_mapped_stance_score_breakdown(
+                self.scores,
+                self.component_config,
+                stance_name,
+                stance_config,
+                spec,
                 stabilization_overrides=baseline_stabilization_overrides,
             )
-            case_diag = self._build_rule_mapped_stance_score_breakdown(
+            case_diag = Module1Calculator._build_rule_mapped_stance_score_breakdown(
+                self.scores,
+                self.component_config,
                 stance_name,
                 stance_config,
+                spec,
                 stabilization_overrides=case_stabilization_overrides,
             )
             detail = pd.DataFrame(index=self.scores.index)

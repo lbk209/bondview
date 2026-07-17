@@ -1,17 +1,23 @@
 import copy
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from collections.abc import Mapping
 
 import pandas as pd
 
 from module1_analysis import Module1Analysis, TargetContextResult
-from module1_calculator import Module1Calculator, Module1Result
+from module1_calculator import (
+    Module1Calculator,
+    Module1Result,
+    _RuleMappedStanceSpec,
+)
 
 
 @dataclass(frozen=True)
 class RuleMappedDiagnosticSpec:
     target: str
+    stance_config: dict
     function: str
+    rule_mapped_schema: _RuleMappedStanceSpec
     score_input_cols: tuple[str, ...]
     raw_state_cols: tuple[str, ...]
     stabilized_state_cols: tuple[str, ...]
@@ -40,43 +46,17 @@ class DiagnosticInputSpec:
 class Module1Diagnostics:
     """Tracing and rule-diagnostic workflows for completed Module 1 results."""
 
-    _CALCULATOR_STATE_FIELDS = (
-        "data", "features", "scores", "labels", "stance_scores",
-        "exposure_stance", "module1_config", "feature_config",
-        "component_config", "exposure_stance_config", "horizons",
-        "default_horizons", "horizon_overrides", "module1_config_validation",
-    )
-    _CALCULATOR_HELPERS = {
-        "_prepare_component_input_series",
-        "_resolve_rule_mapped_stance_schema",
-        "_build_weighted_stance_score_breakdown",
-        "_build_rule_mapped_stance_score_breakdown",
-    }
-
-    def __init__(
-        self,
-        result: Module1Result,
-        historical_context: dict | None = None,
-    ):
+    def __init__(self, result: Module1Result):
         self.result = result
         self.analysis = Module1Analysis(result)
-        self.calculator = object.__new__(Module1Calculator)
-        self.data = self._copy_result_value(result.data)
         self.features = self._copy_result_value(result.features)
         self.scores = self._copy_result_value(result.scores)
         self.labels = self._copy_result_value(result.labels)
-        self.stance_scores = self._copy_result_value(result.stance_scores)
         self.exposure_stance = self._copy_result_value(result.exposure_stance)
-        self.module1_config = self._copy_result_value(result.module1_config)
         self.feature_config = self._copy_result_value(result.feature_config)
         self.component_config = self._copy_result_value(result.component_config)
         self.exposure_stance_config = self._copy_result_value(result.exposure_stance_config)
         self.horizons = self._copy_result_value(result.horizons)
-        self.default_horizons = self._copy_result_value(result.default_horizons)
-        self.horizon_overrides = self._copy_result_value(result.horizon_overrides)
-        self.module1_config_validation = self._copy_result_value(result.module1_config_validation)
-        self.historical_context = historical_context
-        self._sync_calculator_state()
 
     @staticmethod
     def _copy_result_value(value):
@@ -88,43 +68,8 @@ class Module1Diagnostics:
             return value.copy(deep=True)
         return copy.deepcopy(value)
 
-    def _sync_calculator_state(self) -> None:
-        for field_name in self._CALCULATOR_STATE_FIELDS:
-            setattr(self.calculator, field_name, getattr(self, field_name))
-        self.calculator.fred = None
-        self.calculator.series_config_path = None
-        self.calculator.module1_config_path = None
-        self.calculator.data_path = None
-        self.calculator.series_config = None
-
-    def __getattr__(self, name):
-        if name in self._CALCULATOR_HELPERS:
-            self._sync_calculator_state()
-            return getattr(self.calculator, name)
-        raise AttributeError(name)
-
     def _resolve_target(self, target: str, level: str | None, allow_group: bool = False):
-        return self.analysis._resolve_target(target, level, allow_group=allow_group)
-
-    def _resolve_historical_event_window(self, context_id=None, start=None, end=None):
-        if context_id is None:
-            return start, end
-        if self.historical_context is None:
-            raise ValueError(
-                "Run load_historical_context() before using context_id-based diagnostics."
-            )
-        events = self.historical_context.get("events")
-        if events is None or events.empty:
-            raise ValueError("historical_context events are not loaded.")
-        matched_events = events[events["context_id"] == context_id]
-        if matched_events.empty:
-            raise ValueError(f"Unknown historical context_id: {context_id}")
-        event = matched_events.iloc[0]
-        if start is None:
-            start = event["start"]
-        if end is None:
-            end = event["end"]
-        return start, end
+        return self.analysis.resolve_target(target, level, allow_group=allow_group)
 
     def get_target_context(
         self,
@@ -133,17 +78,11 @@ class Module1Diagnostics:
         dependency_level="auto",
         include_labels=True,
         include_strength=True,
-        context_id=None,
         start=None,
         end=None,
         ffill_inputs=True,
     ) -> TargetContextResult:
-        start, end = self._resolve_historical_event_window(
-            context_id=context_id,
-            start=start,
-            end=end,
-        )
-        result = self.analysis.get_target_context(
+        return self.analysis.get_target_context(
             target=target,
             level=level,
             dependency_level=dependency_level,
@@ -153,11 +92,6 @@ class Module1Diagnostics:
             end=end,
             ffill_inputs=ffill_inputs,
         )
-        if context_id is not None:
-            request = result.request.copy()
-            request["context_id"] = context_id
-            result = replace(result, request=request, context_id=context_id)
-        return result
 
     def _count_series_changes(self, series: pd.Series) -> int:
         valid = series.dropna()
@@ -185,13 +119,6 @@ class Module1Diagnostics:
             if component.get("score", {}).get("output") is not None
         }
 
-    def _diagnostic_component_filter_for_target(
-        self,
-        target: str | None,
-    ) -> set[str] | None:
-        component_names = self._diagnostic_component_names_for_target(target)
-        return None if component_names is None else set(component_names)
-
     def _diagnostic_component_names_for_target(
         self,
         target: str | None,
@@ -206,19 +133,15 @@ class Module1Diagnostics:
             raise ValueError(f"Unknown prepared-input diagnostic target: {target}")
 
         component_by_score_output = self._component_by_score_output()
-        component_names = set()
+        component_names = []
         for item in stance_config.get("inputs", []):
             if not isinstance(item, dict):
                 continue
             score_output = item.get("component")
             component_name = component_by_score_output.get(score_output)
-            if component_name is not None:
-                component_names.add(component_name)
-        return tuple(
-            component_name
-            for component_name in component_by_score_output.values()
-            if component_name in component_names
-        )
+            if component_name is not None and component_name not in component_names:
+                component_names.append(component_name)
+        return tuple(component_names)
 
     def _score_input_features_for_diagnostic_component(
         self,
@@ -238,26 +161,6 @@ class Module1Diagnostics:
             if isinstance(item, dict) and item.get("feature") is not None
         )
 
-    def _score_input_features_for_diagnostic_components(
-        self,
-        component_names: tuple[str, ...],
-    ) -> tuple[str, ...]:
-        if self.component_config is None:
-            raise ValueError("Run load_module1_config() before prepared-input diagnostics.")
-
-        features = []
-        seen = set()
-        components = self.component_config["components"]
-        for component_name in component_names:
-            score_config = components[component_name].get("score", {})
-            for feature in self._score_input_features_for_diagnostic_component(
-                score_config,
-            ):
-                if feature not in seen:
-                    features.append(feature)
-                    seen.add(feature)
-        return tuple(features)
-
     def _diagnostic_input_specs(
         self,
         target: str | None = None,
@@ -268,16 +171,16 @@ class Module1Diagnostics:
             raise ValueError("Run load_module1_config() before prepared-input diagnostics.")
 
         components = self.component_config["components"]
-        target_component_filter = self._diagnostic_component_filter_for_target(target)
+        target_component_names = self._diagnostic_component_names_for_target(target)
+        component_names = (
+            tuple(components)
+            if target_component_names is None
+            else target_component_names
+        )
         specs = []
         requested_kinds = set(kinds)
-        for component_name, component in components.items():
-            if (
-                target_component_filter is not None
-                and component_name not in target_component_filter
-            ):
-                continue
-
+        for component_name in component_names:
+            component = components[component_name]
             diagnostics = component.get("diagnostics") or {}
             prepared_inputs = diagnostics.get("prepared_inputs") or {}
             if prepared_inputs.get("enabled") is not True:
@@ -330,56 +233,6 @@ class Module1Diagnostics:
                     )
         return tuple(specs)
 
-    def _diagnostic_input_spec(
-        self,
-        target: str,
-        component: str,
-        source: str,
-        kind: str,
-        role: str | None = None,
-    ) -> DiagnosticInputSpec:
-        matches = [
-            spec
-            for spec in self._diagnostic_input_specs(
-                target,
-                kinds=("prepared", "filtered"),
-            )
-            if spec.component == component
-            and spec.source == source
-            and spec.kind == kind
-            and (role is None or spec.role == role)
-        ]
-        if len(matches) != 1:
-            raise ValueError(
-                "Expected exactly one prepared/filtered diagnostic input spec for "
-                f"{target} {component} {source} {kind}, found {len(matches)}."
-            )
-        return matches[0]
-
-    def _diagnostic_input_spec_by_role(
-        self,
-        target: str,
-        component: str,
-        kind: str,
-        role: str,
-    ) -> DiagnosticInputSpec:
-        matches = [
-            spec
-            for spec in self._diagnostic_input_specs(
-                target,
-                kinds=("prepared", "filtered"),
-            )
-            if spec.component == component
-            and spec.kind == kind
-            and spec.role == role
-        ]
-        if len(matches) != 1:
-            raise ValueError(
-                "Expected exactly one prepared/filtered diagnostic input spec for "
-                f"{target} {component} {kind} role={role}, found {len(matches)}."
-            )
-        return matches[0]
-
     def _prepared_filtered_input_columns(self, target: str) -> pd.DataFrame:
         if self.features is None:
             raise ValueError("Run calculate_features() before prepared-input diagnostics.")
@@ -391,6 +244,10 @@ class Module1Diagnostics:
             target,
             kinds=("prepared", "filtered"),
         )
+        specs_by_key = {}
+        for spec in specs:
+            key = (spec.component, spec.source, spec.kind)
+            specs_by_key.setdefault(key, []).append(spec)
         prepared = pd.DataFrame(index=self.features.index)
 
         prepared_specs = [spec for spec in specs if spec.kind == "prepared"]
@@ -398,19 +255,22 @@ class Module1Diagnostics:
             if spec.source not in self.features.columns:
                 continue
             score_config = components.get(spec.component, {}).get("score", {})
-            prepared[spec.output] = self._prepare_component_input_series(
+            prepared[spec.output] = Module1Calculator._prepare_component_input_series(
                 self.features[spec.source],
                 score_config.get("input_preparation"),
+                self.horizons,
             )
 
         for spec in (spec for spec in specs if spec.kind == "filtered"):
-            source_spec = self._diagnostic_input_spec(
-                target,
-                spec.component,
-                spec.source,
-                "prepared",
-                role=spec.role,
-            )
+            source_key = (spec.component, spec.source, "prepared")
+            source_matches = specs_by_key.get(source_key, [])
+            if len(source_matches) != 1:
+                raise ValueError(
+                    "Expected exactly one prepared/filtered diagnostic input spec for "
+                    f"{target} {spec.component} {spec.source} prepared, "
+                    f"found {len(source_matches)}."
+                )
+            source_spec = source_matches[0]
             if source_spec.output not in prepared.columns:
                 continue
             score_config = components.get(spec.component, {}).get("score", {})
@@ -429,7 +289,6 @@ class Module1Diagnostics:
         self,
         stance_name: str,
         stance_config: dict,
-        context_id: str | None = None,
         start=None,
         end=None,
         include_raw_input: bool = True,
@@ -481,7 +340,8 @@ class Module1Diagnostics:
                 f"{missing_stance_cols}"
             )
 
-        diagnostics = self._build_weighted_stance_score_breakdown(
+        diagnostics = Module1Calculator._build_weighted_stance_score_breakdown(
+            self.scores,
             stance_name,
             stance_config,
         )
@@ -529,7 +389,6 @@ class Module1Diagnostics:
                     axis=1,
                 )
 
-        start, end = self._resolve_historical_event_window(context_id, start, end)
         if start is not None:
             diagnostics = diagnostics.loc[diagnostics.index >= pd.to_datetime(start)]
         if end is not None:
@@ -537,11 +396,11 @@ class Module1Diagnostics:
 
         return diagnostics
 
-    def _resolve_rule_mapped_diagnostic_config(self, target: str) -> dict:
-        if target is None or str(target).strip() == "":
-            raise ValueError("target must be a non-empty stance identifier.")
-
-        target_info = self._resolve_target(target, level="stance")
+    def _resolve_rule_mapped_diagnostic_spec(
+        self,
+        target: str,
+        target_info,
+    ) -> RuleMappedDiagnosticSpec:
         stance_name = target_info.canonical_target
         stance_config = target_info.config
         function = stance_config.get("function") if stance_config else None
@@ -550,74 +409,54 @@ class Module1Diagnostics:
                 f"Unsupported rule-mapped stance diagnostic target {target}: "
                 f"{function}. Schema-backed rule_mapped config is required."
             )
-        rule_mapped_spec = self._resolve_rule_mapped_stance_schema(
+        rule_mapped_schema = Module1Calculator._resolve_rule_mapped_stance_schema(
             stance_name,
             stance_config,
+            self.component_config,
         )
-        score_input_cols = tuple(
-            state_input.source_score_col
-            for state_input in rule_mapped_spec.state_inputs
-        )
-        return {
-            "target_info": target_info,
-            "stance_name": stance_name,
-            "stance_config": stance_config,
-            "function": function,
-            "score_input_cols": score_input_cols,
-            "final_score_col": target_info.score_col or stance_config["score_output"],
-            "stance_label_col": target_info.label_col or stance_config["stance_output"],
-            "strength_label_col": (
-                target_info.strength_col or stance_config["strength_output"]
-            ),
-            "rule_mapped_spec": rule_mapped_spec,
-        }
-
-    def _derive_rule_mapped_diagnostic_spec_from_context(
-        self,
-        context: dict,
-    ) -> RuleMappedDiagnosticSpec:
-        stance_name = context["stance_name"]
-        function = context["function"]
-        rule_mapped_spec = context.get("rule_mapped_spec")
-        adjustment = rule_mapped_spec.adjustment
+        adjustment = rule_mapped_schema.adjustment
 
         return RuleMappedDiagnosticSpec(
             target=stance_name,
+            stance_config=stance_config,
             function=function,
+            rule_mapped_schema=rule_mapped_schema,
             score_input_cols=tuple(
                 state_input.source_score_col
-                for state_input in rule_mapped_spec.state_inputs
+                for state_input in rule_mapped_schema.state_inputs
             ),
             raw_state_cols=tuple(
                 state_input.raw_output_col
-                for state_input in rule_mapped_spec.state_inputs
+                for state_input in rule_mapped_schema.state_inputs
             ),
             stabilized_state_cols=tuple(
                 state_input.stabilized_output_col
-                for state_input in rule_mapped_spec.state_inputs
+                for state_input in rule_mapped_schema.state_inputs
             ),
-            rule_case_col=rule_mapped_spec.rule_case_output_col,
-            final_score_col=context["final_score_col"],
-            stance_label_col=context["stance_label_col"],
-            strength_label_col=context["strength_label_col"],
+            rule_case_col=rule_mapped_schema.rule_case_output_col,
+            final_score_col=target_info.score_col or stance_config["score_output"],
+            stance_label_col=target_info.label_col or stance_config["stance_output"],
+            strength_label_col=(
+                target_info.strength_col or stance_config["strength_output"]
+            ),
             component_names=tuple(
                 state_input.diagnostic_component or state_input.component_name
-                for state_input in rule_mapped_spec.state_inputs
+                for state_input in rule_mapped_schema.state_inputs
             ),
             stabilization_change_cols=tuple(
                 state_input.stabilization_changed_output_col
-                for state_input in rule_mapped_spec.state_inputs
+                for state_input in rule_mapped_schema.state_inputs
             ),
             stabilization_change_any_col=(
-                rule_mapped_spec.stabilization_changed_any_output_col
+                rule_mapped_schema.stabilization_changed_any_output_col
             ),
-            base_rule_score_col=rule_mapped_spec.base_rule_score_output_col,
+            base_rule_score_col=rule_mapped_schema.base_rule_score_output_col,
             adjustment_col=(
                 adjustment.adjustment_output_col
                 if adjustment is not None
                 else None
             ),
-            adjusted_score_col=rule_mapped_spec.adjusted_score_output_col,
+            adjusted_score_col=rule_mapped_schema.adjusted_score_output_col,
             rule_metadata_cols=(
                 adjustment.metadata_output_cols
                 if adjustment is not None
@@ -627,8 +466,7 @@ class Module1Diagnostics:
 
     def _trace_rule_mapped_stance_score(
         self,
-        target: str,
-        context_id: str | None = None,
+        spec: RuleMappedDiagnosticSpec,
         start=None,
         end=None,
         include_raw_input: bool = True,
@@ -652,10 +490,6 @@ class Module1Diagnostics:
                 "diagnostics with include_labels=True."
             )
 
-        context = self._resolve_rule_mapped_diagnostic_config(target)
-        spec = self._derive_rule_mapped_diagnostic_spec_from_context(context)
-        target_info = self._resolve_target(spec.target, level="stance")
-        stance_config = target_info.config
         ctx = self.get_target_context(
             target=spec.target,
             level="stance",
@@ -679,9 +513,12 @@ class Module1Diagnostics:
                 f"{missing_stance_cols}"
             )
 
-        diagnostics = self._build_rule_mapped_stance_score_breakdown(
+        diagnostics = Module1Calculator._build_rule_mapped_stance_score_breakdown(
+            self.scores,
+            self.component_config,
             spec.target,
-            stance_config,
+            spec.stance_config,
+            spec.rule_mapped_schema,
         )
         diagnostics = pd.concat(
             [
@@ -717,7 +554,6 @@ class Module1Diagnostics:
             if context_parts:
                 diagnostics = pd.concat([diagnostics, *context_parts], axis=1)
 
-        start, end = self._resolve_historical_event_window(context_id, start, end)
         if start is not None:
             diagnostics = diagnostics.loc[diagnostics.index >= pd.to_datetime(start)]
         if end is not None:
@@ -766,45 +602,87 @@ class Module1Diagnostics:
         ctx: TargetContextResult,
         index: pd.Index,
     ) -> list[pd.DataFrame]:
-        if spec.target == "credit":
-            context_parts = []
-            feature_cols = list(ctx.returned_columns["features"])
-            raw_input_cols = list(ctx.returned_columns["raw_inputs"])
-            if "baa10y_change" in feature_cols:
-                context_parts.append(ctx.data[["baa10y_change"]].reindex(index))
-            if "baa10y" in raw_input_cols:
-                context_parts.append(ctx.data[["baa10y"]].reindex(index))
-            context_parts.append(
-                self._prepared_filtered_input_columns(spec.target).reindex(index)
-            )
-            return context_parts
+        """Build trace context in a fixed semantic order.
 
-        if spec.target == "curve_positioning":
-            context_cols = [
-                col
-                for col in ["dgs2", "dgs10"]
-                if col in ctx.returned_columns["raw_inputs"]
-            ]
-            component_names = self._diagnostic_component_names_for_target(spec.target)
-            feature_cols = (
-                self._score_input_features_for_diagnostic_components(
-                    tuple(reversed(component_names))
+        Raw inputs precede derived features, which precede prepared/filtered
+        inputs. Sources follow the resolved rule-mapped declaration order in
+        ``spec.score_input_cols``.
+        """
+        declared_prepared_specs = self._diagnostic_input_specs(
+            spec.target,
+            kinds=("prepared",),
+        )
+        if declared_prepared_specs:
+            component_by_score_output = self._component_by_score_output()
+            ordered_sources = []
+            for score_input in spec.score_input_cols:
+                component_name = component_by_score_output.get(score_input)
+                for item in declared_prepared_specs:
+                    if (
+                        item.component == component_name
+                        and item.source not in ordered_sources
+                    ):
+                        ordered_sources.append(item.source)
+
+            returned_features = ctx.returned_columns["features"]
+            feature_definitions = self.feature_config["features"]
+            feature_cols = []
+            visited_features = set()
+
+            def add_feature_with_dependencies(feature_name: str) -> None:
+                if feature_name in visited_features:
+                    return
+                visited_features.add(feature_name)
+
+                definition = feature_definitions.get(feature_name, {})
+                method = definition.get("method")
+                dependencies = []
+                if method in {"change", "pct_change", "level"}:
+                    dependencies.append(definition.get("input"))
+                elif method == "spread":
+                    dependencies.extend(definition.get("inputs") or [])
+
+                for dependency in dependencies:
+                    if dependency in returned_features:
+                        add_feature_with_dependencies(dependency)
+
+                if (
+                    feature_name in returned_features
+                    and method != "level"
+                    and feature_name not in feature_cols
+                ):
+                    feature_cols.append(feature_name)
+
+            for source in ordered_sources:
+                add_feature_with_dependencies(source)
+
+            returned_raw_inputs = ctx.returned_columns["raw_inputs"]
+            feature_dependency_map = ctx.resolved_path["feature_to_raw_inputs"]
+            raw_input_cols = []
+            for source in ordered_sources:
+                for raw_input in feature_dependency_map.get(source, ()):
+                    if (
+                        raw_input in returned_raw_inputs
+                        and raw_input not in raw_input_cols
+                    ):
+                        raw_input_cols.append(raw_input)
+
+            context_groups = {
+                "raw_inputs": ctx.data[raw_input_cols].reindex(index),
+                "features": ctx.data[feature_cols].reindex(index),
+                "prepared_filtered_inputs": self._prepared_filtered_input_columns(
+                    spec.target
+                ).reindex(index),
+            }
+            return [
+                context_groups[group_name]
+                for group_name in (
+                    "raw_inputs",
+                    "features",
+                    "prepared_filtered_inputs",
                 )
-                if component_names is not None
-                else ()
-            )
-            context_cols.extend(
-                col
-                for col in feature_cols
-                if col in ctx.returned_columns["features"]
-            )
-            context_parts = []
-            if context_cols:
-                context_parts.append(ctx.data[context_cols].reindex(index))
-            context_parts.append(
-                self._prepared_filtered_input_columns(spec.target).reindex(index)
-            )
-            return context_parts
+                if context_groups[group_name].shape[1] > 0
+            ]
 
         raw_inputs = list(ctx.returned_columns["raw_inputs"])
         missing_raw_inputs = [col for col in raw_inputs if col not in ctx.data.columns]
@@ -816,17 +694,6 @@ class Module1Diagnostics:
         if raw_inputs:
             return [ctx.data[raw_inputs].reindex(index)]
         return []
-
-    def _duration_rule_stance_config(self) -> dict:
-        if self.exposure_stance_config is None:
-            raise ValueError("Run load_module1_config() before duration diagnostics.")
-
-        stance_config = self.exposure_stance_config["exposure_stances"].get("duration")
-        if stance_config is None:
-            raise ValueError("Duration exposure stance config is missing.")
-        if stance_config.get("function") != "duration_rule_stance":
-            raise ValueError("Active duration stance is not duration_rule_stance.")
-        return stance_config
 
     def _rule_mapped_selected_columns(
         self,
@@ -871,7 +738,6 @@ class Module1Diagnostics:
     def diagnose_rule_mapped_stance(
         self,
         target: str,
-        context_id: str | None = None,
         start=None,
         end=None,
         *,
@@ -900,6 +766,9 @@ class Module1Diagnostics:
         only centralizes access through one public entry point and preserves the
         existing outputs.
         """
+        if target is None or str(target).strip() == "":
+            raise ValueError("target must be a non-empty stance identifier.")
+
         allowed_views = {"state", "transitions", "stability"}
         if view not in allowed_views:
             allowed = ", ".join(
@@ -910,8 +779,8 @@ class Module1Diagnostics:
                 f"Allowed values are: {allowed}."
             )
 
-        context = self._resolve_rule_mapped_diagnostic_config(target)
-        spec = self._derive_rule_mapped_diagnostic_spec_from_context(context)
+        target_info = self._resolve_target(target, level="stance")
+        spec = self._resolve_rule_mapped_diagnostic_spec(target, target_info)
         if view != "state":
             include_scores = False
             include_raw_states = True
@@ -920,8 +789,7 @@ class Module1Diagnostics:
             include_labels = True
 
         diagnostics = self._trace_rule_mapped_stance_score(
-            spec.target,
-            context_id=context_id,
+            spec,
             start=start,
             end=end,
             include_raw_input=False,
@@ -1115,31 +983,6 @@ class Module1Diagnostics:
         score_summary.update(self._series_value_shares(stance, "stance"))
         score_summary.update(self._series_value_shares(strength, "strength"))
 
-        if spec.target == "duration":
-            stance_config = self._duration_rule_stance_config()
-            positive_label = stance_config["labels"]["direction"].get("positive")
-            neutral_label = stance_config["labels"]["direction"].get("neutral")
-            negative_label = stance_config["labels"]["direction"].get("negative")
-            score_summary.update(
-                {
-                    "positive_stance_share": (
-                        float((stance == positive_label).sum() / stance_count)
-                        if stance_count
-                        else pd.NA
-                    ),
-                    "neutral_stance_share": (
-                        float((stance == neutral_label).sum() / stance_count)
-                        if stance_count
-                        else pd.NA
-                    ),
-                    "negative_stance_share": (
-                        float((stance == negative_label).sum() / stance_count)
-                        if stance_count
-                        else pd.NA
-                    ),
-                }
-            )
-
         return {
             "component_state_summary": self._rule_mapped_component_state_summary(
                 diagnostics,
@@ -1153,29 +996,9 @@ class Module1Diagnostics:
             "score_summary": pd.DataFrame([score_summary]),
         }
 
-    def _curve_positioning_stance_config(self) -> dict:
-        if self.exposure_stance_config is None:
-            raise ValueError("Run load_module1_config() before curve diagnostics.")
-
-        stance_config = self.exposure_stance_config["exposure_stances"].get(
-            "curve_positioning"
-        )
-        if stance_config is None:
-            raise ValueError("Curve positioning stance config is missing.")
-
-        return stance_config
-
-    def _rule_mapped_trace_supported_functions(self) -> set[str]:
-        return {
-            "duration_rule_stance",
-            "credit_spread_stance",
-            "curve_positioning_stance",
-        }
-
     def trace_stance_score(
         self,
         target: str,
-        context_id: str | None = None,
         start=None,
         end=None,
         include_raw_input: bool = True,
@@ -1196,17 +1019,16 @@ class Module1Diagnostics:
             return self._trace_weighted_stance_score(
                 stance_name,
                 stance_config,
-                context_id=context_id,
                 start=start,
                 end=end,
                 include_raw_input=include_raw_input,
                 include_labels=include_labels,
             )
 
-        if function in self._rule_mapped_trace_supported_functions():
+        if "rule_mapped" in stance_config:
+            spec = self._resolve_rule_mapped_diagnostic_spec(target, target_info)
             return self._trace_rule_mapped_stance_score(
-                stance_name,
-                context_id=context_id,
+                spec,
                 start=start,
                 end=end,
                 include_raw_input=include_raw_input,

@@ -170,7 +170,7 @@ and `CF` marks recalculation/reconstruction/counterfactual behavior.
 | 5134 | `_target_resolution_for_feature` | `Module1Analysis` | R: `feature_config`. |
 | 5162 | `_normalize_target_level` | `Module1Analysis` | Target resolution helper. |
 | 5190 | `_resolve_target_for_context` | `Module1Analysis` | R: `data`, `feature_config`; result/context helper. |
-| 5229 | `_resolve_target` | `Module1Analysis` | Target resolver. |
+| 5229 | `resolve_target` | `Module1Analysis` | Public target resolver. |
 | 5375 | `_features_for_component_score` | `Module1Analysis` | R: `component_config`. |
 | 5415 | `_raw_input_dependencies_for_feature` | `Module1Analysis` | R: `data`, `feature_config`. |
 | 5481 | `_dependencies_for_resolution` | `Module1Analysis` | Dependency resolver. |

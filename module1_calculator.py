@@ -469,17 +469,18 @@ class Module1Calculator:
         return config
 
 
-    def _get_horizon(self, key) -> int:
+    @staticmethod
+    def _get_horizon(horizons: dict | None, key) -> int:
         if isinstance(key, int):
             return key
 
-        if self.horizons is None:
+        if horizons is None:
             raise ValueError("Run load_module1_config() before resolving horizons.")
 
-        if key not in self.horizons:
+        if key not in horizons:
             raise ValueError(f"Unknown horizon key: {key}")
 
-        return self.horizons[key]
+        return horizons[key]
 
 
     def _get_input_series(self, name: str, features: pd.DataFrame) -> pd.Series:
@@ -506,7 +507,10 @@ class Module1Calculator:
                 raise ValueError(f"{method} feature is missing input.")
 
             sr = self._get_input_series(input_name, features)
-            horizon = self._get_horizon(definition.get("horizon"))
+            horizon = self._get_horizon(
+                self.horizons,
+                definition.get("horizon"),
+            )
 
             if frequency == "monthly":
                 calc_sr = sr.dropna()
@@ -619,10 +623,11 @@ class Module1Calculator:
         return sr.dropna().rolling(window=window, min_periods=window).mean().reindex(sr.index)
 
 
+    @staticmethod
     def _prepare_component_input_series(
-        self,
         sr: pd.Series,
         input_preparation: dict | None,
+        horizons: dict | None,
     ) -> pd.Series:
         if not input_preparation:
             return sr
@@ -631,7 +636,7 @@ class Module1Calculator:
         if smoothing is None:
             return sr
 
-        window = self._get_horizon(smoothing)
+        window = Module1Calculator._get_horizon(horizons, smoothing)
         return (
             sr.dropna()
             .rolling(window=window, min_periods=window)
@@ -676,6 +681,7 @@ class Module1Calculator:
                 score_input = self._prepare_component_input_series(
                     score_input,
                     input_preparation,
+                    self.horizons,
                 )
 
             prepared.append(score_input)
@@ -748,8 +754,8 @@ class Module1Calculator:
         return score
 
 
+    @staticmethod
     def _weighted_sum_score(
-        self,
         weighted_terms: list[tuple[pd.Series, float]],
         *,
         context: str,
@@ -794,6 +800,7 @@ class Module1Calculator:
             score = self._prepare_component_input_series(
                 score,
                 score_config.get("input_preparation"),
+                self.horizons,
             )
         score = self._apply_sign(score, score_config.get("sign"))
         return self._normalize_score_input(
@@ -844,6 +851,7 @@ class Module1Calculator:
                 score_input = self._prepare_component_input_series(
                     score_input,
                     score_config.get("input_preparation"),
+                    self.horizons,
                 )
             feature_score = self._normalize_score_input(
                 score_input,
@@ -947,7 +955,8 @@ class Module1Calculator:
         return buckets
 
 
-    def _rule_state_is_missing(self, state) -> bool:
+    @staticmethod
+    def _rule_state_is_missing(state) -> bool:
         if state is None:
             return True
         try:
@@ -959,12 +968,13 @@ class Module1Calculator:
         return False
 
 
-    def _rule_case_from_states(self, states):
+    @staticmethod
+    def _rule_case_from_states(states):
         if isinstance(states, str) or not isinstance(states, (list, tuple)):
             raise ValueError("Rule case states must be a list or tuple.")
         if not states:
             raise ValueError("Rule case states must not be empty.")
-        if any(self._rule_state_is_missing(state) for state in states):
+        if any(Module1Calculator._rule_state_is_missing(state) for state in states):
             return pd.NA
 
         parts = tuple(str(state).strip() for state in states)
@@ -973,8 +983,8 @@ class Module1Calculator:
         return "|".join(parts)
 
 
+    @staticmethod
     def _lookup_rule_score(
-        self,
         states,
         rule_scores: Mapping,
         *,
@@ -984,7 +994,7 @@ class Module1Calculator:
             raise ValueError("Rule score lookup states must be a list or tuple.")
         if not states:
             raise ValueError("Rule score lookup states must not be empty.")
-        if any(self._rule_state_is_missing(state) for state in states):
+        if any(Module1Calculator._rule_state_is_missing(state) for state in states):
             return pd.NA
 
         rule_key = tuple(str(state).strip() for state in states)
@@ -999,13 +1009,14 @@ class Module1Calculator:
         return rule_scores[rule_key]
 
 
+    @staticmethod
     def _validate_required_score_columns(
-        self,
+        scores: pd.DataFrame | None,
         required_score_cols,
         *,
         context: str = "Rule-mapped stance",
     ) -> None:
-        if self.scores is None:
+        if scores is None:
             raise ValueError(
                 f"Run calculate_component_scores() before {context} calculation."
             )
@@ -1026,26 +1037,27 @@ class Module1Calculator:
                 f"{context} required score columns must not contain duplicates."
             )
 
-        missing = [col for col in required_score_cols if col not in self.scores.columns]
+        missing = [col for col in required_score_cols if col not in scores.columns]
         if missing:
             raise ValueError(
                 f"Missing component score column(s) for {context}: {missing}"
             )
 
 
+    @staticmethod
     def _resolve_component_name_for_score_output(
-        self,
+        component_config: dict | None,
         score_output: str,
         *,
         context: str,
     ) -> str:
-        if self.component_config is None:
+        if component_config is None:
             raise ValueError(f"Run load_module1_config() before resolving {context}.")
         if not isinstance(score_output, str) or score_output.strip() == "":
             raise ValueError(f"{context} source_score must be a non-empty string.")
 
         matches = []
-        for component_name, component in self.component_config["components"].items():
+        for component_name, component in component_config["components"].items():
             output = component.get("score", {}).get("output")
             if output == score_output:
                 matches.append(component_name)
@@ -1062,17 +1074,18 @@ class Module1Calculator:
         return matches[0]
 
 
+    @staticmethod
     def _resolve_rule_mapped_stance_schema(
-        self,
         stance_name: str,
         stance_config: dict,
+        component_config: dict | None,
     ) -> _RuleMappedStanceSpec:
         context = f"rule_mapped stance {stance_name}"
         if not isinstance(stance_name, str) or stance_name.strip() == "":
             raise ValueError("rule_mapped stance name must be a non-empty string.")
         if not isinstance(stance_config, Mapping):
             raise ValueError(f"{context} config must be a mapping.")
-        if self.component_config is None:
+        if component_config is None:
             raise ValueError(
                 "Run load_module1_config() before resolving rule_mapped stance schemas."
             )
@@ -1118,12 +1131,13 @@ class Module1Calculator:
                     f"{classification}; expected one of {sorted(supported_classifications)}."
                 )
 
-            component_name = self._resolve_component_name_for_score_output(
+            component_name = Module1Calculator._resolve_component_name_for_score_output(
+                component_config,
                 source_score_col,
                 context=f"{input_context} ({name})",
             )
             component_score = (
-                self.component_config["components"].get(component_name, {}).get("score", {})
+                component_config["components"].get(component_name, {}).get("score", {})
             )
             if classification in {"threshold_bucket", "score_bucket"}:
                 expected_classification, mixed_bucket_style = (
@@ -1346,7 +1360,8 @@ class Module1Calculator:
         )
 
 
-    def _bucket_matches_value(self, value: float, bucket_rule: dict) -> bool:
+    @staticmethod
+    def _bucket_matches_value(value: float, bucket_rule: dict) -> bool:
         if "min" in bucket_rule and value < bucket_rule["min"]:
             return False
         if "min_exclusive" in bucket_rule and value <= bucket_rule["min_exclusive"]:
@@ -1358,7 +1373,8 @@ class Module1Calculator:
         return True
 
 
-    def _threshold_bucket(self, score, bucket_config: dict):
+    @staticmethod
+    def _threshold_bucket(score, bucket_config: dict):
         if pd.isna(score):
             return pd.NA
 
@@ -1369,7 +1385,7 @@ class Module1Calculator:
             if bucket_rule.get("default") is True:
                 default_bucket = bucket_name
                 continue
-            if self._bucket_matches_value(float(score), bucket_rule):
+            if Module1Calculator._bucket_matches_value(float(score), bucket_rule):
                 return bucket_name
 
         if default_bucket is not None:
@@ -1377,7 +1393,8 @@ class Module1Calculator:
         raise ValueError(f"Curve score {score} did not match any configured bucket.")
 
 
-    def _score_bucket(self, score, bucket_config: dict):
+    @staticmethod
+    def _score_bucket(score, bucket_config: dict):
         if pd.isna(score):
             return pd.NA
 
@@ -1487,6 +1504,7 @@ class Module1Calculator:
                 score_input = self._prepare_component_input_series(
                     score_input,
                     score_config.get("input_preparation"),
+                    self.horizons,
                 )
             score = self._fixed_anchor_state_score(
                 score_input,
@@ -1526,6 +1544,7 @@ class Module1Calculator:
                     score_input = self._prepare_component_input_series(
                         score_input,
                         score_config.get("input_preparation"),
+                        self.horizons,
                     )
                 feature_score = self._fixed_anchor_state_score(
                     score_input,
@@ -1759,8 +1778,9 @@ class Module1Calculator:
         return strength_labels.get("moderate")
 
 
+    @staticmethod
     def _stance_weight_terms(
-        self,
+        scores: pd.DataFrame,
         stance_name: str,
         stance_config: Mapping,
     ) -> list[tuple[str, float]]:
@@ -1788,7 +1808,7 @@ class Module1Calculator:
                     f"Weighted stance target {stance_name} inputs[{idx}] "
                     "is missing component."
                 )
-            if component_col not in self.scores.columns:
+            if component_col not in scores.columns:
                 raise ValueError(
                     f"Missing component score column for weighted stance target "
                     f"{stance_name}: "
@@ -1816,19 +1836,24 @@ class Module1Calculator:
         return weighted_terms
 
 
+    @staticmethod
     def _build_weighted_stance_score_breakdown(
-        self,
+        scores: pd.DataFrame,
         stance_name: str,
         stance_config: dict,
     ) -> pd.DataFrame:
-        weighted_terms = self._stance_weight_terms(stance_name, stance_config)
+        weighted_terms = Module1Calculator._stance_weight_terms(
+            scores,
+            stance_name,
+            stance_config,
+        )
         component_score_cols = [component_col for component_col, _ in weighted_terms]
 
         score_output = stance_config.get("score_output")
         if score_output is None:
             raise ValueError(f"Exposure stance {stance_name} score output is missing.")
 
-        breakdown = self.scores[component_score_cols].copy()
+        breakdown = scores[component_score_cols].copy()
         weighted_series_terms = []
 
         for component_col, weight in weighted_terms:
@@ -1838,15 +1863,16 @@ class Module1Calculator:
             breakdown[contribution_col] = breakdown[component_col] * weight
             weighted_series_terms.append((breakdown[component_col], weight))
 
-        breakdown[score_output] = self._weighted_sum_score(
+        breakdown[score_output] = Module1Calculator._weighted_sum_score(
             weighted_series_terms,
             context=f"Exposure stance {stance_name}",
         )
         return breakdown
 
 
+    @staticmethod
     def _rule_mapped_thresholds_for_input(
-        self,
+        component_config: dict,
         state_input: _RuleMappedStateInputSpec,
         stance_config: dict,
     ) -> dict:
@@ -1855,7 +1881,7 @@ class Module1Calculator:
             positive = stance_thresholds.get("positive")
             negative = stance_thresholds.get("negative")
         else:
-            component = self.component_config["components"].get(
+            component = component_config["components"].get(
                 state_input.component_name,
                 {},
             )
@@ -1884,12 +1910,13 @@ class Module1Calculator:
         }
 
 
+    @staticmethod
     def _rule_mapped_bucket_config_for_input(
-        self,
+        component_config: dict,
         state_input: _RuleMappedStateInputSpec,
     ) -> dict:
         buckets = (
-            self.component_config["components"]
+            component_config["components"]
             .get(state_input.component_name, {})
             .get("score", {})
             .get("buckets")
@@ -1902,8 +1929,8 @@ class Module1Calculator:
         return buckets
 
 
+    @staticmethod
     def _rule_mapped_bucket_candidate(
-        self,
         state_input: _RuleMappedStateInputSpec,
         bucket_config: dict,
         value,
@@ -1912,28 +1939,29 @@ class Module1Calculator:
         hysteresis_buffer: float = 0.0,
     ):
         if state_input.classification == "score_bucket":
-            return self._score_bucket(value, bucket_config)
+            return Module1Calculator._score_bucket(value, bucket_config)
 
-        if self._threshold_tail_default_bucket_parts(bucket_config) is not None:
-            return self._threshold_bucket_hysteresis_candidate(
+        if Module1Calculator._threshold_tail_default_bucket_parts(bucket_config) is not None:
+            return Module1Calculator._threshold_bucket_hysteresis_candidate(
                 value,
                 active_state=active_state,
                 hysteresis_buffer=hysteresis_buffer,
                 bucket_config=bucket_config,
             )
 
-        if self._is_ordered_threshold_bucket_config(bucket_config):
-            return self._ordered_threshold_bucket_hysteresis_candidate(
+        if Module1Calculator._is_ordered_threshold_bucket_config(bucket_config):
+            return Module1Calculator._ordered_threshold_bucket_hysteresis_candidate(
                 value,
                 active_state=active_state,
                 hysteresis_buffer=hysteresis_buffer,
                 bucket_config=bucket_config,
             )
 
-        return self._threshold_bucket(value, bucket_config)
+        return Module1Calculator._threshold_bucket(value, bucket_config)
 
 
-    def _threshold_tail_default_bucket_parts(self, bucket_config: dict):
+    @staticmethod
+    def _threshold_tail_default_bucket_parts(bucket_config: dict):
         min_buckets = [
             (bucket_name, rule["min"])
             for bucket_name, rule in bucket_config.items()
@@ -1954,7 +1982,8 @@ class Module1Calculator:
         return min_buckets[0], max_buckets[0], default_buckets[0]
 
 
-    def _is_ordered_threshold_bucket_config(self, bucket_config: dict) -> bool:
+    @staticmethod
+    def _is_ordered_threshold_bucket_config(bucket_config: dict) -> bool:
         if not isinstance(bucket_config, dict) or not bucket_config:
             return False
         range_fields = {"min", "max", "min_exclusive", "max_exclusive"}
@@ -1968,8 +1997,8 @@ class Module1Calculator:
         return True
 
 
+    @staticmethod
     def _rule_mapped_adjusted_row(
-        self,
         state_tuple: tuple,
         score_tuple: tuple,
         base_score,
@@ -1992,8 +2021,8 @@ class Module1Calculator:
             row[adjustment.adjustment_output_col] = pd.NA
 
         if (
-            self._rule_state_is_missing(base_score)
-            or any(self._rule_state_is_missing(state) for state in state_tuple)
+            Module1Calculator._rule_state_is_missing(base_score)
+            or any(Module1Calculator._rule_state_is_missing(state) for state in state_tuple)
             or any(pd.isna(score) for score in score_tuple)
         ):
             row[spec.score_output_col] = pd.NA
@@ -2010,7 +2039,7 @@ class Module1Calculator:
                     f"rule_mapped adjustment for {spec.stance_name} only supports "
                     "threshold_state inputs."
                 )
-            intensity = self._credit_spread_state_intensity(
+            intensity = Module1Calculator._credit_spread_state_intensity(
                 score_value,
                 state_value,
                 thresholds_by_input[state_input.name],
@@ -2024,7 +2053,7 @@ class Module1Calculator:
         ):
             row[metadata_col] = intensity
 
-        adjusted_score, rule_adjustment = self._adjust_credit_spread_rule_score(
+        adjusted_score, rule_adjustment = Module1Calculator._adjust_credit_spread_rule_score(
             base_score,
             tuple(str(state) for state in state_tuple),
             intensities[0],
@@ -2037,18 +2066,21 @@ class Module1Calculator:
         return row
 
 
+    @staticmethod
     def _build_rule_mapped_stance_score_breakdown(
-        self,
+        scores: pd.DataFrame,
+        component_config: dict,
         stance_name: str,
         stance_config: dict,
+        spec: _RuleMappedStanceSpec,
         *,
         stabilization_overrides: dict | None = None,
     ) -> pd.DataFrame:
-        spec = self._resolve_rule_mapped_stance_schema(stance_name, stance_config)
         required_score_cols = [
             state_input.source_score_col for state_input in spec.state_inputs
         ]
-        self._validate_required_score_columns(
+        Module1Calculator._validate_required_score_columns(
+            scores,
             required_score_cols,
             context=f"rule_mapped stance {stance_name}",
         )
@@ -2061,14 +2093,15 @@ class Module1Calculator:
                 context=f"rule_mapped stance {stance_name}",
             )
 
-        breakdown = self.scores[required_score_cols].copy()
+        breakdown = scores[required_score_cols].copy()
         state_detail = pd.DataFrame(index=breakdown.index)
         thresholds_by_input = {}
         buckets_by_input = {}
         for state_input in spec.state_inputs:
             score = breakdown[state_input.source_score_col]
             if state_input.classification == "threshold_state":
-                thresholds = self._rule_mapped_thresholds_for_input(
+                thresholds = Module1Calculator._rule_mapped_thresholds_for_input(
+                    component_config,
                     state_input,
                     stance_config,
                 )
@@ -2077,13 +2110,13 @@ class Module1Calculator:
                 buckets_by_input[state_input.name] = buckets
                 state_detail[state_input.raw_output_col] = score.apply(
                     lambda value, thresholds=thresholds, buckets=buckets: (
-                        self._threshold_state_from_score(value, thresholds, buckets)
+                        Module1Calculator._threshold_state_from_score(value, thresholds, buckets)
                     )
                 )
                 state_detail[state_input.stabilized_output_col] = (
-                    self._stabilize_state_series(
+                    Module1Calculator._stabilize_state_series(
                         score,
-                        lambda value, active_state, hysteresis_buffer, thresholds=thresholds, buckets=buckets: self._threshold_hysteresis_candidate(
+                        lambda value, active_state, hysteresis_buffer, thresholds=thresholds, buckets=buckets: Module1Calculator._threshold_hysteresis_candidate(
                             value,
                             thresholds=thresholds,
                             positive_label=buckets["positive"],
@@ -2101,18 +2134,21 @@ class Module1Calculator:
                     )
                 )
             elif state_input.classification in {"threshold_bucket", "score_bucket"}:
-                bucket_config = self._rule_mapped_bucket_config_for_input(state_input)
+                bucket_config = Module1Calculator._rule_mapped_bucket_config_for_input(
+                    component_config,
+                    state_input,
+                )
                 state_detail[state_input.raw_output_col] = score.apply(
                     lambda value, state_input=state_input, bucket_config=bucket_config: (
-                        self._score_bucket(value, bucket_config)
+                        Module1Calculator._score_bucket(value, bucket_config)
                         if state_input.classification == "score_bucket"
-                        else self._threshold_bucket(value, bucket_config)
+                        else Module1Calculator._threshold_bucket(value, bucket_config)
                     )
                 )
                 state_detail[state_input.stabilized_output_col] = (
-                    self._stabilize_state_series(
+                    Module1Calculator._stabilize_state_series(
                         score,
-                        lambda value, active_state, hysteresis_buffer, state_input=state_input, bucket_config=bucket_config: self._rule_mapped_bucket_candidate(
+                        lambda value, active_state, hysteresis_buffer, state_input=state_input, bucket_config=bucket_config: Module1Calculator._rule_mapped_bucket_candidate(
                             state_input,
                             bucket_config,
                             value,
@@ -2165,15 +2201,15 @@ class Module1Calculator:
                 breakdown.loc[idx, state_input.source_score_col]
                 for state_input in spec.state_inputs
             )
-            rule_case = self._rule_case_from_states(state_tuple)
-            base_score = self._lookup_rule_score(
+            rule_case = Module1Calculator._rule_case_from_states(state_tuple)
+            base_score = Module1Calculator._lookup_rule_score(
                 state_tuple,
                 spec.rule_scores,
                 context=f"rule_mapped stance {stance_name}",
             )
             rule_row = {spec.rule_case_output_col: rule_case}
             rule_row.update(
-                self._rule_mapped_adjusted_row(
+                Module1Calculator._rule_mapped_adjusted_row(
                     state_tuple,
                     score_tuple,
                     base_score,
@@ -2193,8 +2229,8 @@ class Module1Calculator:
         return pd.concat([breakdown, state_detail, rule_detail], axis=1)
 
 
+    @staticmethod
     def _threshold_bucket_hysteresis_candidate(
-        self,
         value: float,
         *,
         active_state=None,
@@ -2204,9 +2240,11 @@ class Module1Calculator:
         if pd.isna(value):
             return pd.NA
         if hysteresis_buffer == 0.0:
-            return self._threshold_bucket(value, bucket_config)
+            return Module1Calculator._threshold_bucket(value, bucket_config)
 
-        bucket_parts = self._threshold_tail_default_bucket_parts(bucket_config)
+        bucket_parts = Module1Calculator._threshold_tail_default_bucket_parts(
+            bucket_config
+        )
         if bucket_parts is None:
             raise ValueError(
                 "Threshold buckets must define one min, one max, and one default bucket."
@@ -2240,7 +2278,8 @@ class Module1Calculator:
         return neutral_bucket
 
 
-    def _ordered_threshold_buckets(self, bucket_config: dict) -> list[dict]:
+    @staticmethod
+    def _ordered_threshold_buckets(bucket_config: dict) -> list[dict]:
         ordered = []
         for bucket_name, rule in bucket_config.items():
             if not isinstance(rule, dict):
@@ -2276,8 +2315,8 @@ class Module1Calculator:
         )
 
 
+    @staticmethod
     def _value_in_expanded_interval(
-        self,
         value: float,
         interval: dict,
         buffer: float,
@@ -2303,8 +2342,8 @@ class Module1Calculator:
         return True
 
 
+    @staticmethod
     def _ordered_threshold_bucket_hysteresis_candidate(
-        self,
         value: float,
         *,
         active_state=None,
@@ -2314,14 +2353,14 @@ class Module1Calculator:
         if pd.isna(value):
             return pd.NA
         if active_state is None or hysteresis_buffer == 0.0:
-            return self._threshold_bucket(value, bucket_config)
+            return Module1Calculator._threshold_bucket(value, bucket_config)
 
-        ordered = self._ordered_threshold_buckets(bucket_config)
+        ordered = Module1Calculator._ordered_threshold_buckets(bucket_config)
         active_interval = next(
             (interval for interval in ordered if interval["name"] == active_state),
             None,
         )
-        if active_interval is not None and self._value_in_expanded_interval(
+        if active_interval is not None and Module1Calculator._value_in_expanded_interval(
             float(value),
             active_interval,
             hysteresis_buffer,
@@ -2341,8 +2380,8 @@ class Module1Calculator:
         return ordered[-1]["name"]
 
 
+    @staticmethod
     def _threshold_state_from_score(
-        self,
         value: float,
         thresholds: dict,
         buckets: dict,
@@ -2356,8 +2395,8 @@ class Module1Calculator:
         return buckets["neutral"]
 
 
+    @staticmethod
     def _credit_spread_state_intensity(
-        self,
         value: float,
         state: str,
         thresholds: dict,
@@ -2381,8 +2420,8 @@ class Module1Calculator:
         return min(max(float(intensity), 0.0), 1.0)
 
 
+    @staticmethod
     def _apply_state_persistence(
-        self,
         candidate_states: pd.Series,
         min_state_persistence: int,
     ) -> pd.Series:
@@ -2428,8 +2467,8 @@ class Module1Calculator:
         return persisted
 
 
+    @staticmethod
     def _classify_state_series_with_hysteresis(
-        self,
         score: pd.Series,
         classify_candidate,
         *,
@@ -2454,27 +2493,27 @@ class Module1Calculator:
         return states
 
 
+    @staticmethod
     def _stabilize_state_series(
-        self,
         score: pd.Series,
         classify_candidate,
         *,
         hysteresis_buffer: float = 0.0,
         min_state_persistence: int = 1,
     ) -> pd.Series:
-        candidate_states = self._classify_state_series_with_hysteresis(
+        candidate_states = Module1Calculator._classify_state_series_with_hysteresis(
             score,
             classify_candidate,
             hysteresis_buffer=hysteresis_buffer,
         )
-        return self._apply_state_persistence(
+        return Module1Calculator._apply_state_persistence(
             candidate_states,
             min_state_persistence,
         )
 
 
+    @staticmethod
     def _threshold_hysteresis_candidate(
-        self,
         value: float,
         *,
         thresholds: dict,
@@ -2512,8 +2551,8 @@ class Module1Calculator:
         return neutral_label
 
 
+    @staticmethod
     def _adjust_credit_spread_rule_score(
-        self,
         base_score: float,
         state: tuple[str, str],
         change_intensity: float,
@@ -2552,6 +2591,7 @@ class Module1Calculator:
                 raise ValueError(f"Exposure stance {stance_name} score output is missing.")
 
             breakdown = self._build_weighted_stance_score_breakdown(
+                self.scores,
                 stance_name,
                 stance_config,
             )
@@ -2566,9 +2606,17 @@ class Module1Calculator:
             if score_output is None:
                 raise ValueError(f"Exposure stance {stance_name} score output is missing.")
 
-            breakdown = self._build_rule_mapped_stance_score_breakdown(
+            rule_mapped_spec = self._resolve_rule_mapped_stance_schema(
                 stance_name,
                 stance_config,
+                self.component_config,
+            )
+            breakdown = self._build_rule_mapped_stance_score_breakdown(
+                self.scores,
+                self.component_config,
+                stance_name,
+                stance_config,
+                rule_mapped_spec,
             )
             return breakdown[score_output]
 
