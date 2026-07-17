@@ -602,27 +602,20 @@ class Module1Diagnostics:
         ctx: TargetContextResult,
         index: pd.Index,
     ) -> list[pd.DataFrame]:
-        """Build trace context in explicit metadata order or the generic default.
+        """Build trace context in a fixed semantic order.
 
-        The default group order is features, raw inputs, then prepared/filtered
-        inputs. Score inputs default to resolved rule-mapped declaration order.
+        Raw inputs precede derived features, which precede prepared/filtered
+        inputs. Sources follow the resolved rule-mapped declaration order in
+        ``spec.score_input_cols``.
         """
         declared_prepared_specs = self._diagnostic_input_specs(
             spec.target,
             kinds=("prepared",),
         )
         if declared_prepared_specs:
-            trace_context = (
-                (spec.stance_config.get("diagnostics") or {}).get("trace_context")
-                or {}
-            )
-            ordered_score_inputs = trace_context.get(
-                "score_input_order",
-                spec.score_input_cols,
-            )
             component_by_score_output = self._component_by_score_output()
             ordered_sources = []
-            for score_input in ordered_score_inputs:
+            for score_input in spec.score_input_cols:
                 component_name = component_by_score_output.get(score_input)
                 for item in declared_prepared_specs:
                     if (
@@ -681,13 +674,13 @@ class Module1Diagnostics:
                     spec.target
                 ).reindex(index),
             }
-            group_order = trace_context.get(
-                "group_order",
-                ("features", "raw_inputs", "prepared_filtered_inputs"),
-            )
             return [
                 context_groups[group_name]
-                for group_name in group_order
+                for group_name in (
+                    "raw_inputs",
+                    "features",
+                    "prepared_filtered_inputs",
+                )
                 if context_groups[group_name].shape[1] > 0
             ]
 
