@@ -199,19 +199,15 @@ class Module1Diagnostics:
             raise ValueError(f"Unknown prepared-input diagnostic target: {target}")
 
         component_by_score_output = self._component_by_score_output()
-        component_names = set()
+        component_names = []
         for item in stance_config.get("inputs", []):
             if not isinstance(item, dict):
                 continue
             score_output = item.get("component")
             component_name = component_by_score_output.get(score_output)
-            if component_name is not None:
-                component_names.add(component_name)
-        return tuple(
-            component_name
-            for component_name in component_by_score_output.values()
-            if component_name in component_names
-        )
+            if component_name is not None and component_name not in component_names:
+                component_names.append(component_name)
+        return tuple(component_names)
 
     def _score_input_features_for_diagnostic_component(
         self,
@@ -231,26 +227,6 @@ class Module1Diagnostics:
             if isinstance(item, dict) and item.get("feature") is not None
         )
 
-    def _score_input_features_for_diagnostic_components(
-        self,
-        component_names: tuple[str, ...],
-    ) -> tuple[str, ...]:
-        if self.component_config is None:
-            raise ValueError("Run load_module1_config() before prepared-input diagnostics.")
-
-        features = []
-        seen = set()
-        components = self.component_config["components"]
-        for component_name in component_names:
-            score_config = components[component_name].get("score", {})
-            for feature in self._score_input_features_for_diagnostic_component(
-                score_config,
-            ):
-                if feature not in seen:
-                    features.append(feature)
-                    seen.add(feature)
-        return tuple(features)
-
     def _diagnostic_input_specs(
         self,
         target: str | None = None,
@@ -262,18 +238,15 @@ class Module1Diagnostics:
 
         components = self.component_config["components"]
         target_component_names = self._diagnostic_component_names_for_target(target)
-        target_component_filter = (
-            None if target_component_names is None else set(target_component_names)
+        component_names = (
+            tuple(components)
+            if target_component_names is None
+            else target_component_names
         )
         specs = []
         requested_kinds = set(kinds)
-        for component_name, component in components.items():
-            if (
-                target_component_filter is not None
-                and component_name not in target_component_filter
-            ):
-                continue
-
+        for component_name in component_names:
+            component = components[component_name]
             diagnostics = component.get("diagnostics") or {}
             prepared_inputs = diagnostics.get("prepared_inputs") or {}
             if prepared_inputs.get("enabled") is not True:
@@ -718,37 +691,79 @@ class Module1Diagnostics:
         ctx: TargetContextResult,
         index: pd.Index,
     ) -> list[pd.DataFrame]:
-        if spec.target == "credit":
-            context_parts = []
-            feature_cols = list(ctx.returned_columns["features"])
-            raw_input_cols = list(ctx.returned_columns["raw_inputs"])
-            if "baa10y_change" in feature_cols:
-                context_parts.append(ctx.data[["baa10y_change"]].reindex(index))
-            if "baa10y" in raw_input_cols:
-                context_parts.append(ctx.data[["baa10y"]].reindex(index))
-            context_parts.append(
-                self._prepared_filtered_input_columns(spec.target).reindex(index)
+        declared_prepared_specs = self._diagnostic_input_specs(
+            spec.target,
+            kinds=("prepared",),
+        )
+        component_by_score_output = self._component_by_score_output()
+        prepared_specs = []
+        for score_input in spec.score_input_cols:
+            component_name = component_by_score_output.get(score_input)
+            prepared_specs.extend(
+                item
+                for item in declared_prepared_specs
+                if item.component == component_name and item not in prepared_specs
             )
-            return context_parts
+        prepared_specs.extend(
+            item
+            for item in declared_prepared_specs
+            if item not in prepared_specs
+        )
+        if prepared_specs:
+            role_specs = [item for item in prepared_specs if item.role is not None]
+            unassigned_specs = [item for item in prepared_specs if item.role is None]
+            ordered_sources = []
+            for item in [*role_specs, *unassigned_specs]:
+                if item.source not in ordered_sources:
+                    ordered_sources.append(item.source)
 
-        if spec.target == "curve_positioning":
-            context_cols = [
-                col
-                for col in ["dgs2", "dgs10"]
-                if col in ctx.returned_columns["raw_inputs"]
-            ]
-            component_names = self._diagnostic_component_names_for_target(spec.target)
-            feature_cols = (
-                self._score_input_features_for_diagnostic_components(
-                    tuple(reversed(component_names))
-                )
-                if component_names is not None
-                else ()
-            )
-            context_cols.extend(
-                col
-                for col in feature_cols
-                if col in ctx.returned_columns["features"]
+            returned_features = ctx.returned_columns["features"]
+            feature_definitions = self.feature_config["features"]
+            feature_cols = []
+            visited_features = set()
+
+            def add_feature_with_dependencies(feature_name: str) -> None:
+                if feature_name in visited_features:
+                    return
+                visited_features.add(feature_name)
+
+                definition = feature_definitions.get(feature_name, {})
+                method = definition.get("method")
+                dependencies = []
+                if method in {"change", "pct_change", "level"}:
+                    dependencies.append(definition.get("input"))
+                elif method == "spread":
+                    dependencies.extend(definition.get("inputs") or [])
+
+                for dependency in dependencies:
+                    if dependency in returned_features:
+                        add_feature_with_dependencies(dependency)
+
+                if (
+                    feature_name in returned_features
+                    and method != "level"
+                    and feature_name not in feature_cols
+                ):
+                    feature_cols.append(feature_name)
+
+            for source in ordered_sources:
+                add_feature_with_dependencies(source)
+
+            returned_raw_inputs = ctx.returned_columns["raw_inputs"]
+            feature_dependency_map = ctx.resolved_path["feature_to_raw_inputs"]
+            raw_input_cols = []
+            for source in ordered_sources:
+                for raw_input in feature_dependency_map.get(source, ()):
+                    if (
+                        raw_input in returned_raw_inputs
+                        and raw_input not in raw_input_cols
+                    ):
+                        raw_input_cols.append(raw_input)
+
+            context_cols = (
+                [*raw_input_cols, *feature_cols]
+                if role_specs
+                else [*feature_cols, *raw_input_cols]
             )
             context_parts = []
             if context_cols:
