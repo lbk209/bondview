@@ -769,6 +769,12 @@ exposure_stances:
     stance_output: credit_stance
     strength_output: credit_stance_strength
     function: credit_spread_stance
+    diagnostics:
+      trace_context:
+        group_order:
+          - features
+          - raw_inputs
+          - prepared_filtered_inputs
     state_buckets: &credit_rule_state_buckets
       credit_spread_change:
         positive: positive
@@ -909,6 +915,16 @@ exposure_stances:
     stance_output: curve_positioning
     strength_output: curve_positioning_strength
     function: curve_positioning_stance
+    diagnostics:
+      trace_context:
+        group_order:
+          - raw_inputs
+          - features
+          - prepared_filtered_inputs
+        score_input_order:
+          - curve_move_driver_score
+          - curve_state_score
+          - curve_change_score
     state_stabilization: &curve_rule_state_stabilization
       curve_change:
         hysteresis_buffer: 0.0
