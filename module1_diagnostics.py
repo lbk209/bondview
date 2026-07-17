@@ -1,5 +1,5 @@
 import copy
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from collections.abc import Mapping
 
 import pandas as pd
@@ -53,11 +53,7 @@ class Module1Diagnostics:
         "_build_rule_mapped_stance_score_breakdown",
     }
 
-    def __init__(
-        self,
-        result: Module1Result,
-        historical_context: dict | None = None,
-    ):
+    def __init__(self, result: Module1Result):
         self.result = result
         self.analysis = Module1Analysis(result)
         self.calculator = object.__new__(Module1Calculator)
@@ -75,7 +71,6 @@ class Module1Diagnostics:
         self.default_horizons = self._copy_result_value(result.default_horizons)
         self.horizon_overrides = self._copy_result_value(result.horizon_overrides)
         self.module1_config_validation = self._copy_result_value(result.module1_config_validation)
-        self.historical_context = historical_context
         self._sync_calculator_state()
 
     @staticmethod
@@ -106,26 +101,6 @@ class Module1Diagnostics:
     def _resolve_target(self, target: str, level: str | None, allow_group: bool = False):
         return self.analysis.resolve_target(target, level, allow_group=allow_group)
 
-    def _resolve_historical_event_window(self, context_id=None, start=None, end=None):
-        if context_id is None:
-            return start, end
-        if self.historical_context is None:
-            raise ValueError(
-                "Run load_historical_context() before using context_id-based diagnostics."
-            )
-        events = self.historical_context.get("events")
-        if events is None or events.empty:
-            raise ValueError("historical_context events are not loaded.")
-        matched_events = events[events["context_id"] == context_id]
-        if matched_events.empty:
-            raise ValueError(f"Unknown historical context_id: {context_id}")
-        event = matched_events.iloc[0]
-        if start is None:
-            start = event["start"]
-        if end is None:
-            end = event["end"]
-        return start, end
-
     def get_target_context(
         self,
         target,
@@ -133,17 +108,11 @@ class Module1Diagnostics:
         dependency_level="auto",
         include_labels=True,
         include_strength=True,
-        context_id=None,
         start=None,
         end=None,
         ffill_inputs=True,
     ) -> TargetContextResult:
-        start, end = self._resolve_historical_event_window(
-            context_id=context_id,
-            start=start,
-            end=end,
-        )
-        result = self.analysis.get_target_context(
+        return self.analysis.get_target_context(
             target=target,
             level=level,
             dependency_level=dependency_level,
@@ -153,11 +122,6 @@ class Module1Diagnostics:
             end=end,
             ffill_inputs=ffill_inputs,
         )
-        if context_id is not None:
-            request = result.request.copy()
-            request["context_id"] = context_id
-            result = replace(result, request=request, context_id=context_id)
-        return result
 
     def _count_series_changes(self, series: pd.Series) -> int:
         valid = series.dropna()
@@ -354,7 +318,6 @@ class Module1Diagnostics:
         self,
         stance_name: str,
         stance_config: dict,
-        context_id: str | None = None,
         start=None,
         end=None,
         include_raw_input: bool = True,
@@ -454,7 +417,6 @@ class Module1Diagnostics:
                     axis=1,
                 )
 
-        start, end = self._resolve_historical_event_window(context_id, start, end)
         if start is not None:
             diagnostics = diagnostics.loc[diagnostics.index >= pd.to_datetime(start)]
         if end is not None:
@@ -553,7 +515,6 @@ class Module1Diagnostics:
     def _trace_rule_mapped_stance_score(
         self,
         target: str,
-        context_id: str | None = None,
         start=None,
         end=None,
         include_raw_input: bool = True,
@@ -642,7 +603,6 @@ class Module1Diagnostics:
             if context_parts:
                 diagnostics = pd.concat([diagnostics, *context_parts], axis=1)
 
-        start, end = self._resolve_historical_event_window(context_id, start, end)
         if start is not None:
             diagnostics = diagnostics.loc[diagnostics.index >= pd.to_datetime(start)]
         if end is not None:
@@ -827,7 +787,6 @@ class Module1Diagnostics:
     def diagnose_rule_mapped_stance(
         self,
         target: str,
-        context_id: str | None = None,
         start=None,
         end=None,
         *,
@@ -877,7 +836,6 @@ class Module1Diagnostics:
 
         diagnostics = self._trace_rule_mapped_stance_score(
             spec.target,
-            context_id=context_id,
             start=start,
             end=end,
             include_raw_input=False,
@@ -1087,7 +1045,6 @@ class Module1Diagnostics:
     def trace_stance_score(
         self,
         target: str,
-        context_id: str | None = None,
         start=None,
         end=None,
         include_raw_input: bool = True,
@@ -1108,7 +1065,6 @@ class Module1Diagnostics:
             return self._trace_weighted_stance_score(
                 stance_name,
                 stance_config,
-                context_id=context_id,
                 start=start,
                 end=end,
                 include_raw_input=include_raw_input,
@@ -1118,7 +1074,6 @@ class Module1Diagnostics:
         if "rule_mapped" in stance_config:
             return self._trace_rule_mapped_stance_score(
                 stance_name,
-                context_id=context_id,
                 start=start,
                 end=end,
                 include_raw_input=include_raw_input,
