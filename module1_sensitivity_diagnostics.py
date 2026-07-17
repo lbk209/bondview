@@ -561,15 +561,13 @@ class Module1SensitivityDiagnostics:
                     )
                 temporary_scores[score_col] = alternate_scores[alternate_col]
 
-            original_scores = self.scores
-            try:
-                self.scores = temporary_scores
-                reconstruction = self._build_rule_mapped_stance_score_breakdown(
-                    spec.target,
-                    stance_config,
-                )
-            finally:
-                self.scores = original_scores
+            reconstruction = Module1Calculator._build_rule_mapped_stance_score_breakdown(
+                temporary_scores,
+                self.component_config,
+                spec.target,
+                stance_config,
+                context["rule_mapped_spec"],
+            )
 
             score = reconstruction[spec.final_score_col]
             direction, strength = self._stance_labels_for_score(score, stance_config)
@@ -885,9 +883,10 @@ class Module1SensitivityDiagnostics:
                 if spec.source not in self.features.columns:
                     continue
                 score_config = components.get(spec.component, {}).get("score", {})
-                prepared[spec.output] = self._prepare_component_input_series(
+                prepared[spec.output] = Module1Calculator._prepare_component_input_series(
                     self.features[spec.source],
                     score_config.get("input_preparation"),
+                    self.horizons,
                 )
 
             for spec in (spec for spec in specs if spec.kind == "filtered"):
@@ -925,9 +924,10 @@ class Module1SensitivityDiagnostics:
                     f"Unsupported rule-mapped stance diagnostic target {target}: "
                     f"{function}. Schema-backed rule_mapped config is required."
                 )
-            rule_mapped_spec = self._resolve_rule_mapped_stance_schema(
+            rule_mapped_spec = Module1Calculator._resolve_rule_mapped_stance_schema(
                 stance_name,
                 stance_config,
+                self.component_config,
             )
             score_input_cols = tuple(
                 state_input.source_score_col
@@ -1053,9 +1053,12 @@ class Module1SensitivityDiagnostics:
                     f"{missing_stance_cols}"
                 )
 
-            diagnostics = self._build_rule_mapped_stance_score_breakdown(
+            diagnostics = Module1Calculator._build_rule_mapped_stance_score_breakdown(
+                self.scores,
+                self.component_config,
                 spec.target,
                 stance_config,
+                context["rule_mapped_spec"],
             )
             diagnostics = pd.concat(
                 [
@@ -2126,15 +2129,25 @@ class Module1SensitivityDiagnostics:
             case_stabilization_overrides: dict,
             detail_columns: dict,
         ) -> pd.DataFrame:
-            spec = self._resolve_rule_mapped_stance_schema(stance_name, stance_config)
-            baseline_diag = self._build_rule_mapped_stance_score_breakdown(
+            spec = Module1Calculator._resolve_rule_mapped_stance_schema(
                 stance_name,
                 stance_config,
+                self.component_config,
+            )
+            baseline_diag = Module1Calculator._build_rule_mapped_stance_score_breakdown(
+                self.scores,
+                self.component_config,
+                stance_name,
+                stance_config,
+                spec,
                 stabilization_overrides=baseline_stabilization_overrides,
             )
-            case_diag = self._build_rule_mapped_stance_score_breakdown(
+            case_diag = Module1Calculator._build_rule_mapped_stance_score_breakdown(
+                self.scores,
+                self.component_config,
                 stance_name,
                 stance_config,
+                spec,
                 stabilization_overrides=case_stabilization_overrides,
             )
             detail = pd.DataFrame(index=self.scores.index)
