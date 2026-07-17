@@ -82,20 +82,16 @@ class Module1SensitivityDiagnostics:
         "default_horizons", "horizon_overrides", "module1_config_validation",
     )
     _CALCULATOR_HELPERS = {
-        "_prepare_component_input_series",
         "_clip_score",
         "_calculate_single_feature_component_score",
         "_calculate_weighted_feature_component_score",
         "_calculate_curve_move_driver_score",
         "_curve_move_driver_bucket_scores",
         "_component_score_bucket_config",
-        "_resolve_rule_mapped_stance_schema",
         "_score_bucket",
         "_calculate_current_state_component_score",
         "_label_stance_direction",
         "_label_stance_strength",
-        "_build_weighted_stance_score_breakdown",
-        "_build_rule_mapped_stance_score_breakdown",
         "calculate_exposure_stance",
         "_curve_move_driver_score_from_prepared_inputs",
     }

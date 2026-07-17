@@ -602,31 +602,34 @@ class Module1Diagnostics:
         ctx: TargetContextResult,
         index: pd.Index,
     ) -> list[pd.DataFrame]:
+        """Build trace context in explicit metadata order or the generic default.
+
+        The default group order is features, raw inputs, then prepared/filtered
+        inputs. Score inputs default to resolved rule-mapped declaration order.
+        """
         declared_prepared_specs = self._diagnostic_input_specs(
             spec.target,
             kinds=("prepared",),
         )
-        component_by_score_output = self._component_by_score_output()
-        prepared_specs = []
-        for score_input in spec.score_input_cols:
-            component_name = component_by_score_output.get(score_input)
-            prepared_specs.extend(
-                item
-                for item in declared_prepared_specs
-                if item.component == component_name and item not in prepared_specs
+        if declared_prepared_specs:
+            trace_context = (
+                (spec.stance_config.get("diagnostics") or {}).get("trace_context")
+                or {}
             )
-        prepared_specs.extend(
-            item
-            for item in declared_prepared_specs
-            if item not in prepared_specs
-        )
-        if prepared_specs:
-            role_specs = [item for item in prepared_specs if item.role is not None]
-            unassigned_specs = [item for item in prepared_specs if item.role is None]
+            ordered_score_inputs = trace_context.get(
+                "score_input_order",
+                spec.score_input_cols,
+            )
+            component_by_score_output = self._component_by_score_output()
             ordered_sources = []
-            for item in [*role_specs, *unassigned_specs]:
-                if item.source not in ordered_sources:
-                    ordered_sources.append(item.source)
+            for score_input in ordered_score_inputs:
+                component_name = component_by_score_output.get(score_input)
+                for item in declared_prepared_specs:
+                    if (
+                        item.component == component_name
+                        and item.source not in ordered_sources
+                    ):
+                        ordered_sources.append(item.source)
 
             returned_features = ctx.returned_columns["features"]
             feature_definitions = self.feature_config["features"]
@@ -671,18 +674,22 @@ class Module1Diagnostics:
                     ):
                         raw_input_cols.append(raw_input)
 
-            context_cols = (
-                [*raw_input_cols, *feature_cols]
-                if role_specs
-                else [*feature_cols, *raw_input_cols]
+            context_groups = {
+                "raw_inputs": ctx.data[raw_input_cols].reindex(index),
+                "features": ctx.data[feature_cols].reindex(index),
+                "prepared_filtered_inputs": self._prepared_filtered_input_columns(
+                    spec.target
+                ).reindex(index),
+            }
+            group_order = trace_context.get(
+                "group_order",
+                ("features", "raw_inputs", "prepared_filtered_inputs"),
             )
-            context_parts = []
-            if context_cols:
-                context_parts.append(ctx.data[context_cols].reindex(index))
-            context_parts.append(
-                self._prepared_filtered_input_columns(spec.target).reindex(index)
-            )
-            return context_parts
+            return [
+                context_groups[group_name]
+                for group_name in group_order
+                if context_groups[group_name].shape[1] > 0
+            ]
 
         raw_inputs = list(ctx.returned_columns["raw_inputs"])
         missing_raw_inputs = [col for col in raw_inputs if col not in ctx.data.columns]
