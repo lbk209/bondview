@@ -220,7 +220,8 @@ Public vocabulary/columns include:
 - `rule_case_summary`: transition count named for the rule-case column, unique count, most frequent case/ratio, valid case count.
 - `mapped_score_distribution`: final score value, `count`, `share`.
 - `score_summary`: score mean/median/min/max/std, valid score/stance/strength counts, stance and strength share fields.
-- For duration only, explicit `positive_stance_share`, `neutral_stance_share`, `negative_stance_share`.
+- Duration uses the generic configured-label stance share fields without
+  duration-only share aliases.
 
 Prior reports identify a public vocabulary dependency for `summarize_rule_mapped_stance_stability("curve_positioning")["component_state_summary"]["component"]`, specifically `yield_move_driver`.
 
