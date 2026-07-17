@@ -104,7 +104,7 @@ class Module1Diagnostics:
         raise AttributeError(name)
 
     def _resolve_target(self, target: str, level: str | None, allow_group: bool = False):
-        return self.analysis._resolve_target(target, level, allow_group=allow_group)
+        return self.analysis.resolve_target(target, level, allow_group=allow_group)
 
     def _resolve_historical_event_window(self, context_id=None, start=None, end=None):
         if context_id is None:
@@ -185,13 +185,6 @@ class Module1Diagnostics:
             if component.get("score", {}).get("output") is not None
         }
 
-    def _diagnostic_component_filter_for_target(
-        self,
-        target: str | None,
-    ) -> set[str] | None:
-        component_names = self._diagnostic_component_names_for_target(target)
-        return None if component_names is None else set(component_names)
-
     def _diagnostic_component_names_for_target(
         self,
         target: str | None,
@@ -268,7 +261,10 @@ class Module1Diagnostics:
             raise ValueError("Run load_module1_config() before prepared-input diagnostics.")
 
         components = self.component_config["components"]
-        target_component_filter = self._diagnostic_component_filter_for_target(target)
+        target_component_names = self._diagnostic_component_names_for_target(target)
+        target_component_filter = (
+            None if target_component_names is None else set(target_component_names)
+        )
         specs = []
         requested_kinds = set(kinds)
         for component_name, component in components.items():
@@ -330,56 +326,6 @@ class Module1Diagnostics:
                     )
         return tuple(specs)
 
-    def _diagnostic_input_spec(
-        self,
-        target: str,
-        component: str,
-        source: str,
-        kind: str,
-        role: str | None = None,
-    ) -> DiagnosticInputSpec:
-        matches = [
-            spec
-            for spec in self._diagnostic_input_specs(
-                target,
-                kinds=("prepared", "filtered"),
-            )
-            if spec.component == component
-            and spec.source == source
-            and spec.kind == kind
-            and (role is None or spec.role == role)
-        ]
-        if len(matches) != 1:
-            raise ValueError(
-                "Expected exactly one prepared/filtered diagnostic input spec for "
-                f"{target} {component} {source} {kind}, found {len(matches)}."
-            )
-        return matches[0]
-
-    def _diagnostic_input_spec_by_role(
-        self,
-        target: str,
-        component: str,
-        kind: str,
-        role: str,
-    ) -> DiagnosticInputSpec:
-        matches = [
-            spec
-            for spec in self._diagnostic_input_specs(
-                target,
-                kinds=("prepared", "filtered"),
-            )
-            if spec.component == component
-            and spec.kind == kind
-            and spec.role == role
-        ]
-        if len(matches) != 1:
-            raise ValueError(
-                "Expected exactly one prepared/filtered diagnostic input spec for "
-                f"{target} {component} {kind} role={role}, found {len(matches)}."
-            )
-        return matches[0]
-
     def _prepared_filtered_input_columns(self, target: str) -> pd.DataFrame:
         if self.features is None:
             raise ValueError("Run calculate_features() before prepared-input diagnostics.")
@@ -391,6 +337,10 @@ class Module1Diagnostics:
             target,
             kinds=("prepared", "filtered"),
         )
+        specs_by_key = {}
+        for spec in specs:
+            key = (spec.component, spec.source, spec.kind)
+            specs_by_key.setdefault(key, []).append(spec)
         prepared = pd.DataFrame(index=self.features.index)
 
         prepared_specs = [spec for spec in specs if spec.kind == "prepared"]
@@ -404,13 +354,15 @@ class Module1Diagnostics:
             )
 
         for spec in (spec for spec in specs if spec.kind == "filtered"):
-            source_spec = self._diagnostic_input_spec(
-                target,
-                spec.component,
-                spec.source,
-                "prepared",
-                role=spec.role,
-            )
+            source_key = (spec.component, spec.source, "prepared")
+            source_matches = specs_by_key.get(source_key, [])
+            if len(source_matches) != 1:
+                raise ValueError(
+                    "Expected exactly one prepared/filtered diagnostic input spec for "
+                    f"{target} {spec.component} {spec.source} prepared, "
+                    f"found {len(source_matches)}."
+                )
+            source_spec = source_matches[0]
             if source_spec.output not in prepared.columns:
                 continue
             score_config = components.get(spec.component, {}).get("score", {})
@@ -817,17 +769,6 @@ class Module1Diagnostics:
             return [ctx.data[raw_inputs].reindex(index)]
         return []
 
-    def _duration_rule_stance_config(self) -> dict:
-        if self.exposure_stance_config is None:
-            raise ValueError("Run load_module1_config() before duration diagnostics.")
-
-        stance_config = self.exposure_stance_config["exposure_stances"].get("duration")
-        if stance_config is None:
-            raise ValueError("Duration exposure stance config is missing.")
-        if stance_config.get("function") != "duration_rule_stance":
-            raise ValueError("Active duration stance is not duration_rule_stance.")
-        return stance_config
-
     def _rule_mapped_selected_columns(
         self,
         spec: RuleMappedDiagnosticSpec,
@@ -1115,31 +1056,6 @@ class Module1Diagnostics:
         score_summary.update(self._series_value_shares(stance, "stance"))
         score_summary.update(self._series_value_shares(strength, "strength"))
 
-        if spec.target == "duration":
-            stance_config = self._duration_rule_stance_config()
-            positive_label = stance_config["labels"]["direction"].get("positive")
-            neutral_label = stance_config["labels"]["direction"].get("neutral")
-            negative_label = stance_config["labels"]["direction"].get("negative")
-            score_summary.update(
-                {
-                    "positive_stance_share": (
-                        float((stance == positive_label).sum() / stance_count)
-                        if stance_count
-                        else pd.NA
-                    ),
-                    "neutral_stance_share": (
-                        float((stance == neutral_label).sum() / stance_count)
-                        if stance_count
-                        else pd.NA
-                    ),
-                    "negative_stance_share": (
-                        float((stance == negative_label).sum() / stance_count)
-                        if stance_count
-                        else pd.NA
-                    ),
-                }
-            )
-
         return {
             "component_state_summary": self._rule_mapped_component_state_summary(
                 diagnostics,
@@ -1151,25 +1067,6 @@ class Module1Diagnostics:
                 spec,
             ),
             "score_summary": pd.DataFrame([score_summary]),
-        }
-
-    def _curve_positioning_stance_config(self) -> dict:
-        if self.exposure_stance_config is None:
-            raise ValueError("Run load_module1_config() before curve diagnostics.")
-
-        stance_config = self.exposure_stance_config["exposure_stances"].get(
-            "curve_positioning"
-        )
-        if stance_config is None:
-            raise ValueError("Curve positioning stance config is missing.")
-
-        return stance_config
-
-    def _rule_mapped_trace_supported_functions(self) -> set[str]:
-        return {
-            "duration_rule_stance",
-            "credit_spread_stance",
-            "curve_positioning_stance",
         }
 
     def trace_stance_score(
@@ -1203,7 +1100,7 @@ class Module1Diagnostics:
                 include_labels=include_labels,
             )
 
-        if function in self._rule_mapped_trace_supported_functions():
+        if "rule_mapped" in stance_config:
             return self._trace_rule_mapped_stance_score(
                 stance_name,
                 context_id=context_id,

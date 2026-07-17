@@ -155,7 +155,7 @@ class Module1SensitivityDiagnostics:
         raise AttributeError(name)
 
     def _resolve_target(self, target: str, level: str | None, allow_group: bool = False):
-        return self.analysis._resolve_target(target, level, allow_group=allow_group)
+        return self.analysis.resolve_target(target, level, allow_group=allow_group)
 
     def _resolve_historical_event_window(self, context_id=None, start=None, end=None):
         if context_id is None:

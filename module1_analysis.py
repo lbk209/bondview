@@ -350,15 +350,23 @@ class Module1Analysis:
                 available_output_fields=(canonical,),
             )
 
-        return self._resolve_target(target, normalized_level)
+        return self.resolve_target(target, normalized_level)
 
-    def _resolve_target(
+    def resolve_target(
         self,
         target: str,
         level: str | None = None,
         *,
         allow_group: bool = False,
     ) -> TargetResolution:
+        """
+        Resolve component or stance targets, aliases, and configured target groups.
+
+        A group may resolve to a single member or, when ``allow_group`` is true,
+        retain its configured component/stance member ordering in the returned
+        resolution metadata. Raw-input and feature context resolution is handled
+        separately by ``_resolve_target_for_context()``.
+        """
         normalized_level = (
             None if level is None else self._normalize_review_label(level)
         )
