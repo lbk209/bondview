@@ -19,22 +19,11 @@ class Module1HistoricalAnalysis:
         historical_cases: pd.DataFrame | None = None,
         historical_expected_label_validation: dict | None = None,
     ):
-        self.result = result
         self.analysis = Module1Analysis(result)
-        self.data = result.data
-        self.features = result.features
-        self.scores = result.scores
         self.labels = result.labels
-        self.stance_scores = result.stance_scores
         self.exposure_stance = result.exposure_stance
-        self.module1_config = result.module1_config
-        self.feature_config = result.feature_config
         self.component_config = result.component_config
         self.exposure_stance_config = result.exposure_stance_config
-        self.horizons = result.horizons
-        self.default_horizons = result.default_horizons
-        self.horizon_overrides = result.horizon_overrides
-        self.module1_config_validation = result.module1_config_validation
         self.historical_context = historical_context
         self.historical_cases = historical_cases
         self.historical_expected_label_validation = (
@@ -54,9 +43,6 @@ class Module1HistoricalAnalysis:
             raise ValueError(f"YAML config must be a mapping: {path}")
 
         return config
-
-    def _resolve_target(self, target: str, level: str | None, allow_group: bool = False):
-        return self.analysis.resolve_target(target, level, allow_group=allow_group)
 
     def resolve_historical_event_window(self, context_id=None, start=None, end=None):
         """Resolve one historical context ID to an explicit event window."""
@@ -144,9 +130,6 @@ class Module1HistoricalAnalysis:
             dataset = replace(dataset, context_id=context_id)
         return dataset
 
-    def raw_inputs_for_target(self, target: str, level: str) -> list[str]:
-        return self.analysis.raw_inputs_for_target(target, level)
-
     def load_historical_context(
             self,
             historical_context_path,
@@ -158,8 +141,10 @@ class Module1HistoricalAnalysis:
 
             Historical expectations are checked against the already-loaded
             module1_config.yaml, which is the source of truth for label vocabulary.
-            In strict mode, invalid historical context raises ValueError and is not
-            assigned to object state.
+            When strict expected-label validation fails, the method raises ValueError
+            before committing the candidate context and case tables to
+            historical_context or historical_cases. The expected-label validation
+            evidence remains available through historical_expected_label_validation.
             """
             config = self._load_yaml_config(historical_context_path)
             context = config.get("historical_context", config)
@@ -516,64 +501,6 @@ class Module1HistoricalAnalysis:
 
             return str(value).strip().lower()
 
-    def _historical_review_target_aliases(self, level: str | None = None) -> dict:
-            aliases = {}
-            normalized_level = (
-                None if level is None else self._normalize_review_label(level)
-            )
-
-            if normalized_level in {None, "component"}:
-                if self.component_config is None:
-                    raise ValueError("Run load_module1_config() before historical review.")
-
-                for component_name, component_config in self.component_config[
-                    "components"
-                ].items():
-                    score_col = component_config.get("score", {}).get("output")
-                    label_col = component_config.get("label", {}).get("output")
-                    canonical = ("component", component_name)
-
-                    for alias in [component_name, score_col, label_col]:
-                        if alias is not None:
-                            aliases[self._normalize_review_label(alias)] = canonical
-
-            if normalized_level in {None, "stance"}:
-                if self.exposure_stance_config is None:
-                    raise ValueError("Run load_module1_config() before historical review.")
-
-                for stance_name, stance_config in self.exposure_stance_config[
-                    "exposure_stances"
-                ].items():
-                    score_col = stance_config.get("score_output")
-                    label_col = stance_config.get("stance_output")
-                    canonical = ("stance", stance_name)
-
-                    for alias in [stance_name, score_col, label_col]:
-                        if alias is not None:
-                            aliases[self._normalize_review_label(alias)] = canonical
-
-            if normalized_level not in {None, "component", "stance"}:
-                raise ValueError(f"Unsupported historical review level: {level}")
-
-            return aliases
-
-    def _historical_review_target_groups(self) -> dict:
-            if self.module1_config is None:
-                raise ValueError("Run load_module1_config() before historical review.")
-
-            target_groups = (
-                self.module1_config
-                .get("model_metadata", {})
-                .get("target_groups", {})
-            )
-            return {
-                group_name: {
-                    "component": list(group.get("component", [])),
-                    "stance": list(group.get("stance", [])),
-                }
-                for group_name, group in target_groups.items()
-            }
-
     def _build_historical_cases(
             self,
             events: pd.DataFrame,
@@ -601,7 +528,7 @@ class Module1HistoricalAnalysis:
                 level = self._normalize_review_label(expectation["level"])
 
                 try:
-                    target_info = self._resolve_target(target, level)
+                    target_info = self.analysis.resolve_target(target, level)
                 except ValueError as exc:
                     raise ValueError(
                         "Unable to resolve historical expectation target "
@@ -657,44 +584,18 @@ class Module1HistoricalAnalysis:
             target: str,
             level: str | None = None,
         ) -> pd.DataFrame:
-            normalized_target = self._normalize_review_label(target)
-            normalized_level = (
-                None if level is None else self._normalize_review_label(level)
+            resolution = self.analysis.resolve_target(
+                target,
+                level,
+                allow_group=True,
             )
-            if normalized_level not in {None, "component", "stance"}:
-                raise ValueError(f"Unsupported historical review level: {level}")
-            groups = self._historical_review_target_groups()
+            requested = set(resolution.related_targets)
 
-            if normalized_target in groups:
-                resolution = self._resolve_target(
-                    target,
-                    level,
-                    allow_group=True,
-                )
-                requested = set(resolution.related_targets)
-
-                row_keys = list(zip(cases["level"], cases["canonical_target"]))
-                keep = pd.Series(
-                    [row_key in requested for row_key in row_keys],
-                    index=cases.index,
-                )
-                return cases[keep]
-
-            aliases = self._historical_review_target_aliases(level)
-
-            if normalized_target not in aliases:
-                available = sorted(aliases)
-                raise ValueError(
-                    f"Unable to resolve historical review target filter: {target}. "
-                    f"Available targets and aliases: {available}"
-                )
-
-            requested = aliases[normalized_target]
-            keep = (
-                (cases["level"] == requested[0])
-                & (cases["canonical_target"] == requested[1])
+            row_keys = zip(cases["level"], cases["canonical_target"])
+            keep = pd.Series(
+                [row_key in requested for row_key in row_keys],
+                index=cases.index,
             )
-
             return cases[keep]
 
     def _select_historical_cases(
@@ -1084,37 +985,24 @@ class Module1HistoricalAnalysis:
                 "detail": detail,
             }
 
-    def _build_historical_case_summary_table(
+    def _build_historical_review_tables(
             self,
-            target: str | None = None,
-            context_id: str | None = None,
-            level: str | None = None,
-            only_use_for_validation: bool = True,
-            include_low_relevance: bool = False,
+            cases: pd.DataFrame,
             min_obs: int = 20,
             plausible_threshold: float = 0.70,
             mixed_threshold: float = 0.45,
-        ) -> pd.DataFrame:
-            cases = self._select_historical_cases(
-                target=target,
-                level=level,
-                context_id=context_id,
-                only_use_for_validation=only_use_for_validation,
-                include_low_relevance=include_low_relevance,
-                error_context="historical review cases",
-                require_non_empty=True,
-            )
-
+        ) -> tuple[pd.DataFrame, pd.DataFrame]:
             rows = []
+            details = []
             for _, case in cases.iterrows():
-                rows.append(
-                    self._evaluate_historical_case(
-                        case,
-                        min_obs=min_obs,
-                        plausible_threshold=plausible_threshold,
-                        mixed_threshold=mixed_threshold,
-                    )["summary"]
+                evaluation = self._evaluate_historical_case(
+                    case,
+                    min_obs=min_obs,
+                    plausible_threshold=plausible_threshold,
+                    mixed_threshold=mixed_threshold,
                 )
+                rows.append(evaluation["summary"])
+                details.append(evaluation["detail"])
 
             summary = pd.DataFrame(rows)
             sort_cols = [
@@ -1124,7 +1012,18 @@ class Module1HistoricalAnalysis:
             ]
             if sort_cols:
                 summary = summary.sort_values(sort_cols).reset_index(drop=True)
-            return summary
+
+            if not details:
+                detail = pd.DataFrame()
+            else:
+                detail = pd.concat(details, axis=0)
+                if not detail.empty:
+                    detail = detail.sort_values(
+                        ["level", "canonical_target", "date", "context_id"]
+                    )
+                detail = detail.reset_index(drop=True)
+
+            return summary, detail
 
     def _format_historical_case_summary_view(
             self,
@@ -1160,47 +1059,6 @@ class Module1HistoricalAnalysis:
                 col for col in compact_columns if col in case_summary.columns
             ]
             return case_summary[compact_columns].copy()
-
-    def _build_historical_detail_table(
-            self,
-            target: str | None = None,
-            context_id: str | None = None,
-            level: str | None = None,
-            only_use_for_validation: bool = True,
-            include_low_relevance: bool = False,
-            min_obs: int = 20,
-            plausible_threshold: float = 0.70,
-            mixed_threshold: float = 0.45,
-        ) -> pd.DataFrame:
-            cases = self._select_historical_cases(
-                target=target,
-                level=level,
-                context_id=context_id,
-                only_use_for_validation=only_use_for_validation,
-                include_low_relevance=include_low_relevance,
-                error_context="historical review detail cases",
-                require_non_empty=True,
-            )
-
-            details = []
-            for _, case in cases.iterrows():
-                details.append(
-                    self._evaluate_historical_case(
-                        case,
-                        min_obs=min_obs,
-                        plausible_threshold=plausible_threshold,
-                        mixed_threshold=mixed_threshold,
-                    )["detail"]
-                )
-
-            if not details:
-                return pd.DataFrame()
-            detail = pd.concat(details, axis=0)
-            if not detail.empty:
-                detail = detail.sort_values(
-                    ["level", "canonical_target", "date", "context_id"]
-                )
-            return detail.reset_index(drop=True)
 
     def _build_historical_review_report(
             self,
@@ -1523,37 +1381,37 @@ class Module1HistoricalAnalysis:
                     f"Use one of: {supported}."
                 )
 
-            if normalized_output in {"cases", "compact", "report", "diagnostic"}:
-                summary = self._build_historical_case_summary_table(
-                    target=target,
-                    context_id=context_id,
-                    level=level,
-                    only_use_for_validation=only_use_for_validation,
-                    include_low_relevance=include_low_relevance,
-                    min_obs=min_obs,
-                    plausible_threshold=plausible_threshold,
-                    mixed_threshold=mixed_threshold,
-                )
-                if normalized_output == "cases":
-                    return summary
-                if normalized_output == "compact":
-                    return self._format_historical_case_summary_view(
-                        summary,
-                        view="compact",
-                    )
-                if normalized_output == "report":
-                    return self._build_historical_review_report(summary)
-
-            detail = self._build_historical_detail_table(
+            summary_outputs = {"cases", "compact", "report", "diagnostic"}
+            error_context = (
+                "historical review cases"
+                if normalized_output in summary_outputs
+                else "historical review detail cases"
+            )
+            cases = self._select_historical_cases(
                 target=target,
-                context_id=context_id,
                 level=level,
+                context_id=context_id,
                 only_use_for_validation=only_use_for_validation,
                 include_low_relevance=include_low_relevance,
+                error_context=error_context,
+                require_non_empty=True,
+            )
+            summary, detail = self._build_historical_review_tables(
+                cases,
                 min_obs=min_obs,
                 plausible_threshold=plausible_threshold,
                 mixed_threshold=mixed_threshold,
             )
+
+            if normalized_output == "cases":
+                return summary
+            if normalized_output == "compact":
+                return self._format_historical_case_summary_view(
+                    summary,
+                    view="compact",
+                )
+            if normalized_output == "report":
+                return self._build_historical_review_report(summary)
             if normalized_output == "detail":
                 return detail
             if normalized_output == "windows":
@@ -1585,11 +1443,13 @@ class Module1HistoricalAnalysis:
             output: str = "cases",
         ) -> pd.DataFrame:
             """
-            Convenience wrapper for running Module 1 and one historical review output.
+            Load historical context and return one historical review output.
 
-            This method runs the Module 1 pipeline, explicitly loads historical context
-            from historical_context_path, and returns exactly one selected output from
+            This method uses the completed Module1Result supplied at construction,
+            explicitly loads historical context from historical_context_path, and
+            returns exactly one selected output from
             review_historical_cases(..., output=...).
+            It does not run the Module 1 calculation pipeline.
 
             Supported output values are:
             - "cases"
@@ -1621,10 +1481,8 @@ class Module1HistoricalAnalysis:
             """
             Select requested raw inputs if they are related to the target.
             """
-            import warnings
-
             related_inputs = (
-                self.raw_inputs_for_target(target, level)
+                self.analysis.raw_inputs_for_target(target, level)
                 if related_inputs is None
                 else list(related_inputs)
             )
@@ -1889,8 +1747,8 @@ class Module1HistoricalAnalysis:
             Batch quantitative diagnostics are available through
             review_historical_cases(output="diagnostic"), not through plotting.
 
-            Historical review observations and match-state windows are consumed from
-            the canonical review_historical_cases() detail and windows outputs.
+            Historical review observations and match-state windows are derived from
+            one canonical evaluation of the selected case.
 
             Returns:
             - include_target_inputs=True: fig, {"target", "inputs", "state"}
@@ -1935,21 +1793,10 @@ class Module1HistoricalAnalysis:
                 ),
             )
 
-            review_kwargs = {
-                "target": target,
-                "context_id": context_id,
-                "level": level,
-                "only_use_for_validation": False,
-                "include_low_relevance": True,
-            }
-            detail = self.review_historical_cases(
-                **review_kwargs,
-                output="detail",
+            _, detail = self._build_historical_review_tables(
+                cases,
             )
-            windows = self.review_historical_cases(
-                **review_kwargs,
-                output="windows",
-            )
+            windows = self._build_historical_review_windows(detail)
 
             detail_for_case = detail[detail["case_key"] == selected_case_key].copy()
             windows_for_case = windows[windows["case_key"] == selected_case_key].copy()
@@ -2082,9 +1929,6 @@ class Module1HistoricalAnalysis:
                 - numeric start extends backward from context_start.
                 - numeric end extends forward from context_end.
             """
-            from numbers import Real
-            import warnings
-
             context_start = pd.to_datetime(context_start)
             context_end = pd.to_datetime(context_end)
 
