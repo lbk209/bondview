@@ -88,156 +88,175 @@ def validate_module1_config(config: dict) -> dict:
                     f"{field} member is not defined: {member}.",
                 )
 
-    required_top_level = {
-        "horizons",
-        "features",
-        "components",
-        "stance_label_rules",
-        "exposure_stances",
-    }
-    for key in sorted(required_top_level):
-        add_checked("top_level", key, "required_key", key in config)
-        if key not in config:
-            add_issue(
-                "top_level",
-                key,
-                "required_key",
-                "missing",
-                "Required top-level key is missing.",
-            )
-
-    horizons = config.get("horizons")
-    features = config.get("features")
-    components = config.get("components")
-    stance_label_rules = config.get("stance_label_rules")
-    exposure_stances = config.get("exposure_stances")
-    model_metadata = config.get("model_metadata")
-
-    if model_metadata is not None:
-        add_checked("model_metadata", None, "model_metadata")
-        if not isinstance(model_metadata, dict):
-            add_issue(
-                "model_metadata",
-                None,
-                "model_metadata",
-                "invalid",
-                "model_metadata must be a mapping when present.",
-            )
-            model_metadata = {}
-        else:
-            target_groups = model_metadata.get("target_groups")
-            if target_groups is not None:
-                add_checked(
-                    "model_metadata",
-                    "target_groups",
-                    "target_groups",
+    # Layer A — generic YAML structure
+    def validate_top_level_structure(config):
+        """Validate required sections, metadata references, and horizon structure."""
+        required_top_level = {
+            "horizons",
+            "features",
+            "components",
+            "stance_label_rules",
+            "exposure_stances",
+        }
+        for key in sorted(required_top_level):
+            add_checked("top_level", key, "required_key", key in config)
+            if key not in config:
+                add_issue(
+                    "top_level",
+                    key,
+                    "required_key",
+                    "missing",
+                    "Required top-level key is missing.",
                 )
-                if not isinstance(target_groups, dict):
-                    add_issue(
+
+        horizons = config.get("horizons")
+        features = config.get("features")
+        components = config.get("components")
+        stance_label_rules = config.get("stance_label_rules")
+        exposure_stances = config.get("exposure_stances")
+        model_metadata = config.get("model_metadata")
+
+        if model_metadata is not None:
+            add_checked("model_metadata", None, "model_metadata")
+            if not isinstance(model_metadata, dict):
+                add_issue(
+                    "model_metadata",
+                    None,
+                    "model_metadata",
+                    "invalid",
+                    "model_metadata must be a mapping when present.",
+                )
+                model_metadata = {}
+            else:
+                target_groups = model_metadata.get("target_groups")
+                if target_groups is not None:
+                    add_checked(
                         "model_metadata",
                         "target_groups",
                         "target_groups",
-                        "invalid",
-                        "model_metadata.target_groups must be a mapping when present.",
                     )
-                else:
-                    known_components = (
-                        set(components) if isinstance(components, dict) else None
-                    )
-                    known_stances = (
-                        set(exposure_stances)
-                        if isinstance(exposure_stances, dict)
-                        else None
-                    )
-                    allowed_group_keys = {"component", "stance"}
-                    for group_name, group in target_groups.items():
-                        if not non_empty_string(group_name):
-                            add_issue(
-                                "model_metadata",
-                                group_name,
-                                "target_groups",
-                                "invalid",
-                                "model_metadata.target_groups group names must be non-empty strings.",
-                            )
-                            continue
-                        add_checked(
-                            "model_metadata.target_groups",
-                            group_name,
-                            "definition",
+                    if not isinstance(target_groups, dict):
+                        add_issue(
+                            "model_metadata",
+                            "target_groups",
+                            "target_groups",
+                            "invalid",
+                            "model_metadata.target_groups must be a mapping when present.",
                         )
-                        if not isinstance(group, dict):
-                            add_issue(
+                    else:
+                        known_components = (
+                            set(components) if isinstance(components, dict) else None
+                        )
+                        known_stances = (
+                            set(exposure_stances)
+                            if isinstance(exposure_stances, dict)
+                            else None
+                        )
+                        allowed_group_keys = {"component", "stance"}
+                        for group_name, group in target_groups.items():
+                            if not non_empty_string(group_name):
+                                add_issue(
+                                    "model_metadata",
+                                    group_name,
+                                    "target_groups",
+                                    "invalid",
+                                    "model_metadata.target_groups group names must be non-empty strings.",
+                                )
+                                continue
+                            add_checked(
                                 "model_metadata.target_groups",
                                 group_name,
                                 "definition",
-                                "invalid",
-                                "Target group definition must be a mapping.",
                             )
-                            continue
-
-                        for key in sorted(set(group) - allowed_group_keys):
-                            add_issue(
-                                "model_metadata.target_groups",
-                                group_name,
-                                key,
-                                "unknown",
-                                "Target group keys must be only component or stance.",
-                            )
-
-                        for level_name, known_members in [
-                            ("component", known_components),
-                            ("stance", known_stances),
-                        ]:
-                            if level_name in group:
-                                validate_string_members(
+                            if not isinstance(group, dict):
+                                add_issue(
                                     "model_metadata.target_groups",
                                     group_name,
-                                    level_name,
-                                    group.get(level_name),
-                                    known_members=known_members,
-                                    unknown_issue=f"unknown_{level_name}",
+                                    "definition",
+                                    "invalid",
+                                    "Target group definition must be a mapping.",
+                                )
+                                continue
+
+                            for key in sorted(set(group) - allowed_group_keys):
+                                add_issue(
+                                    "model_metadata.target_groups",
+                                    group_name,
+                                    key,
+                                    "unknown",
+                                    "Target group keys must be only component or stance.",
                                 )
 
-            diagnostics = model_metadata.get("diagnostics")
-            if diagnostics is not None:
-                add_checked(
-                    "model_metadata",
-                    "diagnostics",
-                    "diagnostics",
-                )
-                if not isinstance(diagnostics, dict):
-                    add_issue(
+                            for level_name, known_members in [
+                                ("component", known_components),
+                                ("stance", known_stances),
+                            ]:
+                                if level_name in group:
+                                    validate_string_members(
+                                        "model_metadata.target_groups",
+                                        group_name,
+                                        level_name,
+                                        group.get(level_name),
+                                        known_members=known_members,
+                                        unknown_issue=f"unknown_{level_name}",
+                                    )
+
+                diagnostics = model_metadata.get("diagnostics")
+                if diagnostics is not None:
+                    add_checked(
                         "model_metadata",
                         "diagnostics",
                         "diagnostics",
+                    )
+                    if not isinstance(diagnostics, dict):
+                        add_issue(
+                            "model_metadata",
+                            "diagnostics",
+                            "diagnostics",
+                            "invalid",
+                            "model_metadata.diagnostics must be a mapping when present.",
+                        )
+
+        if not isinstance(horizons, dict) or not horizons:
+            add_issue(
+                "horizons",
+                None,
+                "horizons",
+                "missing" if horizons is None else "invalid",
+                "horizons must be a non-empty mapping.",
+            )
+            horizons = {}
+        else:
+            for horizon_name, horizon_value in horizons.items():
+                add_checked("horizons", horizon_name, "value", horizon_value)
+                if (
+                    isinstance(horizon_value, bool)
+                    or not isinstance(horizon_value, int)
+                    or horizon_value <= 0
+                ):
+                    add_issue(
+                        "horizons",
+                        horizon_name,
+                        "value",
                         "invalid",
-                        "model_metadata.diagnostics must be a mapping when present.",
+                        "Horizon values must be positive integers and not bool.",
                     )
 
-    if not isinstance(horizons, dict) or not horizons:
-        add_issue(
-            "horizons",
-            None,
-            "horizons",
-            "missing" if horizons is None else "invalid",
-            "horizons must be a non-empty mapping.",
+        return (
+            horizons,
+            features,
+            components,
+            stance_label_rules,
+            exposure_stances,
         )
-        horizons = {}
-    else:
-        for horizon_name, horizon_value in horizons.items():
-            add_checked("horizons", horizon_name, "value", horizon_value)
-            if (
-                isinstance(horizon_value, bool)
-                or not isinstance(horizon_value, int)
-                or horizon_value <= 0
-            ):
-                add_issue(
-                    "horizons",
-                    horizon_name,
-                    "value",
-                    "invalid",
-                    "Horizon values must be positive integers and not bool.",
-                )
+
+    (
+        horizons,
+        features,
+        components,
+        stance_label_rules,
+        exposure_stances,
+    ) = validate_top_level_structure(config)
 
     def validate_horizon_reference(section, name, field, horizon_key):
         if horizon_key is None or pd.isna(horizon_key):
@@ -251,97 +270,94 @@ def validate_module1_config(config: dict) -> dict:
                 f"Horizon reference is not defined in config['horizons']: {horizon_key}.",
             )
 
-    known_feature_methods = {"change", "pct_change", "spread", "level"}
-    known_frequencies = {"daily", "monthly"}
-    if not isinstance(features, dict) or not features:
-        add_issue(
-            "features",
-            None,
-            "features",
-            "invalid",
-            "features must be a non-empty mapping.",
-        )
-        features = {}
-
-    for feature_name, feature in features.items():
-        add_checked("features", feature_name, "feature")
-        if not isinstance(feature, dict):
+    # Layer A section orchestration with Layer B feature-method dispatch.
+    def validate_features_section(features):
+        """Apply Layer A feature grammar and Layer B calculator capabilities once."""
+        known_feature_methods = {"change", "pct_change", "spread", "level"}
+        known_frequencies = {"daily", "monthly"}
+        if not isinstance(features, dict) or not features:
             add_issue(
                 "features",
-                feature_name,
-                "definition",
+                None,
+                "features",
                 "invalid",
-                "Feature definition must be a mapping.",
+                "features must be a non-empty mapping.",
             )
-            continue
+            features = {}
 
-        method = feature.get("method")
-        if method not in known_feature_methods:
-            add_issue(
-                "features",
-                feature_name,
-                "method",
-                "unsupported",
-                f"Supported methods: {sorted(known_feature_methods)}.",
-            )
-
-        if method in {"change", "pct_change", "level"}:
-            if "input" not in feature or pd.isna(feature.get("input")):
+        for feature_name, feature in features.items():
+            add_checked("features", feature_name, "feature")
+            if not isinstance(feature, dict):
                 add_issue(
                     "features",
                     feature_name,
-                    "input",
-                    "missing",
-                    f"{method} feature requires input.",
-                )
-
-        if method in {"change", "pct_change"}:
-            if "horizon" not in feature or pd.isna(feature.get("horizon")):
-                add_issue(
-                    "features",
-                    feature_name,
-                    "horizon",
-                    "missing",
-                    f"{method} feature requires horizon.",
-                )
-            else:
-                validate_horizon_reference(
-                    "features",
-                    feature_name,
-                    "horizon",
-                    feature.get("horizon"),
-                )
-
-        if method == "spread":
-            inputs = feature.get("inputs")
-            if not isinstance(inputs, list) or len(inputs) != 2:
-                add_issue(
-                    "features",
-                    feature_name,
-                    "inputs",
+                    "definition",
                     "invalid",
-                    "spread feature requires inputs as a list of exactly two items.",
+                    "Feature definition must be a mapping.",
+                )
+                continue
+
+            method = feature.get("method")
+            if method not in known_feature_methods:
+                add_issue(
+                    "features",
+                    feature_name,
+                    "method",
+                    "unsupported",
+                    f"Supported methods: {sorted(known_feature_methods)}.",
                 )
 
-        frequency = feature.get("frequency")
-        if frequency is not None and frequency not in known_frequencies:
-            add_issue(
-                "features",
-                feature_name,
-                "frequency",
-                "unsupported",
-                f"Expected one of {sorted(known_frequencies)} when present.",
-            )
+            if method in {"change", "pct_change", "level"}:
+                if "input" not in feature or pd.isna(feature.get("input")):
+                    add_issue(
+                        "features",
+                        feature_name,
+                        "input",
+                        "missing",
+                        f"{method} feature requires input.",
+                    )
 
-    if not isinstance(components, dict) or not components:
-        add_issue(
-            "components",
-            None,
-            "components",
-            "invalid",
-            "components must be a non-empty mapping.",
-        )
-        components = {}
+            if method in {"change", "pct_change"}:
+                if "horizon" not in feature or pd.isna(feature.get("horizon")):
+                    add_issue(
+                        "features",
+                        feature_name,
+                        "horizon",
+                        "missing",
+                        f"{method} feature requires horizon.",
+                    )
+                else:
+                    validate_horizon_reference(
+                        "features",
+                        feature_name,
+                        "horizon",
+                        feature.get("horizon"),
+                    )
+
+            if method == "spread":
+                inputs = feature.get("inputs")
+                if not isinstance(inputs, list) or len(inputs) != 2:
+                    add_issue(
+                        "features",
+                        feature_name,
+                        "inputs",
+                        "invalid",
+                        "spread feature requires inputs as a list of exactly two items.",
+                    )
+
+            frequency = feature.get("frequency")
+            if frequency is not None and frequency not in known_frequencies:
+                add_issue(
+                    "features",
+                    feature_name,
+                    "frequency",
+                    "unsupported",
+                    f"Expected one of {sorted(known_frequencies)} when present.",
+                )
+
+        return features
+
+    features = validate_features_section(features)
 
     component_score_outputs = {}
     component_label_outputs = {}
@@ -356,7 +372,9 @@ def validate_module1_config(config: dict) -> dict:
 
     curve_bucket_names = {}
 
+    # Layer B — calculator capability contract
     def validate_anchor_block(component_name, anchors, field):
+        """Validate the fixed-anchor shape consumed by current-state scoring."""
         if anchors is None:
             add_issue(
                 "components",
@@ -420,6 +438,7 @@ def validate_module1_config(config: dict) -> dict:
         return set()
 
     def validate_threshold_label_mode(component_name, label):
+        """Validate the calculator-supported threshold label form."""
         thresholds = label.get("thresholds")
         if not isinstance(thresholds, dict):
             add_issue(
@@ -497,6 +516,7 @@ def validate_module1_config(config: dict) -> dict:
             )
 
     def validate_bucket_label_mode(component_name, score, label):
+        """Validate the calculator-supported bucket label form."""
         buckets = score.get("buckets")
         bucket_labels = label.get("bucket_labels")
         labels = label.get("labels")
@@ -566,7 +586,9 @@ def validate_module1_config(config: dict) -> dict:
                     "Bucket label values must be non-empty strings.",
                 )
 
-    def validate_curve_change_buckets(score):
+    # Layer C — intentional Module 1 named-model invariants
+    def validate_curve_change_model_invariants(score):
+        """Validate the active curve-change categories used by Module 1."""
         component_name = "curve_change"
         buckets = score.get("buckets")
         if not isinstance(buckets, dict):
@@ -630,7 +652,8 @@ def validate_module1_config(config: dict) -> dict:
                 "curve_change flattening.max must be less than steepening.min.",
             )
 
-    def validate_curve_state_buckets(score):
+    def validate_curve_state_model_invariants(score):
+        """Validate the active curve-state categories used by Module 1."""
         component_name = "curve_state"
         buckets = score.get("buckets")
         if not isinstance(buckets, dict):
@@ -720,7 +743,8 @@ def validate_module1_config(config: dict) -> dict:
                     "curve_state buckets must form contiguous ordered intervals.",
                 )
 
-    def validate_curve_move_driver_buckets(score):
+    def validate_curve_move_driver_model_invariants(score):
+        """Validate move-driver categories and exact scores used by calculator logic."""
         component_name = "curve_move_driver"
         buckets = score.get("buckets")
         if not isinstance(buckets, dict):
@@ -815,6 +839,7 @@ def validate_module1_config(config: dict) -> dict:
         return set(feature_names)
 
     def validate_component_diagnostics(component_name, component, score):
+        """Validate supported prepared-input diagnostic declarations."""
         diagnostics = component.get("diagnostics")
         if diagnostics is None:
             return
@@ -926,525 +951,540 @@ def validate_module1_config(config: dict) -> dict:
                 "Prepared-input roles must be unique within one component.",
             )
 
-    for component_name, component in components.items():
-        add_checked("components", component_name, "component")
-        if not isinstance(component, dict):
+    # Layer A section orchestration; Layer B/C helpers above own specific rules.
+    def validate_components_section(components):
+        """Validate component structure, calculator forms, and named invariants in one pass."""
+        if not isinstance(components, dict) or not components:
             add_issue(
                 "components",
-                component_name,
-                "definition",
+                None,
+                "components",
                 "invalid",
-                "Component definition must be a mapping.",
+                "components must be a non-empty mapping.",
             )
-            continue
+            components = {}
 
-        score = component.get("score")
-        label = component.get("label")
-        if not isinstance(score, dict):
-            add_issue(
-                "components",
-                component_name,
-                "score",
-                "missing",
-                "Component must have a score section.",
-            )
-            score = {}
-        if not isinstance(label, dict):
-            add_issue(
-                "components",
-                component_name,
-                "label",
-                "missing",
-                "Component must have a label section.",
-            )
-            label = {}
-        validate_component_diagnostics(component_name, component, score)
+        for component_name, component in components.items():
+            add_checked("components", component_name, "component")
 
-        score_output = score.get("output")
-        if not non_empty_string(score_output):
-            add_issue(
-                "components",
-                component_name,
-                "score.output",
-                "missing",
-                "score.output must be a non-empty string.",
-            )
-        elif score_output in component_score_outputs:
-            add_issue(
-                "components",
-                component_name,
-                "score.output",
-                "duplicate",
-                f"Also used by {component_score_outputs[score_output]}.",
-            )
-        else:
-            component_score_outputs[score_output] = component_name
-            component_output_names.add(score_output)
-
-        function = score.get("function")
-        is_current_state_component = component_name in current_state_components
-        state_transform = score.get("state_transform")
-        if state_transform is not None and state_transform != "fixed_anchor":
-            add_issue(
-                "components",
-                component_name,
-                "score.state_transform",
-                "unsupported",
-                "state_transform must be fixed_anchor when present.",
-            )
-        if is_current_state_component and state_transform != "fixed_anchor":
-            add_issue(
-                "components",
-                component_name,
-                "score.state_transform",
-                "missing",
-                "current-state components must use state_transform: fixed_anchor.",
-            )
-        if not is_current_state_component and state_transform is not None:
-            add_issue(
-                "components",
-                component_name,
-                "score.state_transform",
-                "unsupported_for_component",
-                "state_transform is only supported for current-state components.",
-            )
-
-        if function not in known_score_functions:
-            add_issue(
-                "components",
-                component_name,
-                "score.function",
-                "unsupported",
-                f"Supported score functions: {sorted(known_score_functions)}.",
-            )
-
-        input_preparation = score.get("input_preparation")
-        supported_input_preparation_components = {
-            "curve_change",
-            "curve_state",
-            "curve_move_driver",
-            "credit_spread_change",
-            "credit_spread_state",
-        }
-        supports_input_preparation = (
-            component_name in supported_input_preparation_components
-            or function == "curve_move_driver_score"
-        )
-        if input_preparation is not None:
-            field_prefix = "score.input_preparation"
-            if not supports_input_preparation:
+            # Layer A: generic component mapping and output relationships.
+            if not isinstance(component, dict):
                 add_issue(
                     "components",
                     component_name,
-                    field_prefix,
-                    "unsupported_for_component",
-                    "input_preparation is only supported for selected curve and credit components.",
-                )
-            elif not isinstance(input_preparation, dict):
-                add_issue(
-                    "components",
-                    component_name,
-                    field_prefix,
+                    "definition",
                     "invalid",
-                    "input_preparation must be a mapping when present.",
+                    "Component definition must be a mapping.",
+                )
+                continue
+
+            score = component.get("score")
+            label = component.get("label")
+            if not isinstance(score, dict):
+                add_issue(
+                    "components",
+                    component_name,
+                    "score",
+                    "missing",
+                    "Component must have a score section.",
+                )
+                score = {}
+            if not isinstance(label, dict):
+                add_issue(
+                    "components",
+                    component_name,
+                    "label",
+                    "missing",
+                    "Component must have a label section.",
+                )
+                label = {}
+            validate_component_diagnostics(component_name, component, score)
+
+            score_output = score.get("output")
+            if not non_empty_string(score_output):
+                add_issue(
+                    "components",
+                    component_name,
+                    "score.output",
+                    "missing",
+                    "score.output must be a non-empty string.",
+                )
+            elif score_output in component_score_outputs:
+                add_issue(
+                    "components",
+                    component_name,
+                    "score.output",
+                    "duplicate",
+                    f"Also used by {component_score_outputs[score_output]}.",
                 )
             else:
-                allowed_input_preparation_fields = {
-                    "smoothing",
-                    "min_abs_value",
-                }
-                for field in input_preparation:
-                    if field not in allowed_input_preparation_fields:
-                        add_issue(
-                            "components",
-                            component_name,
-                            f"{field_prefix}.{field}",
-                            "unknown",
-                            "Unknown input_preparation field.",
-                        )
-                smoothing_key = input_preparation.get("smoothing")
-                if smoothing_key is not None:
-                    validate_horizon_reference(
-                        "components",
-                        component_name,
-                        f"{field_prefix}.smoothing",
-                        smoothing_key,
-                    )
-                min_abs_value = input_preparation.get("min_abs_value")
-                if min_abs_value is not None:
-                    if function != "curve_move_driver_score":
-                        add_issue(
-                            "components",
-                            component_name,
-                            f"{field_prefix}.min_abs_value",
-                            "unsupported_for_component",
-                            "input_preparation.min_abs_value is only supported for curve_move_driver_score.",
-                        )
-                    elif (
-                        not is_number(min_abs_value)
-                        or min_abs_value < 0
-                    ):
-                        add_issue(
-                            "components",
-                            component_name,
-                            f"{field_prefix}.min_abs_value",
-                            "invalid",
-                            "input_preparation.min_abs_value must be numeric, not bool, and >= 0.",
-                        )
+                component_score_outputs[score_output] = component_name
+                component_output_names.add(score_output)
 
-        if function == "single_feature_score":
-            feature_name = score.get("input")
-            if feature_name not in features:
+            function = score.get("function")
+
+            # Layer C: invariants tied to the named current-state components.
+            is_current_state_component = component_name in current_state_components
+            state_transform = score.get("state_transform")
+            if state_transform is not None and state_transform != "fixed_anchor":
                 add_issue(
                     "components",
                     component_name,
-                    "score.input",
-                    "unknown_feature",
-                    f"Feature is not defined: {feature_name}.",
+                    "score.state_transform",
+                    "unsupported",
+                    "state_transform must be fixed_anchor when present.",
                 )
-            if component_name == "credit_spread_state":
-                validate_anchor_block(
-                    component_name,
-                    score.get("anchors"),
-                    "score.anchors",
-                )
-
-        if function == "weighted_feature_score":
-            inputs = score.get("inputs")
-            requires_weighted_inputs = state_transform != "fixed_anchor"
-            requires_input_anchors = state_transform == "fixed_anchor"
-            if not isinstance(inputs, list) or not inputs:
+            if is_current_state_component and state_transform != "fixed_anchor":
                 add_issue(
                     "components",
                     component_name,
-                    "score.inputs",
-                    "invalid",
-                    "weighted_feature_score requires a non-empty inputs list.",
+                    "score.state_transform",
+                    "missing",
+                    "current-state components must use state_transform: fixed_anchor.",
                 )
-                inputs = []
-            has_explicit_weight = any(
-                isinstance(item, dict) and "weight" in item for item in inputs
+            if not is_current_state_component and state_transform is not None:
+                add_issue(
+                    "components",
+                    component_name,
+                    "score.state_transform",
+                    "unsupported_for_component",
+                    "state_transform is only supported for current-state components.",
+                )
+
+            # Layer B: calculator-supported score, preparation, and transform forms.
+            if function not in known_score_functions:
+                add_issue(
+                    "components",
+                    component_name,
+                    "score.function",
+                    "unsupported",
+                    f"Supported score functions: {sorted(known_score_functions)}.",
+                )
+
+            input_preparation = score.get("input_preparation")
+            supported_input_preparation_components = {
+                "curve_change",
+                "curve_state",
+                "curve_move_driver",
+                "credit_spread_change",
+                "credit_spread_state",
+            }
+            supports_input_preparation = (
+                component_name in supported_input_preparation_components
+                or function == "curve_move_driver_score"
             )
-            requires_fixed_anchor_weights = (
-                state_transform == "fixed_anchor"
-                and (len(inputs) > 1 or has_explicit_weight)
-            )
-            for idx, item in enumerate(inputs):
-                if not isinstance(item, dict):
+            if input_preparation is not None:
+                field_prefix = "score.input_preparation"
+                if not supports_input_preparation:
                     add_issue(
                         "components",
                         component_name,
-                        f"score.inputs[{idx}]",
-                        "invalid",
-                        "Weighted input item must be a mapping.",
+                        field_prefix,
+                        "unsupported_for_component",
+                        "input_preparation is only supported for selected curve and credit components.",
                     )
-                    continue
-                feature_name = item.get("feature")
+                elif not isinstance(input_preparation, dict):
+                    add_issue(
+                        "components",
+                        component_name,
+                        field_prefix,
+                        "invalid",
+                        "input_preparation must be a mapping when present.",
+                    )
+                else:
+                    allowed_input_preparation_fields = {
+                        "smoothing",
+                        "min_abs_value",
+                    }
+                    for field in input_preparation:
+                        if field not in allowed_input_preparation_fields:
+                            add_issue(
+                                "components",
+                                component_name,
+                                f"{field_prefix}.{field}",
+                                "unknown",
+                                "Unknown input_preparation field.",
+                            )
+                    smoothing_key = input_preparation.get("smoothing")
+                    if smoothing_key is not None:
+                        validate_horizon_reference(
+                            "components",
+                            component_name,
+                            f"{field_prefix}.smoothing",
+                            smoothing_key,
+                        )
+                    min_abs_value = input_preparation.get("min_abs_value")
+                    if min_abs_value is not None:
+                        if function != "curve_move_driver_score":
+                            add_issue(
+                                "components",
+                                component_name,
+                                f"{field_prefix}.min_abs_value",
+                                "unsupported_for_component",
+                                "input_preparation.min_abs_value is only supported for curve_move_driver_score.",
+                            )
+                        elif (
+                            not is_number(min_abs_value)
+                            or min_abs_value < 0
+                        ):
+                            add_issue(
+                                "components",
+                                component_name,
+                                f"{field_prefix}.min_abs_value",
+                                "invalid",
+                                "input_preparation.min_abs_value must be numeric, not bool, and >= 0.",
+                            )
+
+            if function == "single_feature_score":
+                feature_name = score.get("input")
                 if feature_name not in features:
                     add_issue(
                         "components",
                         component_name,
-                        f"score.inputs[{idx}].feature",
+                        "score.input",
                         "unknown_feature",
                         f"Feature is not defined: {feature_name}.",
                     )
-                if requires_weighted_inputs or requires_fixed_anchor_weights:
-                    if "weight" not in item:
-                        add_issue(
-                            "components",
-                            component_name,
-                            f"score.inputs[{idx}].weight",
-                            "missing",
-                            "weighted_feature_score input weight is required.",
-                        )
-                    elif not is_number(item.get("weight")) or pd.isna(
-                        item.get("weight")
-                    ):
-                        add_issue(
-                            "components",
-                            component_name,
-                            f"score.inputs[{idx}].weight",
-                            "invalid",
-                            "weighted_feature_score input weight must be numeric and not bool.",
-                        )
-                if requires_input_anchors:
+                if component_name == "credit_spread_state":
                     validate_anchor_block(
                         component_name,
-                        item.get("anchors"),
-                        f"score.inputs[{idx}].anchors",
+                        score.get("anchors"),
+                        "score.anchors",
                     )
 
-        if function == "curve_move_driver_score":
-            inputs = score.get("inputs")
-            if not isinstance(inputs, list) or len(inputs) != 2:
+            if function == "weighted_feature_score":
+                inputs = score.get("inputs")
+                requires_weighted_inputs = state_transform != "fixed_anchor"
+                requires_input_anchors = state_transform == "fixed_anchor"
+                if not isinstance(inputs, list) or not inputs:
+                    add_issue(
+                        "components",
+                        component_name,
+                        "score.inputs",
+                        "invalid",
+                        "weighted_feature_score requires a non-empty inputs list.",
+                    )
+                    inputs = []
+                has_explicit_weight = any(
+                    isinstance(item, dict) and "weight" in item for item in inputs
+                )
+                requires_fixed_anchor_weights = (
+                    state_transform == "fixed_anchor"
+                    and (len(inputs) > 1 or has_explicit_weight)
+                )
+                for idx, item in enumerate(inputs):
+                    if not isinstance(item, dict):
+                        add_issue(
+                            "components",
+                            component_name,
+                            f"score.inputs[{idx}]",
+                            "invalid",
+                            "Weighted input item must be a mapping.",
+                        )
+                        continue
+                    feature_name = item.get("feature")
+                    if feature_name not in features:
+                        add_issue(
+                            "components",
+                            component_name,
+                            f"score.inputs[{idx}].feature",
+                            "unknown_feature",
+                            f"Feature is not defined: {feature_name}.",
+                        )
+                    if requires_weighted_inputs or requires_fixed_anchor_weights:
+                        if "weight" not in item:
+                            add_issue(
+                                "components",
+                                component_name,
+                                f"score.inputs[{idx}].weight",
+                                "missing",
+                                "weighted_feature_score input weight is required.",
+                            )
+                        elif not is_number(item.get("weight")) or pd.isna(
+                            item.get("weight")
+                        ):
+                            add_issue(
+                                "components",
+                                component_name,
+                                f"score.inputs[{idx}].weight",
+                                "invalid",
+                                "weighted_feature_score input weight must be numeric and not bool.",
+                            )
+                    if requires_input_anchors:
+                        validate_anchor_block(
+                            component_name,
+                            item.get("anchors"),
+                            f"score.inputs[{idx}].anchors",
+                        )
+
+            if function == "curve_move_driver_score":
+                inputs = score.get("inputs")
+                if not isinstance(inputs, list) or len(inputs) != 2:
+                    add_issue(
+                        "components",
+                        component_name,
+                        "score.inputs",
+                        "invalid",
+                        "curve_move_driver_score requires exactly two feature inputs.",
+                    )
+                    inputs = []
+                for idx, item in enumerate(inputs):
+                    if not isinstance(item, dict):
+                        add_issue(
+                            "components",
+                            component_name,
+                            f"score.inputs[{idx}]",
+                            "invalid",
+                            "Curve move driver input item must be a mapping.",
+                        )
+                        continue
+                    feature_name = item.get("feature")
+                    if feature_name not in features:
+                        add_issue(
+                            "components",
+                            component_name,
+                            f"score.inputs[{idx}].feature",
+                            "unknown_feature",
+                            f"Feature is not defined: {feature_name}.",
+                        )
+            normalization = score.get("normalization")
+            if normalization not in known_normalizations:
                 add_issue(
                     "components",
                     component_name,
-                    "score.inputs",
-                    "invalid",
-                    "curve_move_driver_score requires exactly two feature inputs.",
+                    "score.normalization",
+                    "unsupported",
+                    "normalization must be None, rolling_zscore, or rolling_std.",
                 )
-                inputs = []
-            for idx, item in enumerate(inputs):
-                if not isinstance(item, dict):
-                    add_issue(
-                        "components",
-                        component_name,
-                        f"score.inputs[{idx}]",
-                        "invalid",
-                        "Curve move driver input item must be a mapping.",
-                    )
-                    continue
-                feature_name = item.get("feature")
-                if feature_name not in features:
-                    add_issue(
-                        "components",
-                        component_name,
-                        f"score.inputs[{idx}].feature",
-                        "unknown_feature",
-                        f"Feature is not defined: {feature_name}.",
-                    )
-        normalization = score.get("normalization")
-        if normalization not in known_normalizations:
-            add_issue(
-                "components",
-                component_name,
-                "score.normalization",
-                "unsupported",
-                "normalization must be None, rolling_zscore, or rolling_std.",
-            )
-        normalization_horizon = score.get("normalization_horizon")
-        if normalization_horizon is not None:
-            validate_horizon_reference(
-                "components",
-                component_name,
-                "score.normalization_horizon",
-                normalization_horizon,
-            )
-        elif normalization is not None:
-            validate_horizon_reference(
-                "components",
-                component_name,
-                "score.normalization_horizon",
-                "normalization",
-            )
-        if is_current_state_component and normalization is not None:
-            add_issue(
-                "components",
-                component_name,
-                "score.normalization",
-                "unsupported_for_current_state",
-                "current-state components use fixed-anchor scoring and must not use rolling normalization.",
-            )
-        if (
-            function == "curve_move_driver_score"
-            and normalization is not None
-        ):
-            add_issue(
-                "components",
-                component_name,
-                "score.normalization",
-                "unsupported_for_curve_move_driver",
-                "curve_move_driver_score is categorical and must not use normalization.",
-            )
+            normalization_horizon = score.get("normalization_horizon")
+            if normalization_horizon is not None:
+                validate_horizon_reference(
+                    "components",
+                    component_name,
+                    "score.normalization_horizon",
+                    normalization_horizon,
+                )
+            elif normalization is not None:
+                validate_horizon_reference(
+                    "components",
+                    component_name,
+                    "score.normalization_horizon",
+                    "normalization",
+                )
+            if is_current_state_component and normalization is not None:
+                add_issue(
+                    "components",
+                    component_name,
+                    "score.normalization",
+                    "unsupported_for_current_state",
+                    "current-state components use fixed-anchor scoring and must not use rolling normalization.",
+                )
+            if (
+                function == "curve_move_driver_score"
+                and normalization is not None
+            ):
+                add_issue(
+                    "components",
+                    component_name,
+                    "score.normalization",
+                    "unsupported_for_curve_move_driver",
+                    "curve_move_driver_score is categorical and must not use normalization.",
+                )
 
-        smoothing = score.get("smoothing")
-        if smoothing is not None:
-            validate_horizon_reference(
-                "components",
-                component_name,
-                "score.smoothing",
-                smoothing,
-            )
-        if is_current_state_component and smoothing is not None:
-            add_issue(
-                "components",
-                component_name,
-                "score.smoothing",
-                "unsupported_for_current_state",
-                "current-state components use fixed-anchor scoring and must not use rolling score smoothing.",
-            )
-        if (
-            function == "curve_move_driver_score"
-            and smoothing is not None
-        ):
-            add_issue(
-                "components",
-                component_name,
-                "score.smoothing",
-                "unsupported_for_curve_move_driver",
-                "curve_move_driver_score is categorical and must not use smoothing.",
-            )
+            smoothing = score.get("smoothing")
+            if smoothing is not None:
+                validate_horizon_reference(
+                    "components",
+                    component_name,
+                    "score.smoothing",
+                    smoothing,
+                )
+            if is_current_state_component and smoothing is not None:
+                add_issue(
+                    "components",
+                    component_name,
+                    "score.smoothing",
+                    "unsupported_for_current_state",
+                    "current-state components use fixed-anchor scoring and must not use rolling score smoothing.",
+                )
+            if (
+                function == "curve_move_driver_score"
+                and smoothing is not None
+            ):
+                add_issue(
+                    "components",
+                    component_name,
+                    "score.smoothing",
+                    "unsupported_for_curve_move_driver",
+                    "curve_move_driver_score is categorical and must not use smoothing.",
+                )
 
-        label_output = label.get("output")
-        if not non_empty_string(label_output):
-            add_issue(
-                "components",
-                component_name,
-                "label.output",
-                "missing",
-                "label.output must be a non-empty string.",
-            )
-        elif label_output in component_label_outputs:
-            add_issue(
-                "components",
-                component_name,
-                "label.output",
-                "duplicate",
-                f"Also used by {component_label_outputs[label_output]}.",
-            )
-        else:
-            component_label_outputs[label_output] = component_name
-            component_output_names.add(label_output)
+            label_output = label.get("output")
 
-        source = label.get("source")
-        if source != score_output:
-            add_issue(
-                "components",
-                component_name,
-                "label.source",
-                "unknown_score_output",
-                f"label.source must refer to this component score output: {score_output}.",
-            )
+            # Layer A output registration followed by Layer B label-mode dispatch.
+            if not non_empty_string(label_output):
+                add_issue(
+                    "components",
+                    component_name,
+                    "label.output",
+                    "missing",
+                    "label.output must be a non-empty string.",
+                )
+            elif label_output in component_label_outputs:
+                add_issue(
+                    "components",
+                    component_name,
+                    "label.output",
+                    "duplicate",
+                    f"Also used by {component_label_outputs[label_output]}.",
+                )
+            else:
+                component_label_outputs[label_output] = component_name
+                component_output_names.add(label_output)
 
-        label_mode = label.get("mode")
-        if label_mode not in {"threshold", "bucket"}:
-            add_issue(
-                "components",
-                component_name,
-                "label.mode",
-                "missing" if label_mode is None else "unsupported",
-                "label.mode must be threshold or bucket.",
-            )
-        elif label_mode == "threshold":
-            validate_threshold_label_mode(component_name, label)
-        elif label_mode == "bucket":
-            validate_bucket_label_mode(component_name, score, label)
+            source = label.get("source")
+            if source != score_output:
+                add_issue(
+                    "components",
+                    component_name,
+                    "label.source",
+                    "unknown_score_output",
+                    f"label.source must refer to this component score output: {score_output}.",
+                )
 
-        if component_name == "curve_change":
-            validate_curve_change_buckets(score)
-        elif component_name == "curve_state":
-            validate_curve_state_buckets(score)
-        elif component_name == "curve_move_driver":
-            validate_curve_move_driver_buckets(score)
+            label_mode = label.get("mode")
+            if label_mode not in {"threshold", "bucket"}:
+                add_issue(
+                    "components",
+                    component_name,
+                    "label.mode",
+                    "missing" if label_mode is None else "unsupported",
+                    "label.mode must be threshold or bucket.",
+                )
+            elif label_mode == "threshold":
+                validate_threshold_label_mode(component_name, label)
+            elif label_mode == "bucket":
+                validate_bucket_label_mode(component_name, score, label)
 
-    if not isinstance(stance_label_rules, dict):
-        add_issue(
-            "stance_label_rules",
-            None,
-            "stance_label_rules",
-            "invalid",
-            "stance_label_rules must be a mapping.",
-        )
-        stance_label_rules = {}
+            # Layer C: active Curve category and score invariants.
+            if component_name == "curve_change":
+                validate_curve_change_model_invariants(score)
+            elif component_name == "curve_state":
+                validate_curve_state_model_invariants(score)
+            elif component_name == "curve_move_driver":
+                validate_curve_move_driver_model_invariants(score)
 
-    direction_thresholds = stance_label_rules.get("direction_thresholds")
-    if not isinstance(direction_thresholds, dict):
-        add_issue(
-            "stance_label_rules",
-            None,
-            "direction_thresholds",
-            "missing",
-            "direction_thresholds must be a mapping.",
-        )
-        direction_thresholds = {}
+        return components
 
-    positive_min = direction_thresholds.get("positive_min")
-    negative_max = direction_thresholds.get("negative_max")
-    if not is_number(positive_min):
-        add_issue(
-            "stance_label_rules",
-            None,
-            "direction_thresholds.positive_min",
-            "invalid",
-            "positive_min must be numeric.",
-        )
-    if not is_number(negative_max):
-        add_issue(
-            "stance_label_rules",
-            None,
-            "direction_thresholds.negative_max",
-            "invalid",
-            "negative_max must be numeric.",
-        )
-    if is_number(positive_min) and is_number(negative_max) and positive_min <= negative_max:
-        add_issue(
-            "stance_label_rules",
-            None,
-            "direction_thresholds",
-            "invalid_order",
-            "positive_min must be greater than negative_max.",
-        )
+    components = validate_components_section(components)
 
-    strength_thresholds = stance_label_rules.get("strength_thresholds")
-    if not isinstance(strength_thresholds, dict):
-        add_issue(
-            "stance_label_rules",
-            None,
-            "strength_thresholds",
-            "missing",
-            "strength_thresholds must be a mapping.",
-        )
-        strength_thresholds = {}
-
-    weak_max_abs = strength_thresholds.get("weak_max_abs")
-    moderate_max_abs = strength_thresholds.get("moderate_max_abs")
-    strong_min_abs = strength_thresholds.get("strong_min_abs")
-    for key, value in [
-        ("weak_max_abs", weak_max_abs),
-        ("moderate_max_abs", moderate_max_abs),
-        ("strong_min_abs", strong_min_abs),
-    ]:
-        if not is_number(value):
+    # Layer A stance-label structure with Layer B threshold semantics.
+    def validate_stance_label_rules_section(stance_label_rules):
+        """Validate generic stance-label structure and supported threshold semantics."""
+        if not isinstance(stance_label_rules, dict):
             add_issue(
                 "stance_label_rules",
                 None,
-                f"strength_thresholds.{key}",
+                "stance_label_rules",
                 "invalid",
-                f"{key} must be numeric.",
+                "stance_label_rules must be a mapping.",
             )
-    if (
-        is_number(weak_max_abs)
-        and is_number(moderate_max_abs)
-        and is_number(strong_min_abs)
-        and not (weak_max_abs <= moderate_max_abs <= strong_min_abs)
-    ):
-        add_issue(
-            "stance_label_rules",
-            None,
-            "strength_thresholds",
-            "invalid_order",
-            "Require weak_max_abs <= moderate_max_abs <= strong_min_abs.",
-        )
+            stance_label_rules = {}
 
-    neutral_strength = stance_label_rules.get("neutral_strength")
-    if neutral_strength is not None and not non_empty_string(neutral_strength):
-        add_issue(
-            "stance_label_rules",
-            None,
-            "neutral_strength",
-            "invalid",
-            "neutral_strength must be a non-empty string when present.",
-        )
+        direction_thresholds = stance_label_rules.get("direction_thresholds")
+        if not isinstance(direction_thresholds, dict):
+            add_issue(
+                "stance_label_rules",
+                None,
+                "direction_thresholds",
+                "missing",
+                "direction_thresholds must be a mapping.",
+            )
+            direction_thresholds = {}
 
-    if not isinstance(exposure_stances, dict) or not exposure_stances:
-        add_issue(
-            "exposure_stances",
-            None,
-            "exposure_stances",
-            "invalid",
-            "exposure_stances must be a non-empty mapping.",
-        )
-        exposure_stances = {}
+        positive_min = direction_thresholds.get("positive_min")
+        negative_max = direction_thresholds.get("negative_max")
+        if not is_number(positive_min):
+            add_issue(
+                "stance_label_rules",
+                None,
+                "direction_thresholds.positive_min",
+                "invalid",
+                "positive_min must be numeric.",
+            )
+        if not is_number(negative_max):
+            add_issue(
+                "stance_label_rules",
+                None,
+                "direction_thresholds.negative_max",
+                "invalid",
+                "negative_max must be numeric.",
+            )
+        if is_number(positive_min) and is_number(negative_max) and positive_min <= negative_max:
+            add_issue(
+                "stance_label_rules",
+                None,
+                "direction_thresholds",
+                "invalid_order",
+                "positive_min must be greater than negative_max.",
+            )
 
-    if "draft_exposure_stances" in config:
-        add_issue(
-            "draft_exposure_stances",
-            None,
-            "draft_exposure_stances",
-            "unsupported",
-            "draft_exposure_stances is not supported.",
-        )
+        strength_thresholds = stance_label_rules.get("strength_thresholds")
+        if not isinstance(strength_thresholds, dict):
+            add_issue(
+                "stance_label_rules",
+                None,
+                "strength_thresholds",
+                "missing",
+                "strength_thresholds must be a mapping.",
+            )
+            strength_thresholds = {}
+
+        weak_max_abs = strength_thresholds.get("weak_max_abs")
+        moderate_max_abs = strength_thresholds.get("moderate_max_abs")
+        strong_min_abs = strength_thresholds.get("strong_min_abs")
+        for key, value in [
+            ("weak_max_abs", weak_max_abs),
+            ("moderate_max_abs", moderate_max_abs),
+            ("strong_min_abs", strong_min_abs),
+        ]:
+            if not is_number(value):
+                add_issue(
+                    "stance_label_rules",
+                    None,
+                    f"strength_thresholds.{key}",
+                    "invalid",
+                    f"{key} must be numeric.",
+                )
+        if (
+            is_number(weak_max_abs)
+            and is_number(moderate_max_abs)
+            and is_number(strong_min_abs)
+            and not (weak_max_abs <= moderate_max_abs <= strong_min_abs)
+        ):
+            add_issue(
+                "stance_label_rules",
+                None,
+                "strength_thresholds",
+                "invalid_order",
+                "Require weak_max_abs <= moderate_max_abs <= strong_min_abs.",
+            )
+
+        neutral_strength = stance_label_rules.get("neutral_strength")
+        if neutral_strength is not None and not non_empty_string(neutral_strength):
+            add_issue(
+                "stance_label_rules",
+                None,
+                "neutral_strength",
+                "invalid",
+                "neutral_strength must be a non-empty string when present.",
+            )
+
+        return stance_label_rules, neutral_strength
+
+    stance_label_rules, neutral_strength = validate_stance_label_rules_section(
+        stance_label_rules
+    )
 
     stance_output_names = {}
     known_custom_stance_functions = {
@@ -1453,6 +1493,7 @@ def validate_module1_config(config: dict) -> dict:
         "duration_rule_stance",
     }
 
+    # Layer C — Credit stance model invariants
     def validate_credit_cap_block(stance_name, field_prefix, cap):
         if not isinstance(cap, dict):
             add_issue(
@@ -1504,6 +1545,7 @@ def validate_module1_config(config: dict) -> dict:
         adjustment_config,
         expected_case_keys,
     ):
+        """Apply Layer C Credit adjustment invariants to the active nested config."""
         field_root = "rule_mapped.adjustment.config"
         if not isinstance(adjustment_config, dict):
             add_issue(
@@ -1616,9 +1658,154 @@ def validate_module1_config(config: dict) -> dict:
                     adjustment.get("cap"),
                 )
 
+    # Layer A — generic rule declaration and cross-product structure
+    def validate_rule_mapped_rule_scores(
+        section_name,
+        stance_name,
+        rule_scores,
+        state_input_count,
+        expected_state_values_by_input,
+    ):
+        """Parse rule keys once and validate declared state cross-product coverage."""
+        field_root = "rule_mapped"
+        parsed_rule_scores = {}
+        if not isinstance(rule_scores, dict) or not rule_scores:
+            add_issue(
+                section_name,
+                stance_name,
+                f"{field_root}.rule_scores",
+                "missing" if rule_scores is None else "invalid",
+                "rule_mapped.rule_scores must be a non-empty mapping.",
+            )
+        elif state_input_count:
+            try:
+                parsed_rule_scores = _parse_rule_scores_n_parts(
+                    rule_scores,
+                    expected_parts=state_input_count,
+                    context=f"{section_name}.{stance_name}.rule_mapped",
+                )
+            except ValueError as exc:
+                add_issue(
+                    section_name,
+                    stance_name,
+                    f"{field_root}.rule_scores",
+                    "invalid",
+                    str(exc),
+                )
+
+        expected_rule_tuples = set()
+        if (
+            expected_state_values_by_input
+            and len(expected_state_values_by_input) == state_input_count
+        ):
+            expected_rule_tuples = set(product(*expected_state_values_by_input))
+
+        if expected_rule_tuples and parsed_rule_scores:
+            actual_rule_tuples = set(parsed_rule_scores)
+            for rule_tuple in sorted(expected_rule_tuples - actual_rule_tuples):
+                add_issue(
+                    section_name,
+                    stance_name,
+                    f"{field_root}.rule_scores.{'|'.join(rule_tuple)}",
+                    "missing",
+                    "rule_mapped.rule_scores must cover every declared state or bucket cross-product case.",
+                )
+            for rule_tuple in sorted(actual_rule_tuples - expected_rule_tuples):
+                add_issue(
+                    section_name,
+                    stance_name,
+                    f"{field_root}.rule_scores.{'|'.join(rule_tuple)}",
+                    "unknown",
+                    "rule_mapped.rule_scores contains an unknown state or bucket cross-product case.",
+                )
+
+        return expected_rule_tuples
+
+    # Layer B — calculator-supported rule-mapped adjustment structure
+    def validate_rule_mapped_adjustment_contract(
+        section_name,
+        stance_name,
+        stance,
+        adjustment,
+        expected_rule_tuples,
+    ):
+        """Validate executable adjustment metadata and dispatch named-model config."""
+        if adjustment is None:
+            return
+
+        field_root = "rule_mapped"
+        if not isinstance(adjustment, dict):
+            add_issue(
+                section_name,
+                stance_name,
+                f"{field_root}.adjustment",
+                "invalid",
+                "rule_mapped.adjustment must be a mapping when present.",
+            )
+            return
+
+        metadata_outputs = adjustment.get("metadata_outputs")
+        if metadata_outputs is not None:
+            if not isinstance(metadata_outputs, list):
+                add_issue(
+                    section_name,
+                    stance_name,
+                    f"{field_root}.adjustment.metadata_outputs",
+                    "invalid",
+                    "rule_mapped adjustment metadata_outputs must be a list when present.",
+                )
+            else:
+                seen_metadata_outputs = set()
+                for idx, output_name in enumerate(metadata_outputs):
+                    if not non_empty_string(output_name):
+                        add_issue(
+                            section_name,
+                            stance_name,
+                            f"{field_root}.adjustment.metadata_outputs[{idx}]",
+                            "invalid",
+                            "Adjustment metadata output names must be non-empty strings.",
+                        )
+                        continue
+                    if output_name in seen_metadata_outputs:
+                        add_issue(
+                            section_name,
+                            stance_name,
+                            f"{field_root}.adjustment.metadata_outputs[{idx}]",
+                            "duplicate",
+                            "Adjustment metadata output names must be unique.",
+                        )
+                    seen_metadata_outputs.add(output_name)
+
+        adjustment_output = adjustment.get("adjustment_output")
+        if adjustment_output is not None and not non_empty_string(adjustment_output):
+            add_issue(
+                section_name,
+                stance_name,
+                f"{field_root}.adjustment.adjustment_output",
+                "invalid",
+                "rule_mapped adjustment_output must be a non-empty string when present.",
+            )
+
+        adjustment_config = adjustment.get("config")
+        if (
+            adjustment_config is not None
+            and stance.get("function") == "credit_spread_stance"
+        ):
+            validate_credit_rule_adjustment_config(
+                stance_name,
+                adjustment_config,
+                {
+                    "|".join(rule_tuple)
+                    for rule_tuple in expected_rule_tuples
+                },
+            )
+
     def validate_rule_mapped_stance_schema(section_name, stance_name, stance):
+        """Orchestrate Layer A/B rule-mapped checks and Layer C compatibility."""
         rule_mapped = stance.get("rule_mapped")
         field_root = "rule_mapped"
+
+        # Layer B: custom stances require the executable rule-mapped form.
         if not isinstance(rule_mapped, dict):
             add_issue(
                 section_name,
@@ -1629,6 +1816,7 @@ def validate_module1_config(config: dict) -> dict:
             )
             return
 
+        # Layer B: calculator dispatch and required active output bindings.
         if rule_mapped.get("function") != "rule_mapped_stance":
             add_issue(
                 section_name,
@@ -1669,6 +1857,7 @@ def validate_module1_config(config: dict) -> dict:
             "stabilization_changed_output",
         )
 
+        # Layer A state-input grammar with Layer B classification dispatch.
         state_inputs = rule_mapped.get("state_inputs")
         ordered_names = []
         expected_state_values_by_input = []
@@ -1822,6 +2011,7 @@ def validate_module1_config(config: dict) -> dict:
                         else:
                             values.append(bucket_name.strip())
                     if values and non_empty_string(source_score):
+                        # Layer C: declared buckets must match active component models.
                         component_name = component_score_outputs.get(source_score)
                         component_score = components.get(component_name, {}).get(
                             "score",
@@ -1900,6 +2090,7 @@ def validate_module1_config(config: dict) -> dict:
                 "rule_mapped state input names must be unique.",
             )
 
+        # Layer A: generic ordered stabilization structure.
         state_input_count = len(state_inputs)
         if ordered_names and len(ordered_names) == state_input_count:
             state_stabilization = rule_mapped.get("state_stabilization")
@@ -1927,6 +2118,7 @@ def validate_module1_config(config: dict) -> dict:
                     "rule_mapped.state_stabilization must be a mapping.",
                 )
 
+        # Layer B: outputs consumed by calculator and diagnostic dispatch.
         for output_field in [
             "rule_case_output",
             "stabilization_changed_any_output",
@@ -1961,320 +2153,245 @@ def validate_module1_config(config: dict) -> dict:
                 "rule_mapped.stabilization_changed_any_output must be declared or derivable.",
             )
 
-        rule_scores = rule_mapped.get("rule_scores")
-        parsed_rule_scores = {}
-        if not isinstance(rule_scores, dict) or not rule_scores:
-            add_issue(
-                section_name,
-                stance_name,
-                f"{field_root}.rule_scores",
-                "missing" if rule_scores is None else "invalid",
-                "rule_mapped.rule_scores must be a non-empty mapping.",
-            )
-        elif state_input_count:
-            try:
-                parsed_rule_scores = _parse_rule_scores_n_parts(
-                    rule_scores,
-                    expected_parts=state_input_count,
-                    context=f"{section_name}.{stance_name}.rule_mapped",
-                )
-            except ValueError as exc:
-                add_issue(
-                    section_name,
-                    stance_name,
-                    f"{field_root}.rule_scores",
-                    "invalid",
-                    str(exc),
-                )
+        expected_rule_tuples = validate_rule_mapped_rule_scores(
+            section_name,
+            stance_name,
+            rule_mapped.get("rule_scores"),
+            state_input_count,
+            expected_state_values_by_input,
+        )
+        validate_rule_mapped_adjustment_contract(
+            section_name,
+            stance_name,
+            stance,
+            rule_mapped.get("adjustment"),
+            expected_rule_tuples,
+        )
 
-        expected_rule_tuples = set()
-        if (
-            expected_state_values_by_input
-            and len(expected_state_values_by_input) == state_input_count
-        ):
-            expected_rule_tuples = set(product(*expected_state_values_by_input))
-
-        if expected_rule_tuples and parsed_rule_scores:
-            actual_rule_tuples = set(parsed_rule_scores)
-            for rule_tuple in sorted(expected_rule_tuples - actual_rule_tuples):
-                add_issue(
-                    section_name,
-                    stance_name,
-                    f"{field_root}.rule_scores.{'|'.join(rule_tuple)}",
-                    "missing",
-                    "rule_mapped.rule_scores must cover every declared state or bucket cross-product case.",
-                )
-            for rule_tuple in sorted(actual_rule_tuples - expected_rule_tuples):
-                add_issue(
-                    section_name,
-                    stance_name,
-                    f"{field_root}.rule_scores.{'|'.join(rule_tuple)}",
-                    "unknown",
-                    "rule_mapped.rule_scores contains an unknown state or bucket cross-product case.",
-                )
-
-        adjustment = rule_mapped.get("adjustment")
-        if adjustment is not None:
-            if not isinstance(adjustment, dict):
-                add_issue(
-                    section_name,
-                    stance_name,
-                    f"{field_root}.adjustment",
-                    "invalid",
-                    "rule_mapped.adjustment must be a mapping when present.",
-                )
-            else:
-                metadata_outputs = adjustment.get("metadata_outputs")
-                if metadata_outputs is not None:
-                    if not isinstance(metadata_outputs, list):
-                        add_issue(
-                            section_name,
-                            stance_name,
-                            f"{field_root}.adjustment.metadata_outputs",
-                            "invalid",
-                            "rule_mapped adjustment metadata_outputs must be a list when present.",
-                        )
-                    else:
-                        seen_metadata_outputs = set()
-                        for idx, output_name in enumerate(metadata_outputs):
-                            if not non_empty_string(output_name):
-                                add_issue(
-                                    section_name,
-                                    stance_name,
-                                    f"{field_root}.adjustment.metadata_outputs[{idx}]",
-                                    "invalid",
-                                    "Adjustment metadata output names must be non-empty strings.",
-                                )
-                                continue
-                            if output_name in seen_metadata_outputs:
-                                add_issue(
-                                    section_name,
-                                    stance_name,
-                                    f"{field_root}.adjustment.metadata_outputs[{idx}]",
-                                    "duplicate",
-                                    "Adjustment metadata output names must be unique.",
-                                )
-                            seen_metadata_outputs.add(output_name)
-
-                adjustment_output = adjustment.get("adjustment_output")
-                if adjustment_output is not None and not non_empty_string(adjustment_output):
-                    add_issue(
-                        section_name,
-                        stance_name,
-                        f"{field_root}.adjustment.adjustment_output",
-                        "invalid",
-                        "rule_mapped adjustment_output must be a non-empty string when present.",
-                    )
-
-                adjustment_config = adjustment.get("config")
-                if (
-                    adjustment_config is not None
-                    and stance.get("function") == "credit_spread_stance"
-                ):
-                    validate_credit_rule_adjustment_config(
-                        stance_name,
-                        adjustment_config,
-                        {
-                            "|".join(rule_tuple)
-                            for rule_tuple in expected_rule_tuples
-                        },
-                    )
-
-    for stance_name, stance in exposure_stances.items():
-        add_checked("exposure_stances", stance_name, "stance")
-        if not isinstance(stance, dict):
+    # Layer A section orchestration with Layer B/C dispatch at each stance.
+    def validate_exposure_stances_section(exposure_stances):
+        """Validate stance structure, executable forms, and stance model invariants once."""
+        if not isinstance(exposure_stances, dict) or not exposure_stances:
             add_issue(
                 "exposure_stances",
-                stance_name,
-                "definition",
+                None,
+                "exposure_stances",
                 "invalid",
-                "Exposure stance definition must be a mapping.",
+                "exposure_stances must be a non-empty mapping.",
             )
-            continue
+            exposure_stances = {}
 
-        for field in ["score_output", "stance_output", "strength_output"]:
-            output_name = stance.get(field)
-            if not non_empty_string(output_name):
-                add_issue(
-                    "exposure_stances",
-                    stance_name,
-                    field,
-                    "invalid",
-                    f"{field} must be a non-empty string.",
-                )
-                continue
-            if output_name in component_output_names:
-                add_issue(
-                    "exposure_stances",
-                    stance_name,
-                    field,
-                    "output_conflict",
-                    "Stance outputs must not conflict with component outputs.",
-                )
-            if output_name in stance_output_names:
-                add_issue(
-                    "exposure_stances",
-                    stance_name,
-                    field,
-                    "duplicate",
-                    f"Also used by {stance_output_names[output_name]}.",
-                )
-            stance_output_names[output_name] = f"{stance_name}.{field}"
-
-        function = stance.get("function")
-        is_weighted_stance = function == "weighted_sum"
-        if not (
-            is_weighted_stance
-            or function in known_custom_stance_functions
-        ):
+        if "draft_exposure_stances" in config:
             add_issue(
-                "exposure_stances",
-                stance_name,
-                "function",
+                "draft_exposure_stances",
+                None,
+                "draft_exposure_stances",
                 "unsupported",
-                "function must be weighted_sum, one of "
-                f"{sorted(known_custom_stance_functions)}.",
+                "draft_exposure_stances is not supported.",
             )
 
-        inputs = stance.get("inputs")
-        if not isinstance(inputs, list) or not inputs:
-            add_issue(
-                "exposure_stances",
-                stance_name,
-                "inputs",
-                "invalid",
-                "inputs must be a non-empty list.",
-            )
-            inputs = []
+        for stance_name, stance in exposure_stances.items():
+            add_checked("exposure_stances", stance_name, "stance")
 
-        for idx, item in enumerate(inputs):
-            if not isinstance(item, dict):
+            # Layer A: generic stance mapping, outputs, inputs, and labels.
+            if not isinstance(stance, dict):
                 add_issue(
                     "exposure_stances",
                     stance_name,
-                    f"inputs[{idx}]",
+                    "definition",
                     "invalid",
-                    "Input item must be a mapping.",
+                    "Exposure stance definition must be a mapping.",
                 )
                 continue
-            component_col = item.get("component")
-            if component_col not in component_score_outputs:
-                add_issue(
-                    "exposure_stances",
-                    stance_name,
-                    f"inputs[{idx}].component",
-                    "unknown_component_score",
-                    f"Input component must refer to a component score output: {component_col}.",
-                )
-            if is_weighted_stance:
-                if "weight" not in item:
+
+            for field in ["score_output", "stance_output", "strength_output"]:
+                output_name = stance.get(field)
+                if not non_empty_string(output_name):
                     add_issue(
                         "exposure_stances",
                         stance_name,
-                        f"inputs[{idx}].weight",
-                        "missing",
-                        f"Weighted stance {stance_name} inputs[{idx}].weight is required.",
-                    )
-                elif not is_number(item.get("weight")):
-                    add_issue(
-                        "exposure_stances",
-                        stance_name,
-                        f"inputs[{idx}].weight",
+                        field,
                         "invalid",
-                        f"Weighted stance {stance_name} inputs[{idx}].weight must be numeric and not bool.",
+                        f"{field} must be a non-empty string.",
                     )
-        labels = stance.get("labels")
-        if not isinstance(labels, dict):
-            add_issue(
-                "exposure_stances",
-                stance_name,
-                "labels",
-                "missing",
-                "labels must be a mapping.",
-            )
-            labels = {}
+                    continue
+                if output_name in component_output_names:
+                    add_issue(
+                        "exposure_stances",
+                        stance_name,
+                        field,
+                        "output_conflict",
+                        "Stance outputs must not conflict with component outputs.",
+                    )
+                if output_name in stance_output_names:
+                    add_issue(
+                        "exposure_stances",
+                        stance_name,
+                        field,
+                        "duplicate",
+                        f"Also used by {stance_output_names[output_name]}.",
+                    )
+                stance_output_names[output_name] = f"{stance_name}.{field}"
 
-        direction = labels.get("direction")
-        if not isinstance(direction, dict):
-            add_issue(
-                "exposure_stances",
-                stance_name,
-                "labels.direction",
-                "missing",
-                "labels.direction must be a mapping.",
-            )
-            direction = {}
+            function = stance.get("function")
+            is_weighted_stance = function == "weighted_sum"
 
-        strength = labels.get("strength")
-        if not isinstance(strength, dict):
-            add_issue(
-                "exposure_stances",
-                stance_name,
-                "labels.strength",
-                "missing",
-                "labels.strength must be a mapping.",
-            )
-            strength = {}
-
-        direction_values = []
-        for key in ["positive", "neutral", "negative"]:
-            value = direction.get(key)
-            if not non_empty_string(value):
+            # Layer B: calculator stance dispatch and weighted-input contract.
+            if not (
+                is_weighted_stance
+                or function in known_custom_stance_functions
+            ):
                 add_issue(
                     "exposure_stances",
                     stance_name,
-                    f"labels.direction.{key}",
-                    "invalid",
-                    "Direction label value must be a non-empty string.",
+                    "function",
+                    "unsupported",
+                    "function must be weighted_sum, one of "
+                    f"{sorted(known_custom_stance_functions)}.",
                 )
-            else:
-                direction_values.append(value)
-        if len(direction_values) != len(set(direction_values)):
-            add_issue(
-                "exposure_stances",
-                stance_name,
-                "labels.direction",
-                "duplicate_values",
-                "Direction label values must be unique within one stance.",
-            )
 
-        strength_values = []
-        for key in ["weak", "moderate", "strong"]:
-            value = strength.get(key)
-            if not non_empty_string(value):
+            inputs = stance.get("inputs")
+            if not isinstance(inputs, list) or not inputs:
                 add_issue(
                     "exposure_stances",
                     stance_name,
-                    f"labels.strength.{key}",
+                    "inputs",
                     "invalid",
-                    "Strength label value must be a non-empty string.",
+                    "inputs must be a non-empty list.",
                 )
-            else:
-                strength_values.append(value)
-        if len(strength_values) != len(set(strength_values)):
-            add_issue(
-                "exposure_stances",
-                stance_name,
-                "labels.strength",
-                "duplicate_values",
-                "Strength label values must be unique within one stance.",
-            )
+                inputs = []
 
-        if neutral_strength is not None and strength and neutral_strength not in strength:
-            add_issue(
-                "exposure_stances",
-                stance_name,
-                "labels.strength.neutral_strength",
-                "unknown_strength_key",
-                "neutral_strength should be one of the configured strength label keys.",
-            )
+            for idx, item in enumerate(inputs):
+                if not isinstance(item, dict):
+                    add_issue(
+                        "exposure_stances",
+                        stance_name,
+                        f"inputs[{idx}]",
+                        "invalid",
+                        "Input item must be a mapping.",
+                    )
+                    continue
+                component_col = item.get("component")
+                if component_col not in component_score_outputs:
+                    add_issue(
+                        "exposure_stances",
+                        stance_name,
+                        f"inputs[{idx}].component",
+                        "unknown_component_score",
+                        f"Input component must refer to a component score output: {component_col}.",
+                    )
+                if is_weighted_stance:
+                    if "weight" not in item:
+                        add_issue(
+                            "exposure_stances",
+                            stance_name,
+                            f"inputs[{idx}].weight",
+                            "missing",
+                            f"Weighted stance {stance_name} inputs[{idx}].weight is required.",
+                        )
+                    elif not is_number(item.get("weight")):
+                        add_issue(
+                            "exposure_stances",
+                            stance_name,
+                            f"inputs[{idx}].weight",
+                            "invalid",
+                            f"Weighted stance {stance_name} inputs[{idx}].weight must be numeric and not bool.",
+                        )
+            labels = stance.get("labels")
+            if not isinstance(labels, dict):
+                add_issue(
+                    "exposure_stances",
+                    stance_name,
+                    "labels",
+                    "missing",
+                    "labels must be a mapping.",
+                )
+                labels = {}
 
-        if function in known_custom_stance_functions or "rule_mapped" in stance:
-            validate_rule_mapped_stance_schema(
-                "exposure_stances",
-                stance_name,
-                stance,
-            )
+            direction = labels.get("direction")
+            if not isinstance(direction, dict):
+                add_issue(
+                    "exposure_stances",
+                    stance_name,
+                    "labels.direction",
+                    "missing",
+                    "labels.direction must be a mapping.",
+                )
+                direction = {}
+
+            strength = labels.get("strength")
+            if not isinstance(strength, dict):
+                add_issue(
+                    "exposure_stances",
+                    stance_name,
+                    "labels.strength",
+                    "missing",
+                    "labels.strength must be a mapping.",
+                )
+                strength = {}
+
+            direction_values = []
+            for key in ["positive", "neutral", "negative"]:
+                value = direction.get(key)
+                if not non_empty_string(value):
+                    add_issue(
+                        "exposure_stances",
+                        stance_name,
+                        f"labels.direction.{key}",
+                        "invalid",
+                        "Direction label value must be a non-empty string.",
+                    )
+                else:
+                    direction_values.append(value)
+            if len(direction_values) != len(set(direction_values)):
+                add_issue(
+                    "exposure_stances",
+                    stance_name,
+                    "labels.direction",
+                    "duplicate_values",
+                    "Direction label values must be unique within one stance.",
+                )
+
+            strength_values = []
+            for key in ["weak", "moderate", "strong"]:
+                value = strength.get(key)
+                if not non_empty_string(value):
+                    add_issue(
+                        "exposure_stances",
+                        stance_name,
+                        f"labels.strength.{key}",
+                        "invalid",
+                        "Strength label value must be a non-empty string.",
+                    )
+                else:
+                    strength_values.append(value)
+            if len(strength_values) != len(set(strength_values)):
+                add_issue(
+                    "exposure_stances",
+                    stance_name,
+                    "labels.strength",
+                    "duplicate_values",
+                    "Strength label values must be unique within one stance.",
+                )
+
+            if neutral_strength is not None and strength and neutral_strength not in strength:
+                add_issue(
+                    "exposure_stances",
+                    stance_name,
+                    "labels.strength.neutral_strength",
+                    "unknown_strength_key",
+                    "neutral_strength should be one of the configured strength label keys.",
+                )
+
+            # Layer B rule-mapped dispatch owns generic checks and calls Layer C.
+            if function in known_custom_stance_functions or "rule_mapped" in stance:
+                validate_rule_mapped_stance_schema(
+                    "exposure_stances",
+                    stance_name,
+                    stance,
+                )
+
+    validate_exposure_stances_section(exposure_stances)
 
     issues_df = pd.DataFrame(
         issues,
