@@ -985,37 +985,24 @@ class Module1HistoricalAnalysis:
                 "detail": detail,
             }
 
-    def _build_historical_case_summary_table(
+    def _build_historical_review_tables(
             self,
-            target: str | None = None,
-            context_id: str | None = None,
-            level: str | None = None,
-            only_use_for_validation: bool = True,
-            include_low_relevance: bool = False,
+            cases: pd.DataFrame,
             min_obs: int = 20,
             plausible_threshold: float = 0.70,
             mixed_threshold: float = 0.45,
-        ) -> pd.DataFrame:
-            cases = self._select_historical_cases(
-                target=target,
-                level=level,
-                context_id=context_id,
-                only_use_for_validation=only_use_for_validation,
-                include_low_relevance=include_low_relevance,
-                error_context="historical review cases",
-                require_non_empty=True,
-            )
-
+        ) -> tuple[pd.DataFrame, pd.DataFrame]:
             rows = []
+            details = []
             for _, case in cases.iterrows():
-                rows.append(
-                    self._evaluate_historical_case(
-                        case,
-                        min_obs=min_obs,
-                        plausible_threshold=plausible_threshold,
-                        mixed_threshold=mixed_threshold,
-                    )["summary"]
+                evaluation = self._evaluate_historical_case(
+                    case,
+                    min_obs=min_obs,
+                    plausible_threshold=plausible_threshold,
+                    mixed_threshold=mixed_threshold,
                 )
+                rows.append(evaluation["summary"])
+                details.append(evaluation["detail"])
 
             summary = pd.DataFrame(rows)
             sort_cols = [
@@ -1025,7 +1012,18 @@ class Module1HistoricalAnalysis:
             ]
             if sort_cols:
                 summary = summary.sort_values(sort_cols).reset_index(drop=True)
-            return summary
+
+            if not details:
+                detail = pd.DataFrame()
+            else:
+                detail = pd.concat(details, axis=0)
+                if not detail.empty:
+                    detail = detail.sort_values(
+                        ["level", "canonical_target", "date", "context_id"]
+                    )
+                detail = detail.reset_index(drop=True)
+
+            return summary, detail
 
     def _format_historical_case_summary_view(
             self,
@@ -1061,47 +1059,6 @@ class Module1HistoricalAnalysis:
                 col for col in compact_columns if col in case_summary.columns
             ]
             return case_summary[compact_columns].copy()
-
-    def _build_historical_detail_table(
-            self,
-            target: str | None = None,
-            context_id: str | None = None,
-            level: str | None = None,
-            only_use_for_validation: bool = True,
-            include_low_relevance: bool = False,
-            min_obs: int = 20,
-            plausible_threshold: float = 0.70,
-            mixed_threshold: float = 0.45,
-        ) -> pd.DataFrame:
-            cases = self._select_historical_cases(
-                target=target,
-                level=level,
-                context_id=context_id,
-                only_use_for_validation=only_use_for_validation,
-                include_low_relevance=include_low_relevance,
-                error_context="historical review detail cases",
-                require_non_empty=True,
-            )
-
-            details = []
-            for _, case in cases.iterrows():
-                details.append(
-                    self._evaluate_historical_case(
-                        case,
-                        min_obs=min_obs,
-                        plausible_threshold=plausible_threshold,
-                        mixed_threshold=mixed_threshold,
-                    )["detail"]
-                )
-
-            if not details:
-                return pd.DataFrame()
-            detail = pd.concat(details, axis=0)
-            if not detail.empty:
-                detail = detail.sort_values(
-                    ["level", "canonical_target", "date", "context_id"]
-                )
-            return detail.reset_index(drop=True)
 
     def _build_historical_review_report(
             self,
@@ -1424,37 +1381,37 @@ class Module1HistoricalAnalysis:
                     f"Use one of: {supported}."
                 )
 
-            if normalized_output in {"cases", "compact", "report", "diagnostic"}:
-                summary = self._build_historical_case_summary_table(
-                    target=target,
-                    context_id=context_id,
-                    level=level,
-                    only_use_for_validation=only_use_for_validation,
-                    include_low_relevance=include_low_relevance,
-                    min_obs=min_obs,
-                    plausible_threshold=plausible_threshold,
-                    mixed_threshold=mixed_threshold,
-                )
-                if normalized_output == "cases":
-                    return summary
-                if normalized_output == "compact":
-                    return self._format_historical_case_summary_view(
-                        summary,
-                        view="compact",
-                    )
-                if normalized_output == "report":
-                    return self._build_historical_review_report(summary)
-
-            detail = self._build_historical_detail_table(
+            summary_outputs = {"cases", "compact", "report", "diagnostic"}
+            error_context = (
+                "historical review cases"
+                if normalized_output in summary_outputs
+                else "historical review detail cases"
+            )
+            cases = self._select_historical_cases(
                 target=target,
-                context_id=context_id,
                 level=level,
+                context_id=context_id,
                 only_use_for_validation=only_use_for_validation,
                 include_low_relevance=include_low_relevance,
+                error_context=error_context,
+                require_non_empty=True,
+            )
+            summary, detail = self._build_historical_review_tables(
+                cases,
                 min_obs=min_obs,
                 plausible_threshold=plausible_threshold,
                 mixed_threshold=mixed_threshold,
             )
+
+            if normalized_output == "cases":
+                return summary
+            if normalized_output == "compact":
+                return self._format_historical_case_summary_view(
+                    summary,
+                    view="compact",
+                )
+            if normalized_output == "report":
+                return self._build_historical_review_report(summary)
             if normalized_output == "detail":
                 return detail
             if normalized_output == "windows":
@@ -1790,8 +1747,8 @@ class Module1HistoricalAnalysis:
             Batch quantitative diagnostics are available through
             review_historical_cases(output="diagnostic"), not through plotting.
 
-            Historical review observations and match-state windows are consumed from
-            the canonical review_historical_cases() detail and windows outputs.
+            Historical review observations and match-state windows are derived from
+            one canonical evaluation of the selected case.
 
             Returns:
             - include_target_inputs=True: fig, {"target", "inputs", "state"}
@@ -1836,21 +1793,10 @@ class Module1HistoricalAnalysis:
                 ),
             )
 
-            review_kwargs = {
-                "target": target,
-                "context_id": context_id,
-                "level": level,
-                "only_use_for_validation": False,
-                "include_low_relevance": True,
-            }
-            detail = self.review_historical_cases(
-                **review_kwargs,
-                output="detail",
+            _, detail = self._build_historical_review_tables(
+                cases,
             )
-            windows = self.review_historical_cases(
-                **review_kwargs,
-                output="windows",
-            )
+            windows = self._build_historical_review_windows(detail)
 
             detail_for_case = detail[detail["case_key"] == selected_case_key].copy()
             windows_for_case = windows[windows["case_key"] == selected_case_key].copy()
