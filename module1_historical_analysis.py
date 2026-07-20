@@ -142,8 +142,10 @@ class Module1HistoricalAnalysis:
 
             Historical expectations are checked against the already-loaded
             module1_config.yaml, which is the source of truth for label vocabulary.
-            In strict mode, invalid historical context raises ValueError and is not
-            assigned to object state.
+            When strict expected-label validation fails, the method raises ValueError
+            before committing the candidate context and case tables to
+            historical_context or historical_cases. The expected-label validation
+            evidence remains available through historical_expected_label_validation.
             """
             config = self._load_yaml_config(historical_context_path)
             context = config.get("historical_context", config)
