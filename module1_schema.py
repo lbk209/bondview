@@ -1,8 +1,20 @@
+import math
 from itertools import product
 from numbers import Real
 from collections.abc import Mapping
 
 import pandas as pd
+
+
+def _is_finite_number(value) -> bool:
+    if isinstance(value, bool) or not isinstance(value, Real):
+        return False
+    if isinstance(value, int):
+        return True
+    try:
+        return math.isfinite(value)
+    except (TypeError, ValueError, OverflowError):
+        return False
 
 
 def validate_module1_config(config: dict) -> dict:
@@ -33,9 +45,6 @@ def validate_module1_config(config: dict) -> dict:
                 "status": status,
             }
         )
-
-    def is_number(value):
-        return isinstance(value, (int, float)) and not isinstance(value, bool)
 
     def non_empty_string(value):
         return isinstance(value, str) and value.strip() != ""
@@ -373,6 +382,84 @@ def validate_module1_config(config: dict) -> dict:
     curve_bucket_names = {}
 
     # Layer B — calculator capability contract
+    def validate_score_sign_and_clip_contract(component_name, score):
+        """Validate score transforms that the calculator reads directly."""
+        function = score.get("function")
+        state_transform = score.get("state_transform")
+        if "sign" in score and function in known_score_functions:
+            sign = score.get("sign")
+            supports_sign = function == "single_feature_score" or (
+                function == "weighted_feature_score"
+                and state_transform == "fixed_anchor"
+            )
+            if not supports_sign:
+                add_issue(
+                    "components",
+                    component_name,
+                    "score.sign",
+                    "unsupported",
+                    "score.sign is not supported for this score form.",
+                )
+            elif sign not in {"direct", "inverse"}:
+                add_issue(
+                    "components",
+                    component_name,
+                    "score.sign",
+                    "unsupported",
+                    "score.sign must be direct or inverse when present.",
+                )
+
+        if "clip" not in score:
+            return
+        clip = score.get("clip")
+        if not isinstance(clip, dict):
+            add_issue(
+                "components",
+                component_name,
+                "score.clip",
+                "invalid",
+                "score.clip must be a mapping when present.",
+            )
+            return
+
+        allowed_clip_fields = {"min", "max"}
+        for field_name in clip:
+            if field_name not in allowed_clip_fields:
+                add_issue(
+                    "components",
+                    component_name,
+                    f"score.clip.{field_name}",
+                    "unknown",
+                    "Unknown score.clip field.",
+                )
+
+        for field_name in ("min", "max"):
+            if field_name in clip and not _is_finite_number(clip.get(field_name)):
+                add_issue(
+                    "components",
+                    component_name,
+                    f"score.clip.{field_name}",
+                    "invalid",
+                    "score.clip bounds must be finite numeric values and not bool.",
+                )
+
+        lower = clip.get("min")
+        upper = clip.get("max")
+        if (
+            "min" in clip
+            and "max" in clip
+            and _is_finite_number(lower)
+            and _is_finite_number(upper)
+            and lower > upper
+        ):
+            add_issue(
+                "components",
+                component_name,
+                "score.clip",
+                "invalid_order",
+                "score.clip must satisfy min <= max.",
+            )
+
     def validate_anchor_block(component_name, anchors, field):
         """Validate the fixed-anchor shape consumed by current-state scoring."""
         if anchors is None:
@@ -408,7 +495,7 @@ def validate_module1_config(config: dict) -> dict:
                     "fixed_anchor scoring requires negative, neutral, and positive anchors.",
                 )
                 continue
-            if not is_number(anchor_value):
+            if not _is_finite_number(anchor_value):
                 add_issue(
                     "components",
                     component_name,
@@ -452,7 +539,7 @@ def validate_module1_config(config: dict) -> dict:
 
         positive_threshold = thresholds.get("positive")
         negative_threshold = thresholds.get("negative")
-        if not is_number(positive_threshold):
+        if not _is_finite_number(positive_threshold):
             add_issue(
                 "components",
                 component_name,
@@ -460,7 +547,7 @@ def validate_module1_config(config: dict) -> dict:
                 "invalid",
                 "positive threshold must be numeric.",
             )
-        if not is_number(negative_threshold):
+        if not _is_finite_number(negative_threshold):
             add_issue(
                 "components",
                 component_name,
@@ -469,8 +556,8 @@ def validate_module1_config(config: dict) -> dict:
                 "negative threshold must be numeric.",
             )
         if (
-            is_number(positive_threshold)
-            and is_number(negative_threshold)
+            _is_finite_number(positive_threshold)
+            and _is_finite_number(negative_threshold)
             and positive_threshold <= negative_threshold
         ):
             add_issue(
@@ -615,7 +702,7 @@ def validate_module1_config(config: dict) -> dict:
         stable = buckets.get("stable", {})
         steepening_min = steepening.get("min") if isinstance(steepening, dict) else None
         flattening_max = flattening.get("max") if isinstance(flattening, dict) else None
-        if not is_number(steepening_min):
+        if not _is_finite_number(steepening_min):
             add_issue(
                 "components",
                 component_name,
@@ -623,7 +710,7 @@ def validate_module1_config(config: dict) -> dict:
                 "invalid",
                 "curve_change steepening.min must be numeric and not bool.",
             )
-        if not is_number(flattening_max):
+        if not _is_finite_number(flattening_max):
             add_issue(
                 "components",
                 component_name,
@@ -640,8 +727,8 @@ def validate_module1_config(config: dict) -> dict:
                 "curve_change stable.default must be true.",
             )
         if (
-            is_number(steepening_min)
-            and is_number(flattening_max)
+            _is_finite_number(steepening_min)
+            and _is_finite_number(flattening_max)
             and flattening_max >= steepening_min
         ):
             add_issue(
@@ -697,7 +784,7 @@ def validate_module1_config(config: dict) -> dict:
             values[bucket_name] = {}
             for field in fields:
                 value = rule.get(field)
-                if not is_number(value):
+                if not _is_finite_number(value):
                     add_issue(
                         "components",
                         component_name,
@@ -719,7 +806,7 @@ def validate_module1_config(config: dict) -> dict:
             normal_max = values.get("normal", {}).get("max_exclusive")
             steep_min = values.get("steep", {}).get("min")
             if all(
-                is_number(value)
+                _is_finite_number(value)
                 for value in [
                     inverted_max,
                     flat_min,
@@ -785,7 +872,7 @@ def validate_module1_config(config: dict) -> dict:
                 )
                 continue
             score_value = rule.get("score")
-            if rule.get("default") is True and "score" in rule and not is_number(score_value):
+            if rule.get("default") is True and "score" in rule and not _is_finite_number(score_value):
                 add_issue(
                     "components",
                     component_name,
@@ -795,7 +882,7 @@ def validate_module1_config(config: dict) -> dict:
                 )
             if rule.get("default") is True:
                 continue
-            if not is_number(score_value):
+            if not _is_finite_number(score_value):
                 add_issue(
                     "components",
                     component_name,
@@ -1061,6 +1148,8 @@ def validate_module1_config(config: dict) -> dict:
                     f"Supported score functions: {sorted(known_score_functions)}.",
                 )
 
+            validate_score_sign_and_clip_contract(component_name, score)
+
             input_preparation = score.get("input_preparation")
             supported_input_preparation_components = {
                 "curve_change",
@@ -1124,7 +1213,7 @@ def validate_module1_config(config: dict) -> dict:
                                 "input_preparation.min_abs_value is only supported for curve_move_driver_score.",
                             )
                         elif (
-                            not is_number(min_abs_value)
+                            not _is_finite_number(min_abs_value)
                             or min_abs_value < 0
                         ):
                             add_issue(
@@ -1200,7 +1289,7 @@ def validate_module1_config(config: dict) -> dict:
                                 "missing",
                                 "weighted_feature_score input weight is required.",
                             )
-                        elif not is_number(item.get("weight")) or pd.isna(
+                        elif not _is_finite_number(item.get("weight")) or pd.isna(
                             item.get("weight")
                         ):
                             add_issue(
@@ -1404,7 +1493,7 @@ def validate_module1_config(config: dict) -> dict:
 
         positive_min = direction_thresholds.get("positive_min")
         negative_max = direction_thresholds.get("negative_max")
-        if not is_number(positive_min):
+        if not _is_finite_number(positive_min):
             add_issue(
                 "stance_label_rules",
                 None,
@@ -1412,7 +1501,7 @@ def validate_module1_config(config: dict) -> dict:
                 "invalid",
                 "positive_min must be numeric.",
             )
-        if not is_number(negative_max):
+        if not _is_finite_number(negative_max):
             add_issue(
                 "stance_label_rules",
                 None,
@@ -1420,7 +1509,7 @@ def validate_module1_config(config: dict) -> dict:
                 "invalid",
                 "negative_max must be numeric.",
             )
-        if is_number(positive_min) and is_number(negative_max) and positive_min <= negative_max:
+        if _is_finite_number(positive_min) and _is_finite_number(negative_max) and positive_min <= negative_max:
             add_issue(
                 "stance_label_rules",
                 None,
@@ -1448,7 +1537,7 @@ def validate_module1_config(config: dict) -> dict:
             ("moderate_max_abs", moderate_max_abs),
             ("strong_min_abs", strong_min_abs),
         ]:
-            if not is_number(value):
+            if not _is_finite_number(value):
                 add_issue(
                     "stance_label_rules",
                     None,
@@ -1457,9 +1546,9 @@ def validate_module1_config(config: dict) -> dict:
                     f"{key} must be numeric.",
                 )
         if (
-            is_number(weak_max_abs)
-            and is_number(moderate_max_abs)
-            and is_number(strong_min_abs)
+            _is_finite_number(weak_max_abs)
+            and _is_finite_number(moderate_max_abs)
+            and _is_finite_number(strong_min_abs)
             and not (weak_max_abs <= moderate_max_abs <= strong_min_abs)
         ):
             add_issue(
@@ -1505,11 +1594,21 @@ def validate_module1_config(config: dict) -> dict:
             )
             return
 
+        for field_name in cap:
+            if field_name not in {"min", "max"}:
+                add_issue(
+                    "exposure_stances",
+                    stance_name,
+                    f"{field_prefix}.{field_name}",
+                    "unknown",
+                    "Unknown Credit rule adjustment cap field.",
+                )
+
         lower = cap.get("min")
         upper = cap.get("max")
         has_lower = "min" in cap
         has_upper = "max" in cap
-        if has_lower and not is_number(lower):
+        if has_lower and not _is_finite_number(lower):
             add_issue(
                 "exposure_stances",
                 stance_name,
@@ -1517,7 +1616,7 @@ def validate_module1_config(config: dict) -> dict:
                 "invalid",
                 "Credit rule adjustment cap.min must be numeric and not bool.",
             )
-        if has_upper and not is_number(upper):
+        if has_upper and not _is_finite_number(upper):
             add_issue(
                 "exposure_stances",
                 stance_name,
@@ -1528,8 +1627,8 @@ def validate_module1_config(config: dict) -> dict:
         if (
             has_lower
             and has_upper
-            and is_number(lower)
-            and is_number(upper)
+            and _is_finite_number(lower)
+            and _is_finite_number(upper)
             and lower >= upper
         ):
             add_issue(
@@ -1556,6 +1655,16 @@ def validate_module1_config(config: dict) -> dict:
                 "Credit rule adjustment config must be a mapping.",
             )
             return
+
+        for field_name in adjustment_config:
+            if field_name not in {"default_cap", "states"}:
+                add_issue(
+                    "exposure_stances",
+                    stance_name,
+                    f"{field_root}.{field_name}",
+                    "unknown",
+                    "Unknown Credit rule adjustment config field.",
+                )
 
         default_cap = adjustment_config.get("default_cap")
         if not isinstance(default_cap, dict):
@@ -1630,6 +1739,19 @@ def validate_module1_config(config: dict) -> dict:
                     "Credit rule adjustment state block must be a mapping.",
                 )
                 continue
+            for field_name in adjustment:
+                if field_name not in {
+                    "change_intensity_weight",
+                    "level_intensity_weight",
+                    "cap",
+                }:
+                    add_issue(
+                        "exposure_stances",
+                        stance_name,
+                        f"{field_prefix}.{field_name}",
+                        "unknown",
+                        "Unknown Credit rule adjustment state field.",
+                    )
             for weight_field in [
                 "change_intensity_weight",
                 "level_intensity_weight",
@@ -1643,7 +1765,7 @@ def validate_module1_config(config: dict) -> dict:
                         "missing",
                         "Credit rule adjustment weight is required.",
                     )
-                elif not is_number(weight):
+                elif not _is_finite_number(weight):
                     add_issue(
                         "exposure_stances",
                         stance_name,
@@ -1727,13 +1849,23 @@ def validate_module1_config(config: dict) -> dict:
         stance_name,
         stance,
         adjustment,
+        state_inputs,
         expected_rule_tuples,
     ):
-        """Validate executable adjustment metadata and dispatch named-model config."""
+        """Validate executable Credit adjustment structure and return output roles."""
         if adjustment is None:
-            return
+            return []
 
         field_root = "rule_mapped"
+        if stance.get("function") != "credit_spread_stance":
+            add_issue(
+                section_name,
+                stance_name,
+                f"{field_root}.adjustment",
+                "unsupported",
+                "rule_mapped.adjustment is supported only for credit_spread_stance.",
+            )
+            return []
         if not isinstance(adjustment, dict):
             add_issue(
                 section_name,
@@ -1742,10 +1874,48 @@ def validate_module1_config(config: dict) -> dict:
                 "invalid",
                 "rule_mapped.adjustment must be a mapping when present.",
             )
-            return
+            return []
 
-        metadata_outputs = adjustment.get("metadata_outputs")
-        if metadata_outputs is not None:
+        allowed_adjustment_fields = {
+            "metadata_outputs",
+            "adjustment_output",
+            "config",
+        }
+        for field_name in adjustment:
+            if field_name not in allowed_adjustment_fields:
+                add_issue(
+                    section_name,
+                    stance_name,
+                    f"{field_root}.adjustment.{field_name}",
+                    "unknown",
+                    "Unknown rule_mapped adjustment field.",
+                )
+
+        state_input_count = len(state_inputs)
+        if state_input_count != 2:
+            add_issue(
+                section_name,
+                stance_name,
+                f"{field_root}.state_inputs",
+                "invalid",
+                "Credit rule_mapped adjustment requires exactly two state inputs.",
+            )
+        for idx, state_input in enumerate(state_inputs):
+            if (
+                isinstance(state_input, dict)
+                and state_input.get("classification") != "threshold_state"
+            ):
+                add_issue(
+                    section_name,
+                    stance_name,
+                    f"{field_root}.state_inputs[{idx}].classification",
+                    "unsupported",
+                    "Credit rule_mapped adjustment inputs must use threshold_state.",
+                )
+
+        output_roles = []
+        if "metadata_outputs" in adjustment:
+            metadata_outputs = adjustment.get("metadata_outputs")
             if not isinstance(metadata_outputs, list):
                 add_issue(
                     section_name,
@@ -1757,40 +1927,68 @@ def validate_module1_config(config: dict) -> dict:
             else:
                 seen_metadata_outputs = set()
                 for idx, output_name in enumerate(metadata_outputs):
+                    output_field = f"{field_root}.adjustment.metadata_outputs[{idx}]"
                     if not non_empty_string(output_name):
                         add_issue(
                             section_name,
                             stance_name,
-                            f"{field_root}.adjustment.metadata_outputs[{idx}]",
+                            output_field,
                             "invalid",
                             "Adjustment metadata output names must be non-empty strings.",
                         )
                         continue
+                    output_roles.append((output_field, output_name))
                     if output_name in seen_metadata_outputs:
                         add_issue(
                             section_name,
                             stance_name,
-                            f"{field_root}.adjustment.metadata_outputs[{idx}]",
+                            output_field,
                             "duplicate",
                             "Adjustment metadata output names must be unique.",
                         )
                     seen_metadata_outputs.add(output_name)
+                if len(metadata_outputs) != state_input_count:
+                    add_issue(
+                        section_name,
+                        stance_name,
+                        f"{field_root}.adjustment.metadata_outputs",
+                        "invalid",
+                        "Adjustment metadata_outputs must match the state-input count.",
+                    )
 
         adjustment_output = adjustment.get("adjustment_output")
-        if adjustment_output is not None and not non_empty_string(adjustment_output):
+        if adjustment_output is not None:
+            output_field = f"{field_root}.adjustment.adjustment_output"
+            if not non_empty_string(adjustment_output):
+                add_issue(
+                    section_name,
+                    stance_name,
+                    output_field,
+                    "invalid",
+                    "rule_mapped adjustment_output must be a non-empty string when present.",
+                )
+            else:
+                output_roles.append((output_field, adjustment_output))
+
+        adjustment_config = adjustment.get("config")
+        config_field = f"{field_root}.adjustment.config"
+        if "config" not in adjustment:
             add_issue(
                 section_name,
                 stance_name,
-                f"{field_root}.adjustment.adjustment_output",
-                "invalid",
-                "rule_mapped adjustment_output must be a non-empty string when present.",
+                config_field,
+                "missing",
+                "Credit rule_mapped adjustment.config is required.",
             )
-
-        adjustment_config = adjustment.get("config")
-        if (
-            adjustment_config is not None
-            and stance.get("function") == "credit_spread_stance"
-        ):
+        elif not isinstance(adjustment_config, dict):
+            add_issue(
+                section_name,
+                stance_name,
+                config_field,
+                "invalid",
+                "Credit rule_mapped adjustment.config must be a mapping.",
+            )
+        else:
             validate_credit_rule_adjustment_config(
                 stance_name,
                 adjustment_config,
@@ -1799,6 +1997,44 @@ def validate_module1_config(config: dict) -> dict:
                     for rule_tuple in expected_rule_tuples
                 },
             )
+
+        return output_roles
+
+    def validate_rule_mapped_output_contract(
+        section_name,
+        stance_name,
+        source_score_roles,
+        generated_output_roles,
+    ):
+        """Validate per-stance source uniqueness and generated-column ownership."""
+        source_columns = {}
+        for field_name, column_name in source_score_roles:
+            if column_name in source_columns:
+                add_issue(
+                    section_name,
+                    stance_name,
+                    field_name,
+                    "duplicate",
+                    "rule_mapped source_score values must be unique within a stance.",
+                )
+            else:
+                source_columns[column_name] = field_name
+
+        generated_columns = {}
+        for field_name, column_name in generated_output_roles:
+            conflict_field = source_columns.get(column_name)
+            if conflict_field is None:
+                conflict_field = generated_columns.get(column_name)
+            if conflict_field is not None:
+                add_issue(
+                    section_name,
+                    stance_name,
+                    field_name,
+                    "output_conflict",
+                    "rule_mapped generated outputs must be unique and must not overwrite source scores.",
+                )
+            else:
+                generated_columns[column_name] = field_name
 
     def validate_rule_mapped_stance_schema(section_name, stance_name, stance):
         """Orchestrate Layer A/B rule-mapped checks and Layer C compatibility."""
@@ -1815,6 +2051,30 @@ def validate_module1_config(config: dict) -> dict:
                 "rule_mapped must be a mapping for custom stance functions.",
             )
             return
+
+        allowed_rule_mapped_fields = {
+            "function",
+            "state_inputs",
+            "state_stabilization",
+            "rule_scores",
+            "rule_case_output",
+            "stabilization_changed_any_output",
+            "base_rule_score_output",
+            "adjustment",
+            "adjusted_score_output",
+            "score_output",
+            "stance_output",
+            "strength_output",
+        }
+        for field_name in rule_mapped:
+            if field_name not in allowed_rule_mapped_fields:
+                add_issue(
+                    section_name,
+                    stance_name,
+                    f"{field_root}.{field_name}",
+                    "unknown",
+                    "Unknown rule_mapped field.",
+                )
 
         # Layer B: calculator dispatch and required active output bindings.
         if rule_mapped.get("function") != "rule_mapped_stance":
@@ -1861,6 +2121,8 @@ def validate_module1_config(config: dict) -> dict:
         state_inputs = rule_mapped.get("state_inputs")
         ordered_names = []
         expected_state_values_by_input = []
+        source_score_roles = []
+        state_output_roles = []
         if not isinstance(state_inputs, list) or not state_inputs:
             add_issue(
                 section_name,
@@ -1912,6 +2174,10 @@ def validate_module1_config(config: dict) -> dict:
                     "unknown_component_score",
                     "rule_mapped source_score must refer to a configured component score output.",
                 )
+            if non_empty_string(source_score):
+                source_score_roles.append(
+                    (f"{input_prefix}.source_score", source_score)
+                )
 
             classification = state_input.get("classification")
             if classification not in supported_classifications:
@@ -1922,6 +2188,31 @@ def validate_module1_config(config: dict) -> dict:
                     "unsupported",
                     "rule_mapped classification must be threshold_state, threshold_bucket, or score_bucket.",
                 )
+
+            allowed_state_input_fields = {
+                "name",
+                "source_score",
+                "classification",
+                "raw_output",
+                "stabilized_output",
+                "stabilization_changed_output",
+                "diagnostic_component",
+            }
+            if classification == "threshold_state":
+                allowed_state_input_fields.add("state_buckets")
+            elif classification in {"threshold_bucket", "score_bucket"}:
+                allowed_state_input_fields.add("buckets")
+            else:
+                allowed_state_input_fields.update({"state_buckets", "buckets"})
+            for field_name in state_input:
+                if field_name not in allowed_state_input_fields:
+                    add_issue(
+                        section_name,
+                        stance_name,
+                        f"{input_prefix}.{field_name}",
+                        "unknown",
+                        "Unknown rule_mapped state input field.",
+                    )
 
             for output_field in required_state_input_output_fields:
                 output_name = state_input.get(output_field)
@@ -1940,6 +2231,10 @@ def validate_module1_config(config: dict) -> dict:
                         f"{input_prefix}.{output_field}",
                         "invalid",
                         f"rule_mapped state input {output_field} must be a non-empty string.",
+                    )
+                else:
+                    state_output_roles.append(
+                        (f"{input_prefix}.{output_field}", output_name)
                     )
 
             diagnostic_component = state_input.get("diagnostic_component")
@@ -2135,6 +2430,19 @@ def validate_module1_config(config: dict) -> dict:
                     f"rule_mapped.{output_field} must be a non-empty string when present.",
                 )
 
+        adjusted_score_output = rule_mapped.get("adjusted_score_output")
+        if (
+            non_empty_string(adjusted_score_output)
+            and adjusted_score_output != rule_mapped.get("score_output")
+        ):
+            add_issue(
+                section_name,
+                stance_name,
+                f"{field_root}.adjusted_score_output",
+                "mismatch",
+                "rule_mapped.adjusted_score_output must equal score_output when present.",
+            )
+
         if not non_empty_string(rule_mapped.get("rule_case_output")):
             add_issue(
                 section_name,
@@ -2160,12 +2468,38 @@ def validate_module1_config(config: dict) -> dict:
             state_input_count,
             expected_state_values_by_input,
         )
-        validate_rule_mapped_adjustment_contract(
+        adjustment_output_roles = validate_rule_mapped_adjustment_contract(
             section_name,
             stance_name,
             stance,
             rule_mapped.get("adjustment"),
+            state_inputs,
             expected_rule_tuples,
+        )
+
+        generated_output_roles = list(state_output_roles)
+        for output_field in (
+            "rule_case_output",
+            "stabilization_changed_any_output",
+            "base_rule_score_output",
+        ):
+            output_name = rule_mapped.get(output_field)
+            if non_empty_string(output_name):
+                generated_output_roles.append(
+                    (f"{field_root}.{output_field}", output_name)
+                )
+        generated_output_roles.extend(adjustment_output_roles)
+        for output_field in ("score_output", "stance_output", "strength_output"):
+            output_name = rule_mapped.get(output_field)
+            if non_empty_string(output_name):
+                generated_output_roles.append(
+                    (f"{field_root}.{output_field}", output_name)
+                )
+        validate_rule_mapped_output_contract(
+            section_name,
+            stance_name,
+            source_score_roles,
+            generated_output_roles,
         )
 
     # Layer A section orchestration with Layer B/C dispatch at each stance.
@@ -2289,7 +2623,7 @@ def validate_module1_config(config: dict) -> dict:
                             "missing",
                             f"Weighted stance {stance_name} inputs[{idx}].weight is required.",
                         )
-                    elif not is_number(item.get("weight")):
+                    elif not _is_finite_number(item.get("weight")):
                         add_issue(
                             "exposure_stances",
                             stance_name,
@@ -2452,7 +2786,7 @@ def _parse_rule_scores_n_parts(
                 f"{context} rule score key duplicates an existing case after "
                 f"normalization: {case_key}"
             )
-        if isinstance(score, bool) or not isinstance(score, Real):
+        if not _is_finite_number(score):
             raise ValueError(
                 f"{context} rule score value must be numeric and not bool: "
                 f"{case_key}"
@@ -2562,11 +2896,7 @@ def _resolve_rule_mapped_stabilization_config(
                 f"{context} state_stabilization.{component_name}.hysteresis_buffer is required."
             )
         hysteresis_buffer = component_config["hysteresis_buffer"]
-        if (
-            isinstance(hysteresis_buffer, bool)
-            or not isinstance(hysteresis_buffer, Real)
-            or hysteresis_buffer < 0
-        ):
+        if not _is_finite_number(hysteresis_buffer) or hysteresis_buffer < 0:
             raise ValueError(
                 f"{context} state_stabilization.{component_name}.hysteresis_buffer "
                 "must be numeric, not bool, and >= 0."
