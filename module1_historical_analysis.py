@@ -22,7 +22,6 @@ class Module1HistoricalAnalysis:
         self.analysis = Module1Analysis(result)
         self.labels = result.labels
         self.exposure_stance = result.exposure_stance
-        self.module1_config = result.module1_config
         self.component_config = result.component_config
         self.exposure_stance_config = result.exposure_stance_config
         self.historical_context = historical_context
@@ -502,64 +501,6 @@ class Module1HistoricalAnalysis:
 
             return str(value).strip().lower()
 
-    def _historical_review_target_aliases(self, level: str | None = None) -> dict:
-            aliases = {}
-            normalized_level = (
-                None if level is None else self._normalize_review_label(level)
-            )
-
-            if normalized_level in {None, "component"}:
-                if self.component_config is None:
-                    raise ValueError("Run load_module1_config() before historical review.")
-
-                for component_name, component_config in self.component_config[
-                    "components"
-                ].items():
-                    score_col = component_config.get("score", {}).get("output")
-                    label_col = component_config.get("label", {}).get("output")
-                    canonical = ("component", component_name)
-
-                    for alias in [component_name, score_col, label_col]:
-                        if alias is not None:
-                            aliases[self._normalize_review_label(alias)] = canonical
-
-            if normalized_level in {None, "stance"}:
-                if self.exposure_stance_config is None:
-                    raise ValueError("Run load_module1_config() before historical review.")
-
-                for stance_name, stance_config in self.exposure_stance_config[
-                    "exposure_stances"
-                ].items():
-                    score_col = stance_config.get("score_output")
-                    label_col = stance_config.get("stance_output")
-                    canonical = ("stance", stance_name)
-
-                    for alias in [stance_name, score_col, label_col]:
-                        if alias is not None:
-                            aliases[self._normalize_review_label(alias)] = canonical
-
-            if normalized_level not in {None, "component", "stance"}:
-                raise ValueError(f"Unsupported historical review level: {level}")
-
-            return aliases
-
-    def _historical_review_target_groups(self) -> dict:
-            if self.module1_config is None:
-                raise ValueError("Run load_module1_config() before historical review.")
-
-            target_groups = (
-                self.module1_config
-                .get("model_metadata", {})
-                .get("target_groups", {})
-            )
-            return {
-                group_name: {
-                    "component": list(group.get("component", [])),
-                    "stance": list(group.get("stance", [])),
-                }
-                for group_name, group in target_groups.items()
-            }
-
     def _build_historical_cases(
             self,
             events: pd.DataFrame,
@@ -643,44 +584,18 @@ class Module1HistoricalAnalysis:
             target: str,
             level: str | None = None,
         ) -> pd.DataFrame:
-            normalized_target = self._normalize_review_label(target)
-            normalized_level = (
-                None if level is None else self._normalize_review_label(level)
+            resolution = self.analysis.resolve_target(
+                target,
+                level,
+                allow_group=True,
             )
-            if normalized_level not in {None, "component", "stance"}:
-                raise ValueError(f"Unsupported historical review level: {level}")
-            groups = self._historical_review_target_groups()
+            requested = set(resolution.related_targets)
 
-            if normalized_target in groups:
-                resolution = self.analysis.resolve_target(
-                    target,
-                    level,
-                    allow_group=True,
-                )
-                requested = set(resolution.related_targets)
-
-                row_keys = list(zip(cases["level"], cases["canonical_target"]))
-                keep = pd.Series(
-                    [row_key in requested for row_key in row_keys],
-                    index=cases.index,
-                )
-                return cases[keep]
-
-            aliases = self._historical_review_target_aliases(level)
-
-            if normalized_target not in aliases:
-                available = sorted(aliases)
-                raise ValueError(
-                    f"Unable to resolve historical review target filter: {target}. "
-                    f"Available targets and aliases: {available}"
-                )
-
-            requested = aliases[normalized_target]
-            keep = (
-                (cases["level"] == requested[0])
-                & (cases["canonical_target"] == requested[1])
+            row_keys = zip(cases["level"], cases["canonical_target"])
+            keep = pd.Series(
+                [row_key in requested for row_key in row_keys],
+                index=cases.index,
             )
-
             return cases[keep]
 
     def _select_historical_cases(
