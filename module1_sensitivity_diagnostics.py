@@ -1566,44 +1566,6 @@ class Module1SensitivityDiagnostics:
                 raise ValueError("Credit exposure stance config is missing.")
             return stance_config
 
-    def _credit_stance_score_from_component_scores(
-            self,
-            change_score: pd.Series,
-            state_score: pd.Series,
-            stance_config: dict,
-        ) -> pd.Series:
-            component_thresholds = self._credit_spread_component_thresholds()
-            rule_scores = self._credit_spread_rule_scores(stance_config)
-            state_buckets = self._credit_stance_state_buckets(stance_config)
-            rule_adjustments = self._credit_spread_rule_adjustments(stance_config)
-            rule_states = self._stabilize_credit_rule_states(
-                change_score,
-                state_score,
-                component_thresholds,
-                stance_config,
-            )
-            score = pd.Series(index=change_score.index, dtype="float64")
-            for idx in change_score.index[change_score.notna() & state_score.notna()]:
-                row = self._credit_spread_rule_row_from_states(
-                    change_score.loc[idx],
-                    state_score.loc[idx],
-                    rule_states.loc[idx, "credit_spread_change_state"],
-                    rule_states.loc[idx, "credit_spread_state_category"],
-                    component_thresholds,
-                    rule_scores,
-                    state_buckets,
-                    rule_adjustments,
-                )
-                score.loc[idx] = row["adjusted_credit_stance_score"]
-            return score
-
-    def _credit_stance_labels_for_score(
-            self,
-            score: pd.Series,
-            stance_config: dict,
-        ) -> tuple[pd.Series, pd.Series]:
-            return self._stance_labels_for_score(score, stance_config)
-
     def _ratio_or_na(self, numerator, denominator):
             return numerator / denominator if denominator else pd.NA
 

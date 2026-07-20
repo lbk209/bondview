@@ -111,7 +111,6 @@ def validate_module1_config(config: dict) -> dict:
     components = config.get("components")
     stance_label_rules = config.get("stance_label_rules")
     exposure_stances = config.get("exposure_stances")
-    draft_exposure_stances = config.get("draft_exposure_stances")
     model_metadata = config.get("model_metadata")
 
     if model_metadata is not None:
@@ -414,7 +413,7 @@ def validate_module1_config(config: dict) -> dict:
                 "anchors must satisfy negative < neutral < positive.",
             )
 
-    def bucket_names_from_score(component_name, score):
+    def bucket_names_from_score(score):
         buckets = score.get("buckets")
         if isinstance(buckets, dict):
             return set(buckets)
@@ -1438,23 +1437,19 @@ def validate_module1_config(config: dict) -> dict:
         )
         exposure_stances = {}
 
-    if draft_exposure_stances is not None and not isinstance(draft_exposure_stances, dict):
+    if "draft_exposure_stances" in config:
         add_issue(
             "draft_exposure_stances",
             None,
             "draft_exposure_stances",
-            "invalid",
-            "draft_exposure_stances must be a mapping when provided.",
+            "unsupported",
+            "draft_exposure_stances is not supported.",
         )
-        draft_exposure_stances = {}
 
     stance_output_names = {}
     known_custom_stance_functions = {
         "credit_spread_stance",
         "curve_positioning_stance",
-        "duration_rule_stance",
-    }
-    known_draft_stance_functions = {
         "duration_rule_stance",
     }
 
@@ -1489,7 +1484,13 @@ def validate_module1_config(config: dict) -> dict:
                 "invalid",
                 "Credit rule adjustment cap.max must be numeric and not bool.",
             )
-        if has_lower and has_upper and is_number(lower) and is_number(upper) and lower >= upper:
+        if (
+            has_lower
+            and has_upper
+            and is_number(lower)
+            and is_number(upper)
+            and lower >= upper
+        ):
             add_issue(
                 "exposure_stances",
                 stance_name,
@@ -1498,246 +1499,86 @@ def validate_module1_config(config: dict) -> dict:
                 "Credit rule adjustment cap.min must be less than cap.max.",
             )
 
-    def validate_credit_spread_stance_parameters(stance_name, stance):
-        state_buckets = stance.get("state_buckets")
-        expected_pair_keys = set()
-        if not isinstance(state_buckets, dict):
+    def validate_credit_rule_adjustment_config(
+        stance_name,
+        adjustment_config,
+        expected_case_keys,
+    ):
+        field_root = "rule_mapped.adjustment.config"
+        if not isinstance(adjustment_config, dict):
             add_issue(
                 "exposure_stances",
                 stance_name,
-                "state_buckets",
-                "missing" if state_buckets is None else "invalid",
-                "Credit stance state_buckets must be a mapping.",
-            )
-        else:
-            bucket_values = {}
-            for component_key in ["credit_spread_change", "credit_spread_state"]:
-                component_buckets = state_buckets.get(component_key)
-                field_prefix = f"state_buckets.{component_key}"
-                if not isinstance(component_buckets, dict):
-                    add_issue(
-                        "exposure_stances",
-                        stance_name,
-                        field_prefix,
-                        "missing" if component_buckets is None else "invalid",
-                        "Credit stance state_buckets component block must be a mapping.",
-                    )
-                    continue
-
-                bucket_values[component_key] = {}
-                for bucket_key in ["positive", "neutral", "negative"]:
-                    bucket_value = component_buckets.get(bucket_key)
-                    if not non_empty_string(bucket_value):
-                        add_issue(
-                            "exposure_stances",
-                            stance_name,
-                            f"{field_prefix}.{bucket_key}",
-                            "invalid",
-                            "Credit stance state bucket value must be a non-empty string.",
-                        )
-                    else:
-                        bucket_values[component_key][bucket_key] = bucket_value
-
-            change_values = bucket_values.get("credit_spread_change", {})
-            state_values = bucket_values.get("credit_spread_state", {})
-            if len(change_values) == 3 and len(state_values) == 3:
-                expected_pair_keys = {
-                    f"{change_state}|{level_state}"
-                    for change_state in change_values.values()
-                    for level_state in state_values.values()
-                }
-
-        state_stabilization = stance.get("state_stabilization")
-        required_stabilization_keys = {
-            "credit_spread_change",
-            "credit_spread_state",
-        }
-        if not isinstance(state_stabilization, dict):
-            add_issue(
-                "exposure_stances",
-                stance_name,
-                "state_stabilization",
-                "missing" if state_stabilization is None else "invalid",
-                "Credit stance state_stabilization must be a mapping.",
-            )
-        else:
-            for key in sorted(required_stabilization_keys):
-                stabilization = state_stabilization.get(key)
-                field_prefix = f"state_stabilization.{key}"
-                if not isinstance(stabilization, dict):
-                    add_issue(
-                        "exposure_stances",
-                        stance_name,
-                        field_prefix,
-                        "missing" if stabilization is None else "invalid",
-                        "Credit state stabilization block must be a mapping.",
-                    )
-                    continue
-
-                hysteresis_buffer = stabilization.get("hysteresis_buffer")
-                if "hysteresis_buffer" not in stabilization:
-                    add_issue(
-                        "exposure_stances",
-                        stance_name,
-                        f"{field_prefix}.hysteresis_buffer",
-                        "missing",
-                        "Credit state stabilization hysteresis_buffer is required.",
-                    )
-                elif not is_number(hysteresis_buffer) or hysteresis_buffer < 0:
-                    add_issue(
-                        "exposure_stances",
-                        stance_name,
-                        f"{field_prefix}.hysteresis_buffer",
-                        "invalid",
-                        "hysteresis_buffer must be numeric, not bool, and >= 0.",
-                    )
-
-                min_state_persistence = stabilization.get("min_state_persistence")
-                if "min_state_persistence" not in stabilization:
-                    add_issue(
-                        "exposure_stances",
-                        stance_name,
-                        f"{field_prefix}.min_state_persistence",
-                        "missing",
-                        "Credit state stabilization min_state_persistence is required.",
-                    )
-                elif (
-                    not isinstance(min_state_persistence, int)
-                    or isinstance(min_state_persistence, bool)
-                    or min_state_persistence < 1
-                ):
-                    add_issue(
-                        "exposure_stances",
-                        stance_name,
-                        f"{field_prefix}.min_state_persistence",
-                        "invalid",
-                        "min_state_persistence must be an integer, not bool, and >= 1.",
-                    )
-
-            for key in state_stabilization:
-                if key not in required_stabilization_keys:
-                    add_issue(
-                        "exposure_stances",
-                        stance_name,
-                        f"state_stabilization.{key}",
-                        "unknown",
-                        "Unknown credit state stabilization key.",
-                    )
-
-        rule_scores = stance.get("rule_scores")
-        if not isinstance(rule_scores, dict):
-            add_issue(
-                "exposure_stances",
-                stance_name,
-                "rule_scores",
-                "missing" if rule_scores is None else "invalid",
-                "Credit stance rule_scores must be a mapping.",
-            )
-            rule_scores = {}
-        else:
-            actual_keys = set(rule_scores)
-            if expected_pair_keys and actual_keys != expected_pair_keys:
-                for key in sorted(expected_pair_keys - actual_keys):
-                    add_issue(
-                        "exposure_stances",
-                        stance_name,
-                        f"rule_scores.{key}",
-                        "missing",
-                        "Credit stance rule_scores must include every configured state pair.",
-                    )
-                for key in sorted(actual_keys - expected_pair_keys):
-                    add_issue(
-                        "exposure_stances",
-                        stance_name,
-                        f"rule_scores.{key}",
-                        "unknown",
-                        "Credit stance rule_scores contains an unknown state pair.",
-                    )
-            for key, value in rule_scores.items():
-                if not is_number(value):
-                    add_issue(
-                        "exposure_stances",
-                        stance_name,
-                        f"rule_scores.{key}",
-                        "invalid",
-                        "Credit stance rule score values must be numeric and not bool.",
-                    )
-
-        rule_adjustments = stance.get("rule_adjustments")
-        if not isinstance(rule_adjustments, dict):
-            add_issue(
-                "exposure_stances",
-                stance_name,
-                "rule_adjustments",
-                "missing" if rule_adjustments is None else "invalid",
-                "Credit stance rule_adjustments must be a mapping.",
+                field_root,
+                "invalid",
+                "Credit rule adjustment config must be a mapping.",
             )
             return
 
-        default_cap = rule_adjustments.get("default_cap")
+        default_cap = adjustment_config.get("default_cap")
         if not isinstance(default_cap, dict):
             add_issue(
                 "exposure_stances",
                 stance_name,
-                "rule_adjustments.default_cap",
+                f"{field_root}.default_cap",
                 "missing" if default_cap is None else "invalid",
-                "Credit stance rule_adjustments.default_cap must be a mapping.",
+                "Credit rule adjustment default_cap must be a mapping.",
             )
         else:
             validate_credit_cap_block(
                 stance_name,
-                "rule_adjustments.default_cap",
+                f"{field_root}.default_cap",
                 default_cap,
             )
             if "min" not in default_cap:
                 add_issue(
                     "exposure_stances",
                     stance_name,
-                    "rule_adjustments.default_cap.min",
+                    f"{field_root}.default_cap.min",
                     "missing",
-                    "Credit stance default_cap.min is required.",
+                    "Credit rule adjustment default_cap.min is required.",
                 )
             if "max" not in default_cap:
                 add_issue(
                     "exposure_stances",
                     stance_name,
-                    "rule_adjustments.default_cap.max",
+                    f"{field_root}.default_cap.max",
                     "missing",
-                    "Credit stance default_cap.max is required.",
+                    "Credit rule adjustment default_cap.max is required.",
                 )
 
-        adjustment_states = rule_adjustments.get("states")
+        adjustment_states = adjustment_config.get("states")
         if not isinstance(adjustment_states, dict):
             add_issue(
                 "exposure_stances",
                 stance_name,
-                "rule_adjustments.states",
+                f"{field_root}.states",
                 "missing" if adjustment_states is None else "invalid",
-                "Credit stance rule_adjustments.states must be a mapping.",
+                "Credit rule adjustment states must be a mapping.",
             )
             return
 
         actual_adjustment_keys = set(adjustment_states)
-        if expected_pair_keys and actual_adjustment_keys != expected_pair_keys:
-            for key in sorted(expected_pair_keys - actual_adjustment_keys):
+        if expected_case_keys and actual_adjustment_keys != expected_case_keys:
+            for key in sorted(expected_case_keys - actual_adjustment_keys):
                 add_issue(
                     "exposure_stances",
                     stance_name,
-                    f"rule_adjustments.states.{key}",
+                    f"{field_root}.states.{key}",
                     "missing",
-                    "Credit stance rule_adjustments.states must include every configured state pair.",
+                    "Credit rule adjustment states must include every configured rule case.",
                 )
-            for key in sorted(actual_adjustment_keys - expected_pair_keys):
+            for key in sorted(actual_adjustment_keys - expected_case_keys):
                 add_issue(
                     "exposure_stances",
                     stance_name,
-                    f"rule_adjustments.states.{key}",
+                    f"{field_root}.states.{key}",
                     "unknown",
-                    "Credit stance rule_adjustments.states contains an unknown state pair.",
+                    "Credit rule adjustment states contains an unknown rule case.",
                 )
 
         for key, adjustment in adjustment_states.items():
-            field_prefix = f"rule_adjustments.states.{key}"
+            field_prefix = f"{field_root}.states.{key}"
             if not isinstance(adjustment, dict):
                 add_issue(
                     "exposure_stances",
@@ -1775,436 +1616,6 @@ def validate_module1_config(config: dict) -> dict:
                     adjustment.get("cap"),
                 )
 
-    def validate_duration_rule_stance_schema(section_name, stance_name, stance):
-        if not isinstance(stance, dict):
-            add_issue(
-                section_name,
-                stance_name,
-                "definition",
-                "invalid",
-                "duration_rule_stance definition must be a mapping.",
-            )
-            return
-
-        function = stance.get("function")
-        if function != "duration_rule_stance":
-            add_issue(
-                section_name,
-                stance_name,
-                "function",
-                "unsupported",
-                "duration_rule_stance function must be duration_rule_stance.",
-            )
-
-        for field in ["score_output", "stance_output", "strength_output"]:
-            if not non_empty_string(stance.get(field)):
-                add_issue(
-                    section_name,
-                    stance_name,
-                    field,
-                    "invalid",
-                    f"{field} must be a non-empty string.",
-                )
-
-        rule_state_components = stance.get("rule_state_components")
-        ordered_components = []
-        if isinstance(rule_state_components, set):
-            add_issue(
-                section_name,
-                stance_name,
-                "rule_state_components",
-                "invalid",
-                "rule_state_components must be an ordered list or tuple, not a set.",
-            )
-        elif not isinstance(rule_state_components, (list, tuple)) or not rule_state_components:
-            add_issue(
-                section_name,
-                stance_name,
-                "rule_state_components",
-                "missing" if rule_state_components is None else "invalid",
-                "rule_state_components must be a non-empty ordered list or tuple.",
-            )
-        else:
-            ordered_components = list(rule_state_components)
-            for idx, component_name in enumerate(ordered_components):
-                if not non_empty_string(component_name):
-                    add_issue(
-                        section_name,
-                        stance_name,
-                        f"rule_state_components[{idx}]",
-                        "invalid",
-                        "rule_state_components entries must be non-empty strings.",
-                    )
-            if len(ordered_components) != len(set(ordered_components)):
-                add_issue(
-                    section_name,
-                    stance_name,
-                    "rule_state_components",
-                    "duplicate",
-                    "rule_state_components must not contain duplicates.",
-                )
-
-        expected_duration_components = [
-            "duration_preference",
-            "duration_rate_shock",
-            "inflation",
-            "policy",
-        ]
-        if ordered_components and ordered_components != expected_duration_components:
-            add_issue(
-                section_name,
-                stance_name,
-                "rule_state_components",
-                "invalid_order",
-                "Duration rule-state components must be ordered as "
-                "duration_preference, duration_rate_shock, inflation, policy.",
-            )
-
-        inputs = stance.get("inputs")
-        if not isinstance(inputs, list) or not inputs:
-            add_issue(
-                section_name,
-                stance_name,
-                "inputs",
-                "invalid",
-                "inputs must be a non-empty list.",
-            )
-            inputs = []
-
-        input_components = []
-        for idx, item in enumerate(inputs):
-            if not isinstance(item, dict):
-                add_issue(
-                    section_name,
-                    stance_name,
-                    f"inputs[{idx}]",
-                    "invalid",
-                    "Input item must be a mapping.",
-                )
-                continue
-            component_col = item.get("component")
-            if not non_empty_string(component_col):
-                add_issue(
-                    section_name,
-                    stance_name,
-                    f"inputs[{idx}].component",
-                    "invalid",
-                    "Input component must be a non-empty string.",
-                )
-                continue
-            input_components.append(component_col)
-            if component_col not in component_score_outputs:
-                add_issue(
-                    section_name,
-                    stance_name,
-                    f"inputs[{idx}].component",
-                    "unknown_component_score",
-                    f"Input component must refer to a component score output: {component_col}.",
-                )
-        if len(input_components) != len(set(input_components)):
-            add_issue(
-                section_name,
-                stance_name,
-                "inputs",
-                "duplicate",
-                "duration_rule_stance inputs must not contain duplicates.",
-            )
-        expected_duration_input_score_outputs = [
-            "duration_preference_score",
-            "duration_rate_shock_score",
-            "inflation_pressure_score",
-            "policy_stance_score",
-        ]
-        missing_input_components = [
-            component_col
-            for component_col in expected_duration_input_score_outputs
-            if component_col not in input_components
-        ]
-        unknown_input_components = [
-            component_col
-            for component_col in input_components
-            if component_col not in expected_duration_input_score_outputs
-        ]
-        for component_col in missing_input_components:
-            add_issue(
-                section_name,
-                stance_name,
-                f"inputs.{component_col}",
-                "missing",
-                "duration_rule_stance inputs must include every required component score output.",
-            )
-        for component_col in unknown_input_components:
-            add_issue(
-                section_name,
-                stance_name,
-                f"inputs.{component_col}",
-                "unknown",
-                "duration_rule_stance inputs contains an unknown component score output.",
-            )
-
-        state_thresholds = stance.get("state_thresholds")
-        if not isinstance(state_thresholds, dict):
-            add_issue(
-                section_name,
-                stance_name,
-                "state_thresholds",
-                "missing" if state_thresholds is None else "invalid",
-                "state_thresholds must be a mapping.",
-            )
-        else:
-            for key in ["positive", "negative"]:
-                value = state_thresholds.get(key)
-                if key not in state_thresholds:
-                    add_issue(
-                        section_name,
-                        stance_name,
-                        f"state_thresholds.{key}",
-                        "missing",
-                        "duration_rule_stance state_thresholds must define positive and negative.",
-                    )
-                elif not is_number(value):
-                    add_issue(
-                        section_name,
-                        stance_name,
-                        f"state_thresholds.{key}",
-                        "invalid",
-                        "duration_rule_stance state threshold values must be numeric and not bool.",
-                    )
-            for key in state_thresholds:
-                if key not in {"positive", "negative"}:
-                    add_issue(
-                        section_name,
-                        stance_name,
-                        f"state_thresholds.{key}",
-                        "unknown",
-                        "Unknown duration_rule_stance state threshold key.",
-                    )
-            positive = state_thresholds.get("positive")
-            negative = state_thresholds.get("negative")
-            if is_number(positive) and is_number(negative) and negative >= positive:
-                add_issue(
-                    section_name,
-                    stance_name,
-                    "state_thresholds",
-                    "invalid_order",
-                    "state_thresholds.negative must be less than state_thresholds.positive.",
-                )
-
-        state_buckets = stance.get("state_buckets")
-        states_by_component = []
-        if not isinstance(state_buckets, dict):
-            add_issue(
-                section_name,
-                stance_name,
-                "state_buckets",
-                "missing" if state_buckets is None else "invalid",
-                "state_buckets must be a mapping.",
-            )
-        elif ordered_components:
-            unknown_bucket_components = [
-                component_name
-                for component_name in state_buckets
-                if component_name not in ordered_components
-            ]
-            for component_name in unknown_bucket_components:
-                add_issue(
-                    section_name,
-                    stance_name,
-                    f"state_buckets.{component_name}",
-                    "unknown",
-                    "state_buckets contains an unknown rule-state component.",
-                )
-
-            for component_name in ordered_components:
-                component_buckets = state_buckets.get(component_name)
-                field_prefix = f"state_buckets.{component_name}"
-                if not isinstance(component_buckets, dict) or not component_buckets:
-                    add_issue(
-                        section_name,
-                        stance_name,
-                        field_prefix,
-                        "missing" if component_buckets is None else "invalid",
-                        "Each rule-state component must define a non-empty state bucket mapping.",
-                    )
-                    continue
-
-                required_bucket_keys = ["positive", "neutral", "negative"]
-                for bucket_key in required_bucket_keys:
-                    if bucket_key not in component_buckets:
-                        add_issue(
-                            section_name,
-                            stance_name,
-                            f"{field_prefix}.{bucket_key}",
-                            "missing",
-                            "Each duration rule-state component must define positive, neutral, and negative state buckets.",
-                        )
-                for bucket_key in component_buckets:
-                    if bucket_key not in required_bucket_keys:
-                        add_issue(
-                            section_name,
-                            stance_name,
-                            f"{field_prefix}.{bucket_key}",
-                            "unknown",
-                            "Unknown duration rule-state bucket key.",
-                        )
-
-                state_values = []
-                for bucket_key, state_value in component_buckets.items():
-                    if not non_empty_string(bucket_key):
-                        add_issue(
-                            section_name,
-                            stance_name,
-                            f"{field_prefix}.{bucket_key}",
-                            "invalid",
-                            "State bucket keys must be non-empty strings.",
-                        )
-                    if not non_empty_string(state_value):
-                        add_issue(
-                            section_name,
-                            stance_name,
-                            f"{field_prefix}.{bucket_key}",
-                            "invalid",
-                            "State bucket values must be non-empty strings.",
-                        )
-                    else:
-                        state_values.append(state_value.strip())
-                if len(state_values) != len(set(state_values)):
-                    add_issue(
-                        section_name,
-                        stance_name,
-                        field_prefix,
-                        "duplicate_values",
-                        "State bucket values must be unique within each rule-state component.",
-                    )
-                if state_values:
-                    states_by_component.append(state_values)
-
-        state_stabilization = stance.get("state_stabilization")
-        if ordered_components:
-            try:
-                _resolve_rule_mapped_stabilization_config(
-                    stance,
-                    ordered_components,
-                    context=f"{section_name}.{stance_name}",
-                )
-            except ValueError as exc:
-                add_issue(
-                    section_name,
-                    stance_name,
-                    "state_stabilization",
-                    "invalid",
-                    str(exc),
-                )
-        elif not isinstance(state_stabilization, dict):
-            add_issue(
-                section_name,
-                stance_name,
-                "state_stabilization",
-                "missing" if state_stabilization is None else "invalid",
-                "state_stabilization must be a mapping.",
-            )
-
-        rule_scores = stance.get("rule_scores")
-        parsed_rule_scores = {}
-        if not isinstance(rule_scores, dict) or not rule_scores:
-            add_issue(
-                section_name,
-                stance_name,
-                "rule_scores",
-                "missing" if rule_scores is None else "invalid",
-                "rule_scores must be a non-empty mapping.",
-            )
-        else:
-            try:
-                parsed_rule_scores = _parse_rule_scores_n_parts(
-                    rule_scores,
-                    expected_parts=4,
-                    context=f"{section_name}.{stance_name}",
-                )
-            except ValueError as exc:
-                add_issue(
-                    section_name,
-                    stance_name,
-                    "rule_scores",
-                    "invalid",
-                    str(exc),
-                )
-
-        if (
-            len(ordered_components) == 4
-            and len(states_by_component) == 4
-            and parsed_rule_scores
-        ):
-            expected_rule_tuples = set(product(*states_by_component))
-            actual_rule_tuples = set(parsed_rule_scores)
-            for rule_tuple in sorted(expected_rule_tuples - actual_rule_tuples):
-                add_issue(
-                    section_name,
-                    stance_name,
-                    f"rule_scores.{'|'.join(rule_tuple)}",
-                    "missing",
-                    "duration_rule_stance rule_scores must cover every configured state cross-product case.",
-                )
-            for rule_tuple in sorted(actual_rule_tuples - expected_rule_tuples):
-                add_issue(
-                    section_name,
-                    stance_name,
-                    f"rule_scores.{'|'.join(rule_tuple)}",
-                    "unknown",
-                    "duration_rule_stance rule_scores contains an unknown state cross-product case.",
-                )
-
-        labels = stance.get("labels")
-        if not isinstance(labels, dict):
-            add_issue(
-                section_name,
-                stance_name,
-                "labels",
-                "missing",
-                "labels must be a mapping.",
-            )
-            labels = {}
-
-        direction = labels.get("direction")
-        if not isinstance(direction, dict):
-            add_issue(
-                section_name,
-                stance_name,
-                "labels.direction",
-                "missing",
-                "labels.direction must be a mapping.",
-            )
-            direction = {}
-        for key in ["positive", "neutral", "negative"]:
-            if not non_empty_string(direction.get(key)):
-                add_issue(
-                    section_name,
-                    stance_name,
-                    f"labels.direction.{key}",
-                    "invalid",
-                    "Direction label value must be a non-empty string.",
-                )
-
-        strength = labels.get("strength")
-        if not isinstance(strength, dict):
-            add_issue(
-                section_name,
-                stance_name,
-                "labels.strength",
-                "missing",
-                "labels.strength must be a mapping.",
-            )
-            strength = {}
-        for key in ["weak", "moderate", "strong"]:
-            if not non_empty_string(strength.get(key)):
-                add_issue(
-                    section_name,
-                    stance_name,
-                    f"labels.strength.{key}",
-                    "invalid",
-                    "Strength label value must be a non-empty string.",
-                )
-
     def validate_rule_mapped_stance_schema(section_name, stance_name, stance):
         rule_mapped = stance.get("rule_mapped")
         field_root = "rule_mapped"
@@ -2213,8 +1624,8 @@ def validate_module1_config(config: dict) -> dict:
                 section_name,
                 stance_name,
                 field_root,
-                "invalid",
-                "rule_mapped must be a mapping when present.",
+                "missing" if rule_mapped is None else "invalid",
+                "rule_mapped must be a mapping for custom stance functions.",
             )
             return
 
@@ -2449,7 +1860,7 @@ def validate_module1_config(config: dict) -> dict:
                             )
                         expected_buckets = curve_bucket_names.get(
                             component_name,
-                            bucket_names_from_score(component_name, component_score),
+                            bucket_names_from_score(component_score),
                         )
                         if expected_buckets and set(values) != expected_buckets:
                             for bucket_name in sorted(expected_buckets - set(values)):
@@ -2576,12 +1987,14 @@ def validate_module1_config(config: dict) -> dict:
                     str(exc),
                 )
 
+        expected_rule_tuples = set()
         if (
             expected_state_values_by_input
             and len(expected_state_values_by_input) == state_input_count
-            and parsed_rule_scores
         ):
             expected_rule_tuples = set(product(*expected_state_values_by_input))
+
+        if expected_rule_tuples and parsed_rule_scores:
             actual_rule_tuples = set(parsed_rule_scores)
             for rule_tuple in sorted(expected_rule_tuples - actual_rule_tuples):
                 add_issue(
@@ -2653,20 +2066,17 @@ def validate_module1_config(config: dict) -> dict:
                         "rule_mapped adjustment_output must be a non-empty string when present.",
                     )
 
-                config = adjustment.get("config")
-                if config is not None:
-                    validate_credit_spread_stance_parameters(
+                adjustment_config = adjustment.get("config")
+                if (
+                    adjustment_config is not None
+                    and stance.get("function") == "credit_spread_stance"
+                ):
+                    validate_credit_rule_adjustment_config(
                         stance_name,
+                        adjustment_config,
                         {
-                            "state_buckets": {
-                                state_input.get("name"): state_input.get("state_buckets")
-                                for state_input in state_inputs
-                                if isinstance(state_input, dict)
-                                and state_input.get("classification") == "threshold_state"
-                            },
-                            "state_stabilization": rule_mapped.get("state_stabilization"),
-                            "rule_scores": rule_mapped.get("rule_scores"),
-                            "rule_adjustments": config,
+                            "|".join(rule_tuple)
+                            for rule_tuple in expected_rule_tuples
                         },
                     )
 
@@ -2859,222 +2269,12 @@ def validate_module1_config(config: dict) -> dict:
                 "neutral_strength should be one of the configured strength label keys.",
             )
 
-        has_rule_mapped_schema = "rule_mapped" in stance
-
-        if function == "credit_spread_stance" and not has_rule_mapped_schema:
-            validate_credit_spread_stance_parameters(stance_name, stance)
-
-        if function == "duration_rule_stance" and not has_rule_mapped_schema:
-            validate_duration_rule_stance_schema(
-                "exposure_stances",
-                stance_name,
-                stance,
-            )
-
-        if has_rule_mapped_schema:
+        if function in known_custom_stance_functions or "rule_mapped" in stance:
             validate_rule_mapped_stance_schema(
                 "exposure_stances",
                 stance_name,
                 stance,
             )
-
-        if (
-            not has_rule_mapped_schema
-            and (
-                stance_name == "curve_positioning"
-                or function == "curve_positioning_stance"
-            )
-        ):
-            required_stabilization_keys = {
-                "curve_change",
-                "curve_state",
-                "curve_move_driver",
-            }
-            allowed_stabilization_fields = {
-                "hysteresis_buffer",
-                "min_state_persistence",
-            }
-            state_stabilization = stance.get("state_stabilization")
-            if not isinstance(state_stabilization, dict):
-                add_issue(
-                    "exposure_stances",
-                    stance_name,
-                    "state_stabilization",
-                    "missing" if state_stabilization is None else "invalid",
-                    "Curve positioning state_stabilization must be a mapping.",
-                )
-            else:
-                for key in sorted(required_stabilization_keys):
-                    stabilization = state_stabilization.get(key)
-                    field_prefix = f"state_stabilization.{key}"
-                    if not isinstance(stabilization, dict):
-                        add_issue(
-                            "exposure_stances",
-                            stance_name,
-                            field_prefix,
-                            "missing" if stabilization is None else "invalid",
-                            "Curve state stabilization block must be a mapping.",
-                        )
-                        continue
-                    for field in stabilization:
-                        if field not in allowed_stabilization_fields:
-                            add_issue(
-                                "exposure_stances",
-                                stance_name,
-                                f"{field_prefix}.{field}",
-                                "unknown",
-                                "Unknown curve state stabilization field.",
-                            )
-
-                    hysteresis_buffer = stabilization.get("hysteresis_buffer")
-                    if "hysteresis_buffer" not in stabilization:
-                        add_issue(
-                            "exposure_stances",
-                            stance_name,
-                            f"{field_prefix}.hysteresis_buffer",
-                            "missing",
-                            "Curve state stabilization hysteresis_buffer is required.",
-                        )
-                    elif not is_number(hysteresis_buffer) or hysteresis_buffer < 0:
-                        add_issue(
-                            "exposure_stances",
-                            stance_name,
-                            f"{field_prefix}.hysteresis_buffer",
-                            "invalid",
-                            "hysteresis_buffer must be numeric, not bool, and >= 0.",
-                        )
-
-                    min_state_persistence = stabilization.get(
-                        "min_state_persistence"
-                    )
-                    if "min_state_persistence" not in stabilization:
-                        add_issue(
-                            "exposure_stances",
-                            stance_name,
-                            f"{field_prefix}.min_state_persistence",
-                            "missing",
-                            "Curve state stabilization min_state_persistence is required.",
-                        )
-                    elif (
-                        not isinstance(min_state_persistence, int)
-                        or isinstance(min_state_persistence, bool)
-                        or min_state_persistence < 1
-                    ):
-                        add_issue(
-                            "exposure_stances",
-                            stance_name,
-                            f"{field_prefix}.min_state_persistence",
-                            "invalid",
-                            "min_state_persistence must be an integer, not bool, and >= 1.",
-                        )
-
-                for key in state_stabilization:
-                    if key not in required_stabilization_keys:
-                        add_issue(
-                            "exposure_stances",
-                            stance_name,
-                            f"state_stabilization.{key}",
-                            "unknown",
-                            "Unknown curve state stabilization key.",
-                        )
-
-            expected_change_buckets = curve_bucket_names.get(
-                "curve_change",
-                bucket_names_from_score(
-                    "curve_change",
-                    components.get("curve_change", {}).get("score", {}),
-                ),
-            )
-            expected_state_buckets = curve_bucket_names.get(
-                "curve_state",
-                bucket_names_from_score(
-                    "curve_state",
-                    components.get("curve_state", {}).get("score", {}),
-                ),
-            )
-            expected_driver_buckets = curve_bucket_names.get(
-                "curve_move_driver",
-                bucket_names_from_score(
-                    "curve_move_driver",
-                    components.get("curve_move_driver", {}).get("score", {}),
-                ),
-            )
-            expected_rule_keys = {
-                f"{change_bucket}|{state_bucket}|{driver_bucket}"
-                for change_bucket in expected_change_buckets
-                for state_bucket in expected_state_buckets
-                for driver_bucket in expected_driver_buckets
-            }
-            rule_scores = stance.get("rule_scores")
-            if not isinstance(rule_scores, dict):
-                add_issue(
-                    "exposure_stances",
-                    stance_name,
-                    "rule_scores",
-                    "missing" if rule_scores is None else "invalid",
-                    "Curve positioning rule_scores must be a mapping.",
-                )
-                rule_scores = {}
-            else:
-                actual_keys = set(rule_scores)
-                if expected_rule_keys and actual_keys != expected_rule_keys:
-                    for key in sorted(expected_rule_keys - actual_keys):
-                        add_issue(
-                            "exposure_stances",
-                            stance_name,
-                            f"rule_scores.{key}",
-                            "missing",
-                            "Curve positioning rule_scores must include every configured bucket cross-product key.",
-                        )
-                    for key in sorted(actual_keys - expected_rule_keys):
-                        add_issue(
-                            "exposure_stances",
-                            stance_name,
-                            f"rule_scores.{key}",
-                            "unknown",
-                            "Curve positioning rule_scores contains an unknown bucket cross-product key.",
-                        )
-                for key, value in rule_scores.items():
-                    if not is_number(value):
-                        add_issue(
-                            "exposure_stances",
-                            stance_name,
-                            f"rule_scores.{key}",
-                            "invalid",
-                            "Curve positioning rule score values must be numeric and not bool.",
-                        )
-
-    if draft_exposure_stances:
-        for stance_name, stance in draft_exposure_stances.items():
-            add_checked("draft_exposure_stances", stance_name, "stance")
-            if not isinstance(stance, dict):
-                add_issue(
-                    "draft_exposure_stances",
-                    stance_name,
-                    "definition",
-                    "invalid",
-                    "Draft exposure stance definition must be a mapping.",
-                )
-                continue
-
-            function = stance.get("function")
-            if function not in known_draft_stance_functions:
-                add_issue(
-                    "draft_exposure_stances",
-                    stance_name,
-                    "function",
-                    "unsupported",
-                    "Draft exposure stance function must be one of "
-                    f"{sorted(known_draft_stance_functions)}.",
-                )
-                continue
-
-            if function == "duration_rule_stance":
-                validate_duration_rule_stance_schema(
-                    "draft_exposure_stances",
-                    stance_name,
-                    stance,
-                )
 
     issues_df = pd.DataFrame(
         issues,
