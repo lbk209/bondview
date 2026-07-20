@@ -19,22 +19,12 @@ class Module1HistoricalAnalysis:
         historical_cases: pd.DataFrame | None = None,
         historical_expected_label_validation: dict | None = None,
     ):
-        self.result = result
         self.analysis = Module1Analysis(result)
-        self.data = result.data
-        self.features = result.features
-        self.scores = result.scores
         self.labels = result.labels
-        self.stance_scores = result.stance_scores
         self.exposure_stance = result.exposure_stance
         self.module1_config = result.module1_config
-        self.feature_config = result.feature_config
         self.component_config = result.component_config
         self.exposure_stance_config = result.exposure_stance_config
-        self.horizons = result.horizons
-        self.default_horizons = result.default_horizons
-        self.horizon_overrides = result.horizon_overrides
-        self.module1_config_validation = result.module1_config_validation
         self.historical_context = historical_context
         self.historical_cases = historical_cases
         self.historical_expected_label_validation = (
@@ -54,9 +44,6 @@ class Module1HistoricalAnalysis:
             raise ValueError(f"YAML config must be a mapping: {path}")
 
         return config
-
-    def _resolve_target(self, target: str, level: str | None, allow_group: bool = False):
-        return self.analysis.resolve_target(target, level, allow_group=allow_group)
 
     def resolve_historical_event_window(self, context_id=None, start=None, end=None):
         """Resolve one historical context ID to an explicit event window."""
@@ -143,9 +130,6 @@ class Module1HistoricalAnalysis:
         if context_id is not None:
             dataset = replace(dataset, context_id=context_id)
         return dataset
-
-    def raw_inputs_for_target(self, target: str, level: str) -> list[str]:
-        return self.analysis.raw_inputs_for_target(target, level)
 
     def load_historical_context(
             self,
@@ -601,7 +585,7 @@ class Module1HistoricalAnalysis:
                 level = self._normalize_review_label(expectation["level"])
 
                 try:
-                    target_info = self._resolve_target(target, level)
+                    target_info = self.analysis.resolve_target(target, level)
                 except ValueError as exc:
                     raise ValueError(
                         "Unable to resolve historical expectation target "
@@ -666,7 +650,7 @@ class Module1HistoricalAnalysis:
             groups = self._historical_review_target_groups()
 
             if normalized_target in groups:
-                resolution = self._resolve_target(
+                resolution = self.analysis.resolve_target(
                     target,
                     level,
                     allow_group=True,
@@ -1585,11 +1569,13 @@ class Module1HistoricalAnalysis:
             output: str = "cases",
         ) -> pd.DataFrame:
             """
-            Convenience wrapper for running Module 1 and one historical review output.
+            Load historical context and return one historical review output.
 
-            This method runs the Module 1 pipeline, explicitly loads historical context
-            from historical_context_path, and returns exactly one selected output from
+            This method uses the completed Module1Result supplied at construction,
+            explicitly loads historical context from historical_context_path, and
+            returns exactly one selected output from
             review_historical_cases(..., output=...).
+            It does not run the Module 1 calculation pipeline.
 
             Supported output values are:
             - "cases"
@@ -1621,10 +1607,8 @@ class Module1HistoricalAnalysis:
             """
             Select requested raw inputs if they are related to the target.
             """
-            import warnings
-
             related_inputs = (
-                self.raw_inputs_for_target(target, level)
+                self.analysis.raw_inputs_for_target(target, level)
                 if related_inputs is None
                 else list(related_inputs)
             )
@@ -2082,9 +2066,6 @@ class Module1HistoricalAnalysis:
                 - numeric start extends backward from context_start.
                 - numeric end extends forward from context_end.
             """
-            from numbers import Real
-            import warnings
-
             context_start = pd.to_datetime(context_start)
             context_end = pd.to_datetime(context_end)
 
