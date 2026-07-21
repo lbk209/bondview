@@ -163,13 +163,6 @@ class Module1SensitivityDiagnostics:
             start=start, end=end, ffill_inputs=ffill_inputs,
         )
 
-    def _rule_mapped_trace_supported_functions(self) -> set[str]:
-        return {
-            "duration_rule_stance",
-            "credit_spread_stance",
-            "curve_positioning_stance",
-        }
-
     def trace_stance_score(
         self, target: str, start=None, end=None,
         include_raw_input: bool = True, include_labels: bool = True,
@@ -180,7 +173,11 @@ class Module1SensitivityDiagnostics:
         stance_name = target_info.canonical_target
         stance_config = target_info.config
         function = stance_config.get("function")
-        if function in self._rule_mapped_trace_supported_functions():
+        if (
+            function != "weighted_sum"
+            and isinstance(function, str)
+            and function.strip() != ""
+        ):
             return self._trace_rule_mapped_stance_score(
                 stance_name, start=start, end=end,
                 include_raw_input=include_raw_input, include_labels=include_labels,
