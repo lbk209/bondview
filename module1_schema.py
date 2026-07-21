@@ -5,6 +5,8 @@ from collections.abc import Mapping
 
 import pandas as pd
 
+from module1_calculator import Module1Calculator
+
 
 def _is_finite_number(value) -> bool:
     if isinstance(value, bool) or not isinstance(value, Real):
@@ -1801,7 +1803,7 @@ def validate_module1_config(config: dict) -> dict:
             )
         elif state_input_count:
             try:
-                parsed_rule_scores = _parse_rule_scores_n_parts(
+                parsed_rule_scores = Module1Calculator._parse_rule_scores_n_parts(
                     rule_scores,
                     expected_parts=state_input_count,
                     context=f"{section_name}.{stance_name}.rule_mapped",
@@ -2313,7 +2315,8 @@ def validate_module1_config(config: dict) -> dict:
                             {},
                         )
                         expected_classification, mixed_bucket_style = (
-                            _rule_mapped_bucket_classification_from_score(
+                            Module1Calculator
+                            ._rule_mapped_bucket_classification_from_score(
                                 component_score
                             )
                         )
@@ -2391,7 +2394,7 @@ def validate_module1_config(config: dict) -> dict:
             state_stabilization = rule_mapped.get("state_stabilization")
             if isinstance(state_stabilization, dict):
                 try:
-                    _resolve_rule_mapped_stabilization_config(
+                    Module1Calculator._resolve_rule_mapped_stabilization_config(
                         rule_mapped,
                         ordered_names,
                         context=f"{section_name}.{stance_name}.rule_mapped",
@@ -2749,177 +2752,3 @@ def validate_module1_config(config: dict) -> dict:
         "issues": issues_df,
         "full": full_df,
     }
-
-
-def _parse_rule_scores_n_parts(
-    rule_scores: Mapping,
-    *,
-    expected_parts: int,
-    context: str = "Rule-mapped stance",
-) -> dict[tuple[str, ...], float]:
-    if (
-        not isinstance(expected_parts, int)
-        or isinstance(expected_parts, bool)
-        or expected_parts < 1
-    ):
-        raise ValueError("expected_parts must be an integer >= 1.")
-    if not isinstance(rule_scores, Mapping) or not rule_scores:
-        raise ValueError(f"{context} rule_scores must be a non-empty mapping.")
-
-    parsed_scores = {}
-    for case_key, score in rule_scores.items():
-        if not isinstance(case_key, str):
-            raise ValueError(f"{context} rule score keys must be strings.")
-
-        parts = tuple(part.strip() for part in case_key.split("|"))
-        if len(parts) != expected_parts:
-            raise ValueError(
-                f"{context} rule score key must have exactly "
-                f"{expected_parts} part(s): {case_key}"
-            )
-        if any(part == "" for part in parts):
-            raise ValueError(
-                f"{context} rule score key contains an empty part: {case_key}"
-            )
-        if parts in parsed_scores:
-            raise ValueError(
-                f"{context} rule score key duplicates an existing case after "
-                f"normalization: {case_key}"
-            )
-        if not _is_finite_number(score):
-            raise ValueError(
-                f"{context} rule score value must be numeric and not bool: "
-                f"{case_key}"
-            )
-
-        parsed_scores[parts] = float(score)
-
-    return parsed_scores
-
-
-def _rule_mapped_bucket_classification_from_score(
-    score: Mapping,
-) -> tuple[str | None, bool]:
-    buckets = score.get("buckets") if isinstance(score, Mapping) else None
-    if not isinstance(buckets, Mapping) or not buckets:
-        return None, False
-
-    range_fields = {"min", "max", "min_exclusive", "max_exclusive"}
-    has_range_rule = False
-    has_score_rule = False
-    for rule in buckets.values():
-        if not isinstance(rule, Mapping):
-            continue
-        if set(rule).intersection(range_fields):
-            has_range_rule = True
-        if "score" in rule:
-            has_score_rule = True
-
-    if has_range_rule and has_score_rule:
-        return None, True
-    if has_range_rule:
-        return "threshold_bucket", False
-    if has_score_rule:
-        return "score_bucket", False
-    return None, False
-
-
-def _resolve_rule_mapped_stabilization_config(
-    stance_config: dict,
-    required_state_components,
-    *,
-    context: str = "Rule-mapped stance",
-) -> dict:
-    if not isinstance(stance_config, Mapping):
-        raise ValueError(f"{context} stance config must be a mapping.")
-    if isinstance(required_state_components, str) or not isinstance(
-        required_state_components,
-        (list, tuple, set),
-    ):
-        raise ValueError(
-            f"{context} required state components must be a sequence."
-        )
-    if not required_state_components:
-        raise ValueError(
-            f"{context} required state components must not be empty."
-        )
-    for component_name in required_state_components:
-        if not isinstance(component_name, str) or component_name.strip() == "":
-            raise ValueError(
-                f"{context} required state components must be non-empty strings."
-            )
-    if len(set(required_state_components)) != len(required_state_components):
-        raise ValueError(
-            f"{context} required state components must not contain duplicates."
-        )
-
-    configured = stance_config.get("state_stabilization")
-    if not isinstance(configured, dict):
-        raise ValueError(f"{context} state_stabilization must be a mapping.")
-    for component_name in configured:
-        if not isinstance(component_name, str) or component_name.strip() == "":
-            raise ValueError(
-                f"{context} state_stabilization component keys must be "
-                "non-empty strings."
-            )
-    required_component_set = set(required_state_components)
-    unknown_components = sorted(set(configured) - required_component_set)
-    if unknown_components:
-        raise ValueError(
-            f"{context} state_stabilization contains unknown component(s): "
-            f"{unknown_components}"
-        )
-
-    resolved = {}
-    for component_name in required_state_components:
-        component_config = configured.get(component_name)
-        if not isinstance(component_config, dict):
-            raise ValueError(
-                f"{context} state_stabilization.{component_name} must be a mapping."
-            )
-        allowed_fields = {"hysteresis_buffer", "min_state_persistence"}
-        for field_name in component_config:
-            if not isinstance(field_name, str) or field_name.strip() == "":
-                raise ValueError(
-                    f"{context} state_stabilization.{component_name} field "
-                    "names must be non-empty strings."
-                )
-        unknown_fields = sorted(set(component_config) - allowed_fields)
-        if unknown_fields:
-            raise ValueError(
-                f"{context} state_stabilization.{component_name} contains "
-                f"unknown field(s): {unknown_fields}"
-            )
-
-        if "hysteresis_buffer" not in component_config:
-            raise ValueError(
-                f"{context} state_stabilization.{component_name}.hysteresis_buffer is required."
-            )
-        hysteresis_buffer = component_config["hysteresis_buffer"]
-        if not _is_finite_number(hysteresis_buffer) or hysteresis_buffer < 0:
-            raise ValueError(
-                f"{context} state_stabilization.{component_name}.hysteresis_buffer "
-                "must be numeric, not bool, and >= 0."
-            )
-
-        if "min_state_persistence" not in component_config:
-            raise ValueError(
-                f"{context} state_stabilization.{component_name}.min_state_persistence is required."
-            )
-        min_state_persistence = component_config["min_state_persistence"]
-        if (
-            not isinstance(min_state_persistence, int)
-            or isinstance(min_state_persistence, bool)
-            or min_state_persistence < 1
-        ):
-            raise ValueError(
-                f"{context} state_stabilization.{component_name}.min_state_persistence "
-                "must be an integer, not bool, and >= 1."
-            )
-
-        resolved[component_name] = {
-            "hysteresis_buffer": float(hysteresis_buffer),
-            "min_state_persistence": int(min_state_persistence),
-        }
-
-    return resolved
