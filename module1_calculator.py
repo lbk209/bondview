@@ -177,11 +177,7 @@ class Module1Calculator:
         if not isinstance(horizons, dict) or not horizons:
             raise ValueError("module1_config.yaml horizons must be a non-empty mapping.")
 
-        invalid = {
-            key: value
-            for key, value in horizons.items()
-            if isinstance(value, bool) or not isinstance(value, int) or value <= 0
-        }
+        invalid = self._invalid_horizon_values(horizons)
         if invalid:
             raise ValueError(
                 "All configured horizon values must be positive integers. "
@@ -189,6 +185,14 @@ class Module1Calculator:
             )
 
         return horizons.copy()
+
+    @staticmethod
+    def _invalid_horizon_values(horizons: dict) -> dict:
+        return {
+            key: value
+            for key, value in horizons.items()
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0
+        }
 
     def validate_horizons(self, horizons=None, base_horizons=None) -> dict:
         """
@@ -202,11 +206,7 @@ class Module1Calculator:
         if not isinstance(base_horizons, dict) or not base_horizons:
             raise ValueError("base_horizons must be a non-empty mapping.")
 
-        invalid_base = {
-            key: value
-            for key, value in base_horizons.items()
-            if isinstance(value, bool) or not isinstance(value, int) or value <= 0
-        }
+        invalid_base = self._invalid_horizon_values(base_horizons)
         if invalid_base:
             raise ValueError(
                 "All base horizon values must be positive integers. "
@@ -223,11 +223,7 @@ class Module1Calculator:
         resolved = base_horizons.copy()
         resolved.update(horizons or {})
 
-        invalid = {
-            key: value
-            for key, value in resolved.items()
-            if isinstance(value, bool) or not isinstance(value, int) or value <= 0
-        }
+        invalid = self._invalid_horizon_values(resolved)
         if invalid:
             raise ValueError(
                 f"All horizon values must be positive integers. Invalid values: {invalid}"
@@ -440,31 +436,37 @@ class Module1Calculator:
         if validate_config:
             validation = validate_module1_config(config)
             issues = validation["issues"]
-            self.module1_config_validation = validation
             if not issues.empty:
                 message = (
                     "Invalid module1_config.yaml: "
-                    f"{len(issues)} validation issue(s). Inspect "
-                    'self.module1_config_validation["issues"].'
+                    f"{len(issues)} validation issue(s)."
                 )
                 if raise_on_invalid_config:
                     raise ValueError(message)
-                warnings.warn(message, UserWarning)
+                warnings.warn(
+                    f'{message} Inspect self.module1_config_validation["issues"].',
+                    UserWarning,
+                )
 
-        self.module1_config = config
-        self.default_horizons = self._default_horizons_from_config(config)
-        self.horizons = self.validate_horizons(
+        default_horizons = self._default_horizons_from_config(config)
+        horizons = self.validate_horizons(
             self.horizon_overrides,
-            base_horizons=self.default_horizons,
+            base_horizons=default_horizons,
         )
-        self.feature_config = {"features": config["features"]}
-        self.component_config = {"components": config["components"]}
-        self.exposure_stance_config = {
+        feature_config = {"features": config["features"]}
+        component_config = {"components": config["components"]}
+        exposure_stance_config = {
             "stance_label_rules": config["stance_label_rules"],
             "exposure_stances": config["exposure_stances"],
         }
-        if validate_config:
-            self.module1_config_validation = validation
+
+        self.module1_config = config
+        self.module1_config_validation = validation
+        self.default_horizons = default_horizons
+        self.horizons = horizons
+        self.feature_config = feature_config
+        self.component_config = component_config
+        self.exposure_stance_config = exposure_stance_config
 
         return config
 
@@ -1413,24 +1415,6 @@ class Module1Calculator:
         raise ValueError(f"Curve score {score} did not match any configured bucket.")
 
 
-    def _component_bucket_config(self, component_name: str) -> dict:
-        if self.component_config is None:
-            raise ValueError("Run load_module1_config() before bucket label classification.")
-
-        buckets = (
-            self.component_config
-            .get("components", {})
-            .get(component_name, {})
-            .get("score", {})
-            .get("buckets")
-        )
-        if not isinstance(buckets, dict) or not buckets:
-            raise ValueError(
-                f"Component {component_name} score.buckets must be a non-empty mapping."
-            )
-        return buckets
-
-
     def _component_bucket_labels(self, component_name: str) -> dict:
         if self.component_config is None:
             raise ValueError("Run load_module1_config() before bucket label classification.")
@@ -1687,7 +1671,7 @@ class Module1Calculator:
 
         def calculate_bucket_labels(component_name, source, label_config):
             label_names = label_config.get("labels", {})
-            bucket_config = self._component_bucket_config(component_name)
+            bucket_config = self._component_score_bucket_config(component_name)
             bucket_to_label_key = self._component_bucket_labels(component_name)
 
             def label_score(value):
