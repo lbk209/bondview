@@ -2729,11 +2729,7 @@ class Module1Calculator:
             )
             return breakdown[score_output]
 
-        if function in {
-            "curve_positioning_stance",
-            "duration_rule_stance",
-            "credit_spread_stance",
-        }:
+        if isinstance(function, str) and function.strip() != "":
             score_output = stance_config.get("score_output")
             if score_output is None:
                 raise ValueError(f"Exposure stance {stance_name} score output is missing.")

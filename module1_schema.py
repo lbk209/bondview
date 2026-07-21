@@ -1578,11 +1578,6 @@ def validate_module1_config(config: dict) -> dict:
     )
 
     stance_output_names = {}
-    known_custom_stance_functions = {
-        "credit_spread_stance",
-        "curve_positioning_stance",
-        "duration_rule_stance",
-    }
 
     # Layer C — Credit stance model invariants
     def validate_credit_cap_block(stance_name, field_prefix, cap):
@@ -1849,7 +1844,6 @@ def validate_module1_config(config: dict) -> dict:
     def validate_rule_mapped_adjustment_contract(
         section_name,
         stance_name,
-        stance,
         adjustment,
         state_inputs,
         expected_rule_tuples,
@@ -1859,15 +1853,6 @@ def validate_module1_config(config: dict) -> dict:
             return []
 
         field_root = "rule_mapped"
-        if stance.get("function") != "credit_spread_stance":
-            add_issue(
-                section_name,
-                stance_name,
-                f"{field_root}.adjustment",
-                "unsupported",
-                "rule_mapped.adjustment is supported only for credit_spread_stance.",
-            )
-            return []
         if not isinstance(adjustment, dict):
             add_issue(
                 section_name,
@@ -2474,7 +2459,6 @@ def validate_module1_config(config: dict) -> dict:
         adjustment_output_roles = validate_rule_mapped_adjustment_contract(
             section_name,
             stance_name,
-            stance,
             rule_mapped.get("adjustment"),
             state_inputs,
             expected_rule_tuples,
@@ -2574,17 +2558,13 @@ def validate_module1_config(config: dict) -> dict:
             is_weighted_stance = function == "weighted_sum"
 
             # Layer B: calculator stance dispatch and weighted-input contract.
-            if not (
-                is_weighted_stance
-                or function in known_custom_stance_functions
-            ):
+            if not is_weighted_stance and not non_empty_string(function):
                 add_issue(
                     "exposure_stances",
                     stance_name,
                     "function",
-                    "unsupported",
-                    "function must be weighted_sum, one of "
-                    f"{sorted(known_custom_stance_functions)}.",
+                    "invalid",
+                    "function must be weighted_sum or another non-empty string.",
                 )
 
             inputs = stance.get("inputs")
@@ -2721,7 +2701,9 @@ def validate_module1_config(config: dict) -> dict:
                 )
 
             # Layer B rule-mapped dispatch owns generic checks and calls Layer C.
-            if function in known_custom_stance_functions or "rule_mapped" in stance:
+            if (
+                not is_weighted_stance and non_empty_string(function)
+            ) or "rule_mapped" in stance:
                 validate_rule_mapped_stance_schema(
                     "exposure_stances",
                     stance_name,
