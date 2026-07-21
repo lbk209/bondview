@@ -1,6 +1,7 @@
 import os
 import warnings
 import copy
+import math
 from itertools import product
 from dataclasses import dataclass, field
 from numbers import Real
@@ -12,14 +13,6 @@ import pandas as pd
 import yaml
 from dotenv import load_dotenv
 from fredapi import Fred
-
-from module1_schema import (
-    _parse_rule_scores_n_parts,
-    _resolve_rule_mapped_stabilization_config,
-    _rule_mapped_bucket_classification_from_score,
-    validate_module1_config,
-)
-
 
 @dataclass(frozen=True)
 class Module1Result:
@@ -177,11 +170,7 @@ class Module1Calculator:
         if not isinstance(horizons, dict) or not horizons:
             raise ValueError("module1_config.yaml horizons must be a non-empty mapping.")
 
-        invalid = {
-            key: value
-            for key, value in horizons.items()
-            if isinstance(value, bool) or not isinstance(value, int) or value <= 0
-        }
+        invalid = self._invalid_horizon_values(horizons)
         if invalid:
             raise ValueError(
                 "All configured horizon values must be positive integers. "
@@ -189,6 +178,14 @@ class Module1Calculator:
             )
 
         return horizons.copy()
+
+    @staticmethod
+    def _invalid_horizon_values(horizons: dict) -> dict:
+        return {
+            key: value
+            for key, value in horizons.items()
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0
+        }
 
     def validate_horizons(self, horizons=None, base_horizons=None) -> dict:
         """
@@ -202,11 +199,7 @@ class Module1Calculator:
         if not isinstance(base_horizons, dict) or not base_horizons:
             raise ValueError("base_horizons must be a non-empty mapping.")
 
-        invalid_base = {
-            key: value
-            for key, value in base_horizons.items()
-            if isinstance(value, bool) or not isinstance(value, int) or value <= 0
-        }
+        invalid_base = self._invalid_horizon_values(base_horizons)
         if invalid_base:
             raise ValueError(
                 "All base horizon values must be positive integers. "
@@ -223,11 +216,7 @@ class Module1Calculator:
         resolved = base_horizons.copy()
         resolved.update(horizons or {})
 
-        invalid = {
-            key: value
-            for key, value in resolved.items()
-            if isinstance(value, bool) or not isinstance(value, int) or value <= 0
-        }
+        invalid = self._invalid_horizon_values(resolved)
         if invalid:
             raise ValueError(
                 f"All horizon values must be positive integers. Invalid values: {invalid}"
@@ -438,33 +427,41 @@ class Module1Calculator:
 
         validation = None
         if validate_config:
+            from module1_schema import validate_module1_config
+
             validation = validate_module1_config(config)
             issues = validation["issues"]
-            self.module1_config_validation = validation
             if not issues.empty:
                 message = (
                     "Invalid module1_config.yaml: "
-                    f"{len(issues)} validation issue(s). Inspect "
-                    'self.module1_config_validation["issues"].'
+                    f"{len(issues)} validation issue(s)."
                 )
                 if raise_on_invalid_config:
                     raise ValueError(message)
-                warnings.warn(message, UserWarning)
+                warnings.warn(
+                    f'{message} Inspect self.module1_config_validation["issues"].',
+                    UserWarning,
+                )
 
-        self.module1_config = config
-        self.default_horizons = self._default_horizons_from_config(config)
-        self.horizons = self.validate_horizons(
+        default_horizons = self._default_horizons_from_config(config)
+        horizons = self.validate_horizons(
             self.horizon_overrides,
-            base_horizons=self.default_horizons,
+            base_horizons=default_horizons,
         )
-        self.feature_config = {"features": config["features"]}
-        self.component_config = {"components": config["components"]}
-        self.exposure_stance_config = {
+        feature_config = {"features": config["features"]}
+        component_config = {"components": config["components"]}
+        exposure_stance_config = {
             "stance_label_rules": config["stance_label_rules"],
             "exposure_stances": config["exposure_stances"],
         }
-        if validate_config:
-            self.module1_config_validation = validation
+
+        self.module1_config = config
+        self.module1_config_validation = validation
+        self.default_horizons = default_horizons
+        self.horizons = horizons
+        self.feature_config = feature_config
+        self.component_config = component_config
+        self.exposure_stance_config = exposure_stance_config
 
         return config
 
@@ -802,6 +799,14 @@ class Module1Calculator:
                 score_config.get("input_preparation"),
                 self.horizons,
             )
+        if score_config.get("state_transform") == "fixed_anchor":
+            score = self._fixed_anchor_state_score(
+                score,
+                score_config.get("anchors", {}),
+                context=component_name,
+            )
+            return self._apply_sign(score, score_config.get("sign"))
+
         score = self._apply_sign(score, score_config.get("sign"))
         return self._normalize_score_input(
             score,
@@ -822,29 +827,48 @@ class Module1Calculator:
         weighted_terms = []
         inputs = score_config.get("inputs")
         if not isinstance(inputs, list) or not inputs:
+            if score_config.get("state_transform") == "fixed_anchor":
+                raise ValueError(
+                    f"Current-state component {component_name} "
+                    "weighted_feature_score requires inputs."
+                )
             raise ValueError(
                 f"Component {component_name} weighted_feature_score requires inputs."
             )
 
+        fixed_anchor = score_config.get("state_transform") == "fixed_anchor"
+        context = (
+            f"Current-state component {component_name}"
+            if fixed_anchor
+            else f"Component {component_name}"
+        )
+        has_explicit_weight = fixed_anchor and any(
+            isinstance(item, dict) and "weight" in item for item in inputs
+        )
+
         for idx, item in enumerate(inputs):
             if not isinstance(item, dict):
-                raise ValueError(
-                    f"Component {component_name} inputs[{idx}] must be a mapping."
-                )
+                raise ValueError(f"{context} inputs[{idx}] must be a mapping.")
 
             feature_name = item.get("feature")
             if feature_name not in self.features.columns:
                 raise ValueError(f"Missing feature for {component_name}: {feature_name}")
 
-            if "weight" not in item:
+            if not fixed_anchor and "weight" not in item:
                 raise ValueError(
                     f"Component {component_name} inputs[{idx}].weight is required."
                 )
-            weight = item.get("weight")
-            if isinstance(weight, bool) or not isinstance(weight, Real) or pd.isna(weight):
-                raise ValueError(
-                    f"Component {component_name} inputs[{idx}].weight must be numeric and not bool."
-                )
+            if not fixed_anchor:
+                weight = item.get("weight")
+                if (
+                    isinstance(weight, bool)
+                    or not isinstance(weight, Real)
+                    or pd.isna(weight)
+                ):
+                    raise ValueError(
+                        f"Component {component_name} inputs[{idx}].weight must be "
+                        "numeric and not bool."
+                    )
 
             score_input = self.features[feature_name]
             if apply_input_preparation:
@@ -853,17 +877,47 @@ class Module1Calculator:
                     score_config.get("input_preparation"),
                     self.horizons,
                 )
-            feature_score = self._normalize_score_input(
-                score_input,
-                normalization,
-                normalization_horizon,
-            )
+
+            if fixed_anchor:
+                feature_score = self._fixed_anchor_state_score(
+                    score_input,
+                    item.get("anchors", {}),
+                    context=f"{component_name} {feature_name}",
+                )
+                weight = item.get("weight")
+                if weight is None:
+                    if len(inputs) > 1 or has_explicit_weight:
+                        raise ValueError(
+                            f"Current-state component {component_name} "
+                            f"inputs[{idx}].weight is required when fixed-anchor "
+                            "scoring combines multiple weighted inputs."
+                        )
+                    weight = 1.0
+                elif (
+                    isinstance(weight, bool)
+                    or not isinstance(weight, Real)
+                    or pd.isna(weight)
+                ):
+                    raise ValueError(
+                        f"Current-state component {component_name} "
+                        f"inputs[{idx}].weight must be numeric and not bool."
+                    )
+            else:
+                feature_score = self._normalize_score_input(
+                    score_input,
+                    normalization,
+                    normalization_horizon,
+                )
+
             weighted_terms.append((feature_score, float(weight)))
 
-        return self._weighted_sum_score(
+        score = self._weighted_sum_score(
             weighted_terms,
-            context=f"Component {component_name}",
+            context=context,
         )
+        if fixed_anchor:
+            return self._apply_sign(score, score_config.get("sign"))
+        return score
 
 
     def _curve_move_driver_score_from_prepared_inputs(
@@ -1075,7 +1129,199 @@ class Module1Calculator:
 
 
     @staticmethod
-    def _resolve_rule_mapped_stance_schema(
+    def _is_finite_number(value) -> bool:
+        if isinstance(value, bool) or not isinstance(value, Real):
+            return False
+        if isinstance(value, int):
+            return True
+        try:
+            return math.isfinite(value)
+        except (TypeError, ValueError, OverflowError):
+            return False
+
+
+    @staticmethod
+    def _parse_rule_scores_n_parts(
+        rule_scores: Mapping,
+        *,
+        expected_parts: int,
+        context: str = "Rule-mapped stance",
+    ) -> dict[tuple[str, ...], float]:
+        if (
+            not isinstance(expected_parts, int)
+            or isinstance(expected_parts, bool)
+            or expected_parts < 1
+        ):
+            raise ValueError("expected_parts must be an integer >= 1.")
+        if not isinstance(rule_scores, Mapping) or not rule_scores:
+            raise ValueError(f"{context} rule_scores must be a non-empty mapping.")
+
+        parsed_scores = {}
+        for case_key, score in rule_scores.items():
+            if not isinstance(case_key, str):
+                raise ValueError(f"{context} rule score keys must be strings.")
+
+            parts = tuple(part.strip() for part in case_key.split("|"))
+            if len(parts) != expected_parts:
+                raise ValueError(
+                    f"{context} rule score key must have exactly "
+                    f"{expected_parts} part(s): {case_key}"
+                )
+            if any(part == "" for part in parts):
+                raise ValueError(
+                    f"{context} rule score key contains an empty part: {case_key}"
+                )
+            if parts in parsed_scores:
+                raise ValueError(
+                    f"{context} rule score key duplicates an existing case after "
+                    f"normalization: {case_key}"
+                )
+            if not Module1Calculator._is_finite_number(score):
+                raise ValueError(
+                    f"{context} rule score value must be numeric and not bool: "
+                    f"{case_key}"
+                )
+
+            parsed_scores[parts] = float(score)
+
+        return parsed_scores
+
+
+    @staticmethod
+    def _rule_mapped_bucket_classification_from_score(
+        score: Mapping,
+    ) -> tuple[str | None, bool]:
+        buckets = score.get("buckets") if isinstance(score, Mapping) else None
+        if not isinstance(buckets, Mapping) or not buckets:
+            return None, False
+
+        range_fields = {"min", "max", "min_exclusive", "max_exclusive"}
+        has_range_rule = False
+        has_score_rule = False
+        for rule in buckets.values():
+            if not isinstance(rule, Mapping):
+                continue
+            if set(rule).intersection(range_fields):
+                has_range_rule = True
+            if "score" in rule:
+                has_score_rule = True
+
+        if has_range_rule and has_score_rule:
+            return None, True
+        if has_range_rule:
+            return "threshold_bucket", False
+        if has_score_rule:
+            return "score_bucket", False
+        return None, False
+
+
+    @staticmethod
+    def _resolve_rule_mapped_stabilization_config(
+        stance_config: dict,
+        required_state_components,
+        *,
+        context: str = "Rule-mapped stance",
+    ) -> dict:
+        if not isinstance(stance_config, Mapping):
+            raise ValueError(f"{context} stance config must be a mapping.")
+        if isinstance(required_state_components, str) or not isinstance(
+            required_state_components,
+            (list, tuple, set),
+        ):
+            raise ValueError(
+                f"{context} required state components must be a sequence."
+            )
+        if not required_state_components:
+            raise ValueError(
+                f"{context} required state components must not be empty."
+            )
+        for component_name in required_state_components:
+            if not isinstance(component_name, str) or component_name.strip() == "":
+                raise ValueError(
+                    f"{context} required state components must be non-empty strings."
+                )
+        if len(set(required_state_components)) != len(required_state_components):
+            raise ValueError(
+                f"{context} required state components must not contain duplicates."
+            )
+
+        configured = stance_config.get("state_stabilization")
+        if not isinstance(configured, dict):
+            raise ValueError(f"{context} state_stabilization must be a mapping.")
+        for component_name in configured:
+            if not isinstance(component_name, str) or component_name.strip() == "":
+                raise ValueError(
+                    f"{context} state_stabilization component keys must be "
+                    "non-empty strings."
+                )
+        required_component_set = set(required_state_components)
+        unknown_components = sorted(set(configured) - required_component_set)
+        if unknown_components:
+            raise ValueError(
+                f"{context} state_stabilization contains unknown component(s): "
+                f"{unknown_components}"
+            )
+
+        resolved = {}
+        for component_name in required_state_components:
+            component_config = configured.get(component_name)
+            if not isinstance(component_config, dict):
+                raise ValueError(
+                    f"{context} state_stabilization.{component_name} must be a mapping."
+                )
+            allowed_fields = {"hysteresis_buffer", "min_state_persistence"}
+            for field_name in component_config:
+                if not isinstance(field_name, str) or field_name.strip() == "":
+                    raise ValueError(
+                        f"{context} state_stabilization.{component_name} field "
+                        "names must be non-empty strings."
+                    )
+            unknown_fields = sorted(set(component_config) - allowed_fields)
+            if unknown_fields:
+                raise ValueError(
+                    f"{context} state_stabilization.{component_name} contains "
+                    f"unknown field(s): {unknown_fields}"
+                )
+
+            if "hysteresis_buffer" not in component_config:
+                raise ValueError(
+                    f"{context} state_stabilization.{component_name}.hysteresis_buffer is required."
+                )
+            hysteresis_buffer = component_config["hysteresis_buffer"]
+            if (
+                not Module1Calculator._is_finite_number(hysteresis_buffer)
+                or hysteresis_buffer < 0
+            ):
+                raise ValueError(
+                    f"{context} state_stabilization.{component_name}.hysteresis_buffer "
+                    "must be numeric, not bool, and >= 0."
+                )
+
+            if "min_state_persistence" not in component_config:
+                raise ValueError(
+                    f"{context} state_stabilization.{component_name}.min_state_persistence is required."
+                )
+            min_state_persistence = component_config["min_state_persistence"]
+            if (
+                not isinstance(min_state_persistence, int)
+                or isinstance(min_state_persistence, bool)
+                or min_state_persistence < 1
+            ):
+                raise ValueError(
+                    f"{context} state_stabilization.{component_name}.min_state_persistence "
+                    "must be an integer, not bool, and >= 1."
+                )
+
+            resolved[component_name] = {
+                "hysteresis_buffer": float(hysteresis_buffer),
+                "min_state_persistence": int(min_state_persistence),
+            }
+
+        return resolved
+
+
+    @staticmethod
+    def _resolve_rule_mapped_stance_spec(
         stance_name: str,
         stance_config: dict,
         component_config: dict | None,
@@ -1141,7 +1387,9 @@ class Module1Calculator:
             )
             if classification in {"threshold_bucket", "score_bucket"}:
                 expected_classification, mixed_bucket_style = (
-                    _rule_mapped_bucket_classification_from_score(component_score)
+                    Module1Calculator._rule_mapped_bucket_classification_from_score(
+                        component_score
+                    )
                 )
                 if mixed_bucket_style:
                     raise ValueError(
@@ -1245,13 +1493,15 @@ class Module1Calculator:
         if len(state_input_names) != len(set(state_input_names)):
             raise ValueError(f"{context}.rule_mapped.state_inputs names must be unique.")
 
-        stabilization_config = _resolve_rule_mapped_stabilization_config(
-            rule_mapped,
-            state_input_names,
-            context=f"{context}.rule_mapped",
+        stabilization_config = (
+            Module1Calculator._resolve_rule_mapped_stabilization_config(
+                rule_mapped,
+                state_input_names,
+                context=f"{context}.rule_mapped",
+            )
         )
 
-        rule_scores = _parse_rule_scores_n_parts(
+        rule_scores = Module1Calculator._parse_rule_scores_n_parts(
             rule_mapped.get("rule_scores"),
             expected_parts=len(state_inputs),
             context=f"{context}.rule_mapped",
@@ -1413,24 +1663,6 @@ class Module1Calculator:
         raise ValueError(f"Curve score {score} did not match any configured bucket.")
 
 
-    def _component_bucket_config(self, component_name: str) -> dict:
-        if self.component_config is None:
-            raise ValueError("Run load_module1_config() before bucket label classification.")
-
-        buckets = (
-            self.component_config
-            .get("components", {})
-            .get(component_name, {})
-            .get("score", {})
-            .get("buckets")
-        )
-        if not isinstance(buckets, dict) or not buckets:
-            raise ValueError(
-                f"Component {component_name} score.buckets must be a non-empty mapping."
-            )
-        return buckets
-
-
     def _component_bucket_labels(self, component_name: str) -> dict:
         if self.component_config is None:
             raise ValueError("Run load_module1_config() before bucket label classification.")
@@ -1479,110 +1711,6 @@ class Module1Calculator:
         return self._threshold_bucket(score, bucket_config)
 
 
-    def _calculate_current_state_component_score(
-        self,
-        component_name: str,
-        score_config: dict,
-        *,
-        apply_input_preparation: bool = True,
-    ) -> pd.Series:
-        if score_config.get("state_transform") != "fixed_anchor":
-            raise ValueError(
-                f"Current-state component {component_name} must use "
-                "state_transform: fixed_anchor."
-            )
-
-        function = score_config.get("function")
-
-        if function == "single_feature_score":
-            feature_name = score_config.get("input")
-            if feature_name not in self.features.columns:
-                raise ValueError(f"Missing feature for {component_name}: {feature_name}")
-
-            score_input = self.features[feature_name]
-            if apply_input_preparation:
-                score_input = self._prepare_component_input_series(
-                    score_input,
-                    score_config.get("input_preparation"),
-                    self.horizons,
-                )
-            score = self._fixed_anchor_state_score(
-                score_input,
-                score_config.get("anchors", {}),
-                context=component_name,
-            )
-            return self._apply_sign(score, score_config.get("sign"))
-
-        if function == "weighted_feature_score":
-            inputs = score_config.get("inputs")
-            if not isinstance(inputs, list) or not inputs:
-                raise ValueError(
-                    f"Current-state component {component_name} "
-                    "weighted_feature_score requires inputs."
-                )
-
-            transformed_terms = []
-            has_explicit_weight = any(
-                isinstance(item, dict) and "weight" in item for item in inputs
-            )
-
-            for idx, item in enumerate(inputs):
-                if not isinstance(item, dict):
-                    raise ValueError(
-                        f"Current-state component {component_name} "
-                        f"inputs[{idx}] must be a mapping."
-                    )
-
-                feature_name = item.get("feature")
-                if feature_name not in self.features.columns:
-                    raise ValueError(
-                        f"Missing feature for {component_name}: {feature_name}"
-                    )
-
-                score_input = self.features[feature_name]
-                if apply_input_preparation:
-                    score_input = self._prepare_component_input_series(
-                        score_input,
-                        score_config.get("input_preparation"),
-                        self.horizons,
-                    )
-                feature_score = self._fixed_anchor_state_score(
-                    score_input,
-                    item.get("anchors", {}),
-                    context=f"{component_name} {feature_name}",
-                )
-
-                weight = item.get("weight")
-                if weight is None:
-                    if len(inputs) > 1 or has_explicit_weight:
-                        raise ValueError(
-                            f"Current-state component {component_name} "
-                            f"inputs[{idx}].weight is required when fixed-anchor "
-                            "scoring combines multiple weighted inputs."
-                        )
-                    weight = 1.0
-                elif (
-                    isinstance(weight, bool)
-                    or not isinstance(weight, Real)
-                    or pd.isna(weight)
-                ):
-                    raise ValueError(
-                        f"Current-state component {component_name} "
-                        f"inputs[{idx}].weight must be numeric and not bool."
-                    )
-                transformed_terms.append((feature_score, float(weight)))
-
-            score = self._weighted_sum_score(
-                transformed_terms,
-                context=f"Current-state component {component_name}",
-            )
-            return self._apply_sign(score, score_config.get("sign"))
-
-        raise ValueError(
-            f"Unsupported current-state score function for {component_name}: {function}"
-        )
-
-
     def calculate_component_scores(self) -> pd.DataFrame:
         if self.features is None:
             raise ValueError("Run calculate_features() before calculate_component_scores().")
@@ -1606,15 +1734,16 @@ class Module1Calculator:
                 "normalization_horizon",
                 "normalization",
             )
+            fixed_anchor = score_config.get("state_transform") == "fixed_anchor"
 
-            if score_config.get("state_transform") == "fixed_anchor":
-                score = self._calculate_current_state_component_score(
-                    component_name,
-                    score_config,
+            if fixed_anchor and function not in {
+                "single_feature_score",
+                "weighted_feature_score",
+            }:
+                raise ValueError(
+                    f"Unsupported current-state score function for "
+                    f"{component_name}: {function}"
                 )
-                score = self._clip_score(score, score_config.get("clip"))
-                scores[output] = score
-                continue
 
             if function == "single_feature_score":
                 score = self._calculate_single_feature_component_score(
@@ -1643,7 +1772,8 @@ class Module1Calculator:
                     f"Unsupported score function for {component_name}: {function}"
                 )
 
-            score = self._smooth_score(score, score_config.get("smoothing"))
+            if not fixed_anchor:
+                score = self._smooth_score(score, score_config.get("smoothing"))
             score = self._clip_score(score, score_config.get("clip"))
             scores[output] = score
 
@@ -1687,7 +1817,7 @@ class Module1Calculator:
 
         def calculate_bucket_labels(component_name, source, label_config):
             label_names = label_config.get("labels", {})
-            bucket_config = self._component_bucket_config(component_name)
+            bucket_config = self._component_score_bucket_config(component_name)
             bucket_to_label_key = self._component_bucket_labels(component_name)
 
             def label_score(value):
@@ -2087,10 +2217,12 @@ class Module1Calculator:
 
         stabilization_config = spec.stabilization_config
         if stabilization_overrides is not None:
-            stabilization_config = _resolve_rule_mapped_stabilization_config(
-                {"state_stabilization": stabilization_overrides},
-                [state_input.name for state_input in spec.state_inputs],
-                context=f"rule_mapped stance {stance_name}",
+            stabilization_config = (
+                Module1Calculator._resolve_rule_mapped_stabilization_config(
+                    {"state_stabilization": stabilization_overrides},
+                    [state_input.name for state_input in spec.state_inputs],
+                    context=f"rule_mapped stance {stance_name}",
+                )
             )
 
         breakdown = scores[required_score_cols].copy()
@@ -2597,16 +2729,12 @@ class Module1Calculator:
             )
             return breakdown[score_output]
 
-        if function in {
-            "curve_positioning_stance",
-            "duration_rule_stance",
-            "credit_spread_stance",
-        }:
+        if isinstance(function, str) and function.strip() != "":
             score_output = stance_config.get("score_output")
             if score_output is None:
                 raise ValueError(f"Exposure stance {stance_name} score output is missing.")
 
-            rule_mapped_spec = self._resolve_rule_mapped_stance_schema(
+            rule_mapped_spec = self._resolve_rule_mapped_stance_spec(
                 stance_name,
                 stance_config,
                 self.component_config,

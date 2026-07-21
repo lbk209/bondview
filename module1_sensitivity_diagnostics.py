@@ -89,7 +89,6 @@ class Module1SensitivityDiagnostics:
         "_curve_move_driver_bucket_scores",
         "_component_score_bucket_config",
         "_score_bucket",
-        "_calculate_current_state_component_score",
         "_label_stance_direction",
         "_label_stance_strength",
         "calculate_exposure_stance",
@@ -164,13 +163,6 @@ class Module1SensitivityDiagnostics:
             start=start, end=end, ffill_inputs=ffill_inputs,
         )
 
-    def _rule_mapped_trace_supported_functions(self) -> set[str]:
-        return {
-            "duration_rule_stance",
-            "credit_spread_stance",
-            "curve_positioning_stance",
-        }
-
     def trace_stance_score(
         self, target: str, start=None, end=None,
         include_raw_input: bool = True, include_labels: bool = True,
@@ -181,7 +173,11 @@ class Module1SensitivityDiagnostics:
         stance_name = target_info.canonical_target
         stance_config = target_info.config
         function = stance_config.get("function")
-        if function in self._rule_mapped_trace_supported_functions():
+        if (
+            function != "weighted_sum"
+            and isinstance(function, str)
+            and function.strip() != ""
+        ):
             return self._trace_rule_mapped_stance_score(
                 stance_name, start=start, end=end,
                 include_raw_input=include_raw_input, include_labels=include_labels,
@@ -417,14 +413,15 @@ class Module1SensitivityDiagnostics:
             apply_input_preparation: bool,
         ) -> pd.Series:
             function = score_config.get("function")
-
-            if score_config.get("state_transform") == "fixed_anchor":
-                score = self._calculate_current_state_component_score(
-                    component_name,
-                    score_config,
-                    apply_input_preparation=apply_input_preparation,
+            fixed_anchor = score_config.get("state_transform") == "fixed_anchor"
+            if fixed_anchor and function not in {
+                "single_feature_score",
+                "weighted_feature_score",
+            }:
+                raise ValueError(
+                    f"Unsupported current-state score function for "
+                    f"{component_name}: {function}"
                 )
-                return self._clip_score(score, score_config.get("clip"))
 
             normalization = score_config.get("normalization")
             normalization_horizon = score_config.get(
@@ -920,7 +917,7 @@ class Module1SensitivityDiagnostics:
                     f"Unsupported rule-mapped stance diagnostic target {target}: "
                     f"{function}. Schema-backed rule_mapped config is required."
                 )
-            rule_mapped_spec = Module1Calculator._resolve_rule_mapped_stance_schema(
+            rule_mapped_spec = Module1Calculator._resolve_rule_mapped_stance_spec(
                 stance_name,
                 stance_config,
                 self.component_config,
@@ -2087,7 +2084,7 @@ class Module1SensitivityDiagnostics:
             case_stabilization_overrides: dict,
             detail_columns: dict,
         ) -> pd.DataFrame:
-            spec = Module1Calculator._resolve_rule_mapped_stance_schema(
+            spec = Module1Calculator._resolve_rule_mapped_stance_spec(
                 stance_name,
                 stance_config,
                 self.component_config,
