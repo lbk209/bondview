@@ -804,6 +804,14 @@ class Module1Calculator:
                 score_config.get("input_preparation"),
                 self.horizons,
             )
+        if score_config.get("state_transform") == "fixed_anchor":
+            score = self._fixed_anchor_state_score(
+                score,
+                score_config.get("anchors", {}),
+                context=component_name,
+            )
+            return self._apply_sign(score, score_config.get("sign"))
+
         score = self._apply_sign(score, score_config.get("sign"))
         return self._normalize_score_input(
             score,
@@ -824,29 +832,48 @@ class Module1Calculator:
         weighted_terms = []
         inputs = score_config.get("inputs")
         if not isinstance(inputs, list) or not inputs:
+            if score_config.get("state_transform") == "fixed_anchor":
+                raise ValueError(
+                    f"Current-state component {component_name} "
+                    "weighted_feature_score requires inputs."
+                )
             raise ValueError(
                 f"Component {component_name} weighted_feature_score requires inputs."
             )
 
+        fixed_anchor = score_config.get("state_transform") == "fixed_anchor"
+        context = (
+            f"Current-state component {component_name}"
+            if fixed_anchor
+            else f"Component {component_name}"
+        )
+        has_explicit_weight = fixed_anchor and any(
+            isinstance(item, dict) and "weight" in item for item in inputs
+        )
+
         for idx, item in enumerate(inputs):
             if not isinstance(item, dict):
-                raise ValueError(
-                    f"Component {component_name} inputs[{idx}] must be a mapping."
-                )
+                raise ValueError(f"{context} inputs[{idx}] must be a mapping.")
 
             feature_name = item.get("feature")
             if feature_name not in self.features.columns:
                 raise ValueError(f"Missing feature for {component_name}: {feature_name}")
 
-            if "weight" not in item:
+            if not fixed_anchor and "weight" not in item:
                 raise ValueError(
                     f"Component {component_name} inputs[{idx}].weight is required."
                 )
-            weight = item.get("weight")
-            if isinstance(weight, bool) or not isinstance(weight, Real) or pd.isna(weight):
-                raise ValueError(
-                    f"Component {component_name} inputs[{idx}].weight must be numeric and not bool."
-                )
+            if not fixed_anchor:
+                weight = item.get("weight")
+                if (
+                    isinstance(weight, bool)
+                    or not isinstance(weight, Real)
+                    or pd.isna(weight)
+                ):
+                    raise ValueError(
+                        f"Component {component_name} inputs[{idx}].weight must be "
+                        "numeric and not bool."
+                    )
 
             score_input = self.features[feature_name]
             if apply_input_preparation:
@@ -855,17 +882,47 @@ class Module1Calculator:
                     score_config.get("input_preparation"),
                     self.horizons,
                 )
-            feature_score = self._normalize_score_input(
-                score_input,
-                normalization,
-                normalization_horizon,
-            )
+
+            if fixed_anchor:
+                feature_score = self._fixed_anchor_state_score(
+                    score_input,
+                    item.get("anchors", {}),
+                    context=f"{component_name} {feature_name}",
+                )
+                weight = item.get("weight")
+                if weight is None:
+                    if len(inputs) > 1 or has_explicit_weight:
+                        raise ValueError(
+                            f"Current-state component {component_name} "
+                            f"inputs[{idx}].weight is required when fixed-anchor "
+                            "scoring combines multiple weighted inputs."
+                        )
+                    weight = 1.0
+                elif (
+                    isinstance(weight, bool)
+                    or not isinstance(weight, Real)
+                    or pd.isna(weight)
+                ):
+                    raise ValueError(
+                        f"Current-state component {component_name} "
+                        f"inputs[{idx}].weight must be numeric and not bool."
+                    )
+            else:
+                feature_score = self._normalize_score_input(
+                    score_input,
+                    normalization,
+                    normalization_horizon,
+                )
+
             weighted_terms.append((feature_score, float(weight)))
 
-        return self._weighted_sum_score(
+        score = self._weighted_sum_score(
             weighted_terms,
-            context=f"Component {component_name}",
+            context=context,
         )
+        if fixed_anchor:
+            return self._apply_sign(score, score_config.get("sign"))
+        return score
 
 
     def _curve_move_driver_score_from_prepared_inputs(
@@ -1463,110 +1520,6 @@ class Module1Calculator:
         return self._threshold_bucket(score, bucket_config)
 
 
-    def _calculate_current_state_component_score(
-        self,
-        component_name: str,
-        score_config: dict,
-        *,
-        apply_input_preparation: bool = True,
-    ) -> pd.Series:
-        if score_config.get("state_transform") != "fixed_anchor":
-            raise ValueError(
-                f"Current-state component {component_name} must use "
-                "state_transform: fixed_anchor."
-            )
-
-        function = score_config.get("function")
-
-        if function == "single_feature_score":
-            feature_name = score_config.get("input")
-            if feature_name not in self.features.columns:
-                raise ValueError(f"Missing feature for {component_name}: {feature_name}")
-
-            score_input = self.features[feature_name]
-            if apply_input_preparation:
-                score_input = self._prepare_component_input_series(
-                    score_input,
-                    score_config.get("input_preparation"),
-                    self.horizons,
-                )
-            score = self._fixed_anchor_state_score(
-                score_input,
-                score_config.get("anchors", {}),
-                context=component_name,
-            )
-            return self._apply_sign(score, score_config.get("sign"))
-
-        if function == "weighted_feature_score":
-            inputs = score_config.get("inputs")
-            if not isinstance(inputs, list) or not inputs:
-                raise ValueError(
-                    f"Current-state component {component_name} "
-                    "weighted_feature_score requires inputs."
-                )
-
-            transformed_terms = []
-            has_explicit_weight = any(
-                isinstance(item, dict) and "weight" in item for item in inputs
-            )
-
-            for idx, item in enumerate(inputs):
-                if not isinstance(item, dict):
-                    raise ValueError(
-                        f"Current-state component {component_name} "
-                        f"inputs[{idx}] must be a mapping."
-                    )
-
-                feature_name = item.get("feature")
-                if feature_name not in self.features.columns:
-                    raise ValueError(
-                        f"Missing feature for {component_name}: {feature_name}"
-                    )
-
-                score_input = self.features[feature_name]
-                if apply_input_preparation:
-                    score_input = self._prepare_component_input_series(
-                        score_input,
-                        score_config.get("input_preparation"),
-                        self.horizons,
-                    )
-                feature_score = self._fixed_anchor_state_score(
-                    score_input,
-                    item.get("anchors", {}),
-                    context=f"{component_name} {feature_name}",
-                )
-
-                weight = item.get("weight")
-                if weight is None:
-                    if len(inputs) > 1 or has_explicit_weight:
-                        raise ValueError(
-                            f"Current-state component {component_name} "
-                            f"inputs[{idx}].weight is required when fixed-anchor "
-                            "scoring combines multiple weighted inputs."
-                        )
-                    weight = 1.0
-                elif (
-                    isinstance(weight, bool)
-                    or not isinstance(weight, Real)
-                    or pd.isna(weight)
-                ):
-                    raise ValueError(
-                        f"Current-state component {component_name} "
-                        f"inputs[{idx}].weight must be numeric and not bool."
-                    )
-                transformed_terms.append((feature_score, float(weight)))
-
-            score = self._weighted_sum_score(
-                transformed_terms,
-                context=f"Current-state component {component_name}",
-            )
-            return self._apply_sign(score, score_config.get("sign"))
-
-        raise ValueError(
-            f"Unsupported current-state score function for {component_name}: {function}"
-        )
-
-
     def calculate_component_scores(self) -> pd.DataFrame:
         if self.features is None:
             raise ValueError("Run calculate_features() before calculate_component_scores().")
@@ -1590,15 +1543,16 @@ class Module1Calculator:
                 "normalization_horizon",
                 "normalization",
             )
+            fixed_anchor = score_config.get("state_transform") == "fixed_anchor"
 
-            if score_config.get("state_transform") == "fixed_anchor":
-                score = self._calculate_current_state_component_score(
-                    component_name,
-                    score_config,
+            if fixed_anchor and function not in {
+                "single_feature_score",
+                "weighted_feature_score",
+            }:
+                raise ValueError(
+                    f"Unsupported current-state score function for "
+                    f"{component_name}: {function}"
                 )
-                score = self._clip_score(score, score_config.get("clip"))
-                scores[output] = score
-                continue
 
             if function == "single_feature_score":
                 score = self._calculate_single_feature_component_score(
@@ -1627,7 +1581,8 @@ class Module1Calculator:
                     f"Unsupported score function for {component_name}: {function}"
                 )
 
-            score = self._smooth_score(score, score_config.get("smoothing"))
+            if not fixed_anchor:
+                score = self._smooth_score(score, score_config.get("smoothing"))
             score = self._clip_score(score, score_config.get("clip"))
             scores[output] = score
 

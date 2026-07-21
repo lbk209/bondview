@@ -89,7 +89,6 @@ class Module1SensitivityDiagnostics:
         "_curve_move_driver_bucket_scores",
         "_component_score_bucket_config",
         "_score_bucket",
-        "_calculate_current_state_component_score",
         "_label_stance_direction",
         "_label_stance_strength",
         "calculate_exposure_stance",
@@ -417,14 +416,15 @@ class Module1SensitivityDiagnostics:
             apply_input_preparation: bool,
         ) -> pd.Series:
             function = score_config.get("function")
-
-            if score_config.get("state_transform") == "fixed_anchor":
-                score = self._calculate_current_state_component_score(
-                    component_name,
-                    score_config,
-                    apply_input_preparation=apply_input_preparation,
+            fixed_anchor = score_config.get("state_transform") == "fixed_anchor"
+            if fixed_anchor and function not in {
+                "single_feature_score",
+                "weighted_feature_score",
+            }:
+                raise ValueError(
+                    f"Unsupported current-state score function for "
+                    f"{component_name}: {function}"
                 )
-                return self._clip_score(score, score_config.get("clip"))
 
             normalization = score_config.get("normalization")
             normalization_horizon = score_config.get(
