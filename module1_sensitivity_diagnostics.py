@@ -920,7 +920,7 @@ class Module1SensitivityDiagnostics:
                     f"Unsupported rule-mapped stance diagnostic target {target}: "
                     f"{function}. Schema-backed rule_mapped config is required."
                 )
-            rule_mapped_spec = Module1Calculator._resolve_rule_mapped_stance_schema(
+            rule_mapped_spec = Module1Calculator._resolve_rule_mapped_stance_spec(
                 stance_name,
                 stance_config,
                 self.component_config,
@@ -2087,7 +2087,7 @@ class Module1SensitivityDiagnostics:
             case_stabilization_overrides: dict,
             detail_columns: dict,
         ) -> pd.DataFrame:
-            spec = Module1Calculator._resolve_rule_mapped_stance_schema(
+            spec = Module1Calculator._resolve_rule_mapped_stance_spec(
                 stance_name,
                 stance_config,
                 self.component_config,

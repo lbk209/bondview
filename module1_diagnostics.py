@@ -409,7 +409,7 @@ class Module1Diagnostics:
                 f"Unsupported rule-mapped stance diagnostic target {target}: "
                 f"{function}. Schema-backed rule_mapped config is required."
             )
-        rule_mapped_schema = Module1Calculator._resolve_rule_mapped_stance_schema(
+        rule_mapped_schema = Module1Calculator._resolve_rule_mapped_stance_spec(
             stance_name,
             stance_config,
             self.component_config,
