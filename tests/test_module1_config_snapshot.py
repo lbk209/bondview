@@ -109,6 +109,122 @@ class Module1ConfigSnapshotTests(unittest.TestCase):
         self.assertEqual(resolution.canonical_target, "duration_preference")
         self.assertEqual(resolution.kind, "target_group_member")
 
+    def test_feature_resolution_config_is_isolated_from_result(self):
+        result = self.calculator.to_module1_result()
+        resolution = Module1Analysis(result)._resolve_target_for_context(
+            "curve_10y2y_level",
+            "feature",
+        )
+
+        resolution.config["inputs"][0] = "mutated_input"
+
+        self.assertEqual(
+            result.module1_config["features"]["curve_10y2y_level"]["inputs"],
+            ["dgs10", "dgs2"],
+        )
+
+    def test_component_resolution_config_is_isolated_from_result(self):
+        result = self.calculator.to_module1_result()
+        resolution = Module1Analysis(result).resolve_target(
+            "duration_preference",
+            "component",
+        )
+
+        resolution.config["score"]["clip"]["min"] = -99.0
+
+        self.assertEqual(
+            result.module1_config["components"]["duration_preference"]["score"][
+                "clip"
+            ]["min"],
+            -3.0,
+        )
+
+    def test_stance_resolution_config_is_isolated_from_result(self):
+        result = self.calculator.to_module1_result()
+        resolution = Module1Analysis(result).resolve_target(
+            "credit",
+            "stance",
+        )
+
+        resolution.config["labels"]["direction"]["positive"] = "mutated_label"
+
+        self.assertEqual(
+            result.module1_config["exposure_stances"]["credit"]["labels"]["direction"][
+                "positive"
+            ],
+            "credit_positive",
+        )
+
+    def test_historical_local_config_is_isolated_from_result(self):
+        result = self.calculator.to_module1_result()
+        historical = Module1HistoricalAnalysis(result)
+
+        historical.component_config["components"]["duration_preference"]["score"][
+            "clip"
+        ]["min"] = -99.0
+        historical.exposure_stance_config["exposure_stances"]["credit"]["labels"][
+            "direction"
+        ]["positive"] = "mutated_label"
+
+        self.assertEqual(
+            result.module1_config["components"]["duration_preference"]["score"][
+                "clip"
+            ]["min"],
+            -3.0,
+        )
+        self.assertEqual(
+            result.module1_config["exposure_stances"]["credit"]["labels"]["direction"][
+                "positive"
+            ],
+            "credit_positive",
+        )
+
+    def test_diagnostics_and_sensitivity_local_config_remain_isolated(self):
+        result = self.calculator.to_module1_result()
+        diagnostics = Module1Diagnostics(result)
+        sensitivity = Module1SensitivityDiagnostics(result)
+        context = diagnostics.get_target_context(
+            "duration_preference",
+            "component",
+        )
+
+        diagnostics.feature_config["features"]["curve_10y2y_level"]["inputs"][
+            0
+        ] = "diagnostics_input"
+        diagnostics.component_config["components"]["duration_preference"]["score"][
+            "clip"
+        ]["min"] = -98.0
+        diagnostics.exposure_stance_config["exposure_stances"]["credit"]["labels"][
+            "direction"
+        ]["positive"] = "diagnostics_label"
+        context.resolution["config"]["score"]["clip"]["min"] = -96.0
+        sensitivity.feature_config["features"]["curve_10y2y_level"]["inputs"][
+            0
+        ] = "sensitivity_input"
+        sensitivity.component_config["components"]["duration_preference"]["score"][
+            "clip"
+        ]["min"] = -97.0
+        sensitivity.exposure_stance_config["exposure_stances"]["credit"]["labels"][
+            "direction"
+        ]["positive"] = "sensitivity_label"
+
+        self.assertEqual(
+            result.module1_config["features"]["curve_10y2y_level"]["inputs"],
+            ["dgs10", "dgs2"],
+        )
+        self.assertEqual(
+            result.module1_config["components"]["duration_preference"]["score"][
+                "clip"
+            ]["min"],
+            -3.0,
+        )
+        self.assertEqual(
+            result.module1_config["exposure_stances"]["credit"]["labels"]["direction"][
+                "positive"
+            ],
+            "credit_positive",
+        )
+
     def test_migrated_consumers_resolve_metadata_from_module1_config(self):
         config = self.result.module1_config
         analysis = Module1Analysis(self.result)
