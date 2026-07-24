@@ -8,7 +8,7 @@ from module1_analysis import Module1Analysis, TargetContextResult
 from module1_calculator import (
     Module1Calculator,
     Module1Result,
-    _RuleMappedStanceSpec,
+    RuleMappedStanceSpec,
 )
 
 
@@ -17,7 +17,7 @@ class RuleMappedDiagnosticSpec:
     target: str
     stance_config: dict
     function: str
-    rule_mapped_schema: _RuleMappedStanceSpec
+    rule_mapped_schema: RuleMappedStanceSpec
     score_input_cols: tuple[str, ...]
     raw_state_cols: tuple[str, ...]
     stabilized_state_cols: tuple[str, ...]
@@ -271,7 +271,7 @@ class Module1Diagnostics:
             if spec.source not in self.features.columns:
                 continue
             score_config = components.get(spec.component, {}).get("score", {})
-            prepared[spec.output] = Module1Calculator._prepare_component_input_series(
+            prepared[spec.output] = Module1Calculator.prepare_component_input_series(
                 self.features[spec.source],
                 score_config.get("input_preparation"),
                 self.horizons,
@@ -356,7 +356,7 @@ class Module1Diagnostics:
                 f"{missing_stance_cols}"
             )
 
-        diagnostics = Module1Calculator._build_weighted_stance_score_breakdown(
+        diagnostics = Module1Calculator.build_weighted_stance_score_breakdown(
             self.scores,
             stance_name,
             stance_config,
@@ -425,7 +425,7 @@ class Module1Diagnostics:
                 f"Unsupported rule-mapped stance diagnostic target {target}: "
                 f"{function}. Schema-backed rule_mapped config is required."
             )
-        rule_mapped_schema = Module1Calculator._resolve_rule_mapped_stance_spec(
+        rule_mapped_schema = Module1Calculator.resolve_rule_mapped_stance_spec(
             stance_name,
             stance_config,
             self.component_config,
@@ -529,7 +529,7 @@ class Module1Diagnostics:
                 f"{missing_stance_cols}"
             )
 
-        diagnostics = Module1Calculator._build_rule_mapped_stance_score_breakdown(
+        diagnostics = Module1Calculator.build_rule_mapped_stance_score_breakdown(
             self.scores,
             self.component_config,
             spec.target,

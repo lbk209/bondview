@@ -59,7 +59,7 @@ class _RuleMappedAdjustmentSpec:
 
 
 @dataclass(frozen=True)
-class _RuleMappedStanceSpec:
+class RuleMappedStanceSpec:
     stance_name: str
     function: str
     state_inputs: tuple[_RuleMappedStateInputSpec, ...]
@@ -618,7 +618,7 @@ class Module1Calculator:
 
 
     @staticmethod
-    def _prepare_component_input_series(
+    def prepare_component_input_series(
         sr: pd.Series,
         input_preparation: dict | None,
         horizons: dict | None,
@@ -672,7 +672,7 @@ class Module1Calculator:
 
             score_input = self.features[feature_name]
             if apply_input_preparation:
-                score_input = self._prepare_component_input_series(
+                score_input = self.prepare_component_input_series(
                     score_input,
                     input_preparation,
                     self.horizons,
@@ -791,7 +791,7 @@ class Module1Calculator:
 
         score = self.features[feature_name]
         if apply_input_preparation:
-            score = self._prepare_component_input_series(
+            score = self.prepare_component_input_series(
                 score,
                 score_config.get("input_preparation"),
                 self.horizons,
@@ -869,7 +869,7 @@ class Module1Calculator:
 
             score_input = self.features[feature_name]
             if apply_input_preparation:
-                score_input = self._prepare_component_input_series(
+                score_input = self.prepare_component_input_series(
                     score_input,
                     score_config.get("input_preparation"),
                     self.horizons,
@@ -1138,7 +1138,7 @@ class Module1Calculator:
 
 
     @staticmethod
-    def _parse_rule_scores_n_parts(
+    def parse_rule_scores_n_parts(
         rule_scores: Mapping,
         *,
         expected_parts: int,
@@ -1213,7 +1213,7 @@ class Module1Calculator:
 
 
     @staticmethod
-    def _resolve_rule_mapped_stabilization_config(
+    def resolve_rule_mapped_stabilization_config(
         stance_config: dict,
         required_state_components,
         *,
@@ -1318,11 +1318,11 @@ class Module1Calculator:
 
 
     @staticmethod
-    def _resolve_rule_mapped_stance_spec(
+    def resolve_rule_mapped_stance_spec(
         stance_name: str,
         stance_config: dict,
         component_config: dict | None,
-    ) -> _RuleMappedStanceSpec:
+    ) -> RuleMappedStanceSpec:
         context = f"rule_mapped stance {stance_name}"
         if not isinstance(stance_name, str) or stance_name.strip() == "":
             raise ValueError("rule_mapped stance name must be a non-empty string.")
@@ -1491,14 +1491,14 @@ class Module1Calculator:
             raise ValueError(f"{context}.rule_mapped.state_inputs names must be unique.")
 
         stabilization_config = (
-            Module1Calculator._resolve_rule_mapped_stabilization_config(
+            Module1Calculator.resolve_rule_mapped_stabilization_config(
                 rule_mapped,
                 state_input_names,
                 context=f"{context}.rule_mapped",
             )
         )
 
-        rule_scores = Module1Calculator._parse_rule_scores_n_parts(
+        rule_scores = Module1Calculator.parse_rule_scores_n_parts(
             rule_mapped.get("rule_scores"),
             expected_parts=len(state_inputs),
             context=f"{context}.rule_mapped",
@@ -1582,7 +1582,7 @@ class Module1Calculator:
                 f"{context}.rule_mapped",
             )
 
-        return _RuleMappedStanceSpec(
+        return RuleMappedStanceSpec(
             stance_name=stance_name,
             function=function,
             state_inputs=tuple(state_inputs),
@@ -1964,7 +1964,7 @@ class Module1Calculator:
 
 
     @staticmethod
-    def _build_weighted_stance_score_breakdown(
+    def build_weighted_stance_score_breakdown(
         scores: pd.DataFrame,
         stance_name: str,
         stance_config: dict,
@@ -2129,7 +2129,7 @@ class Module1Calculator:
         state_tuple: tuple,
         score_tuple: tuple,
         base_score,
-        spec: _RuleMappedStanceSpec,
+        spec: RuleMappedStanceSpec,
         thresholds_by_input: dict[str, dict],
         buckets_by_input: dict[str, dict],
     ) -> dict:
@@ -2194,12 +2194,12 @@ class Module1Calculator:
 
 
     @staticmethod
-    def _build_rule_mapped_stance_score_breakdown(
+    def build_rule_mapped_stance_score_breakdown(
         scores: pd.DataFrame,
         component_config: dict,
         stance_name: str,
         stance_config: dict,
-        spec: _RuleMappedStanceSpec,
+        spec: RuleMappedStanceSpec,
         *,
         stabilization_overrides: dict | None = None,
     ) -> pd.DataFrame:
@@ -2215,7 +2215,7 @@ class Module1Calculator:
         stabilization_config = spec.stabilization_config
         if stabilization_overrides is not None:
             stabilization_config = (
-                Module1Calculator._resolve_rule_mapped_stabilization_config(
+                Module1Calculator.resolve_rule_mapped_stabilization_config(
                     {"state_stabilization": stabilization_overrides},
                     [state_input.name for state_input in spec.state_inputs],
                     context=f"rule_mapped stance {stance_name}",
@@ -2719,7 +2719,7 @@ class Module1Calculator:
             if score_output is None:
                 raise ValueError(f"Exposure stance {stance_name} score output is missing.")
 
-            breakdown = self._build_weighted_stance_score_breakdown(
+            breakdown = self.build_weighted_stance_score_breakdown(
                 self.scores,
                 stance_name,
                 stance_config,
@@ -2731,12 +2731,12 @@ class Module1Calculator:
             if score_output is None:
                 raise ValueError(f"Exposure stance {stance_name} score output is missing.")
 
-            rule_mapped_spec = self._resolve_rule_mapped_stance_spec(
+            rule_mapped_spec = self.resolve_rule_mapped_stance_spec(
                 stance_name,
                 stance_config,
                 self.component_config,
             )
-            breakdown = self._build_rule_mapped_stance_score_breakdown(
+            breakdown = self.build_rule_mapped_stance_score_breakdown(
                 self.scores,
                 self.component_config,
                 stance_name,
