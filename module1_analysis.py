@@ -137,10 +137,10 @@ class Module1Analysis:
         )
 
         if normalized_level in {None, "component"}:
-            if self.result.component_config is None:
+            if self.result.module1_config is None:
                 raise ValueError("Run load_module1_config() before historical review.")
 
-            for component_name, component_config in self.result.component_config[
+            for component_name, component_config in self.result.module1_config[
                 "components"
             ].items():
                 score_col = component_config.get("score", {}).get("output")
@@ -152,10 +152,10 @@ class Module1Analysis:
                         aliases[self._normalize_review_label(alias)] = canonical
 
         if normalized_level in {None, "stance"}:
-            if self.result.exposure_stance_config is None:
+            if self.result.module1_config is None:
                 raise ValueError("Run load_module1_config() before historical review.")
 
-            for stance_name, stance_config in self.result.exposure_stance_config[
+            for stance_name, stance_config in self.result.module1_config[
                 "exposure_stances"
             ].items():
                 score_col = stance_config.get("score_output")
@@ -198,7 +198,7 @@ class Module1Analysis:
         kind: str = "target",
     ) -> TargetResolution:
         if level == "stance":
-            stance_config = self.result.exposure_stance_config["exposure_stances"][
+            stance_config = self.result.module1_config["exposure_stances"][
                 canonical_target
             ]
             score_col = stance_config.get("score_output")
@@ -240,7 +240,7 @@ class Module1Analysis:
                 ),
             )
 
-        component_config = self.result.component_config["components"][canonical_target]
+        component_config = self.result.module1_config["components"][canonical_target]
         score_col = component_config.get("score", {}).get("output")
         label_col = component_config.get("label", {}).get("output")
         return TargetResolution(
@@ -323,16 +323,16 @@ class Module1Analysis:
             )
 
         if normalized_level == "feature":
-            if self.result.feature_config is None:
+            if self.result.module1_config is None:
                 raise ValueError("Run load_module1_config() before resolving features.")
             matches = {
                 self._normalize_review_label(col): col
-                for col in self.result.feature_config["features"]
+                for col in self.result.module1_config["features"]
             }
             canonical = matches.get(normalized_target)
             if canonical is None:
                 raise ValueError(f"Unknown feature target: {target}")
-            feature_def = self.result.feature_config["features"][canonical]
+            feature_def = self.result.module1_config["features"][canonical]
             return TargetResolution(
                 requested_target=target,
                 normalized_target=normalized_target,
@@ -525,10 +525,10 @@ class Module1Analysis:
         self,
         component_score: str,
     ) -> tuple[str, dict]:
-        if self.result.component_config is None:
+        if self.result.module1_config is None:
             raise ValueError("Run load_module1_config() first.")
 
-        for component_name, component_config in self.result.component_config[
+        for component_name, component_config in self.result.module1_config[
             "components"
         ].items():
             if component_config.get("score", {}).get("output") == component_score:
@@ -554,10 +554,10 @@ class Module1Analysis:
         if self.result.data is not None and feature_name in self.result.data.columns:
             return (feature_name,), {}
 
-        if self.result.feature_config is None:
+        if self.result.module1_config is None:
             raise ValueError("Run load_module1_config() first.")
 
-        feature_defs = self.result.feature_config["features"]
+        feature_defs = self.result.module1_config["features"]
 
         if feature_name not in feature_defs:
             raise ValueError(f"Feature not found in feature_config: {feature_name}")

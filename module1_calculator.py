@@ -23,9 +23,6 @@ class Module1Result:
     stance_scores: Any
     exposure_stance: Any
     module1_config: Any
-    feature_config: Any
-    component_config: Any
-    exposure_stance_config: Any
     horizons: Any
     default_horizons: Any
     horizon_overrides: Any
@@ -2885,11 +2882,6 @@ class Module1Calculator:
             stance_scores=self._copy_module1_result_value(self.stance_scores),
             exposure_stance=self._copy_module1_result_value(self.exposure_stance),
             module1_config=self._copy_module1_result_value(self.module1_config),
-            feature_config=self._copy_module1_result_value(self.feature_config),
-            component_config=self._copy_module1_result_value(self.component_config),
-            exposure_stance_config=self._copy_module1_result_value(
-                self.exposure_stance_config
-            ),
             horizons=self._copy_module1_result_value(self.horizons),
             default_horizons=self._copy_module1_result_value(self.default_horizons),
             horizon_overrides=self._copy_module1_result_value(self.horizon_overrides),
