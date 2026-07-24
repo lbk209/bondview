@@ -1,3 +1,4 @@
+import copy
 import warnings
 from dataclasses import replace
 from numbers import Real
@@ -26,15 +27,17 @@ class Module1HistoricalAnalysis:
         self.component_config = (
             None
             if module1_config is None
-            else {"components": module1_config["components"]}
+            else copy.deepcopy({"components": module1_config["components"]})
         )
         self.exposure_stance_config = (
             None
             if module1_config is None
-            else {
-                "stance_label_rules": module1_config["stance_label_rules"],
-                "exposure_stances": module1_config["exposure_stances"],
-            }
+            else copy.deepcopy(
+                {
+                    "stance_label_rules": module1_config["stance_label_rules"],
+                    "exposure_stances": module1_config["exposure_stances"],
+                }
+            )
         )
         self.historical_context = historical_context
         self.historical_cases = historical_cases

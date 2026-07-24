@@ -218,7 +218,7 @@ class Module1Analysis:
                 score_col=score_col,
                 label_col=label_col,
                 strength_col=strength_col,
-                config=stance_config,
+                config=copy.deepcopy(stance_config),
                 related_score_cols=tuple(
                     col for col in [score_col] if col is not None
                 ),
@@ -252,7 +252,7 @@ class Module1Analysis:
             score_col=score_col,
             label_col=label_col,
             strength_col=None,
-            config=component_config,
+            config=copy.deepcopy(component_config),
             related_score_cols=tuple(col for col in [score_col] if col is not None),
             related_label_cols=tuple(col for col in [label_col] if col is not None),
             related_targets=((level, canonical_target),),
@@ -342,7 +342,7 @@ class Module1Analysis:
                 score_col=canonical,
                 label_col=None,
                 strength_col=None,
-                config=feature_def,
+                config=copy.deepcopy(feature_def),
                 related_score_cols=(canonical,),
                 related_targets=(("feature", canonical),),
                 source_layer="feature",
