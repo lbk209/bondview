@@ -1798,7 +1798,7 @@ def validate_module1_config(config: dict) -> dict:
             )
         elif state_input_count:
             try:
-                parsed_rule_scores = Module1Calculator._parse_rule_scores_n_parts(
+                parsed_rule_scores = Module1Calculator.parse_rule_scores_n_parts(
                     rule_scores,
                     expected_parts=state_input_count,
                     context=f"{section_name}.{stance_name}.rule_mapped",
@@ -2379,7 +2379,7 @@ def validate_module1_config(config: dict) -> dict:
             state_stabilization = rule_mapped.get("state_stabilization")
             if isinstance(state_stabilization, dict):
                 try:
-                    Module1Calculator._resolve_rule_mapped_stabilization_config(
+                    Module1Calculator.resolve_rule_mapped_stabilization_config(
                         rule_mapped,
                         ordered_names,
                         context=f"{section_name}.{stance_name}.rule_mapped",

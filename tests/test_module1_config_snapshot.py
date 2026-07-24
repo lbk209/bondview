@@ -9,7 +9,10 @@ import pandas as pd
 import yaml
 
 from module1_analysis import Module1Analysis
-from module1_calculator import Module1Calculator
+from module1_calculator import (
+    Module1Calculator,
+    RuleMappedStanceSpec,
+)
 from module1_diagnostics import Module1Diagnostics
 from module1_historical_analysis import Module1HistoricalAnalysis
 from module1_sensitivity_diagnostics import Module1SensitivityDiagnostics
@@ -224,6 +227,295 @@ class Module1ConfigSnapshotTests(unittest.TestCase):
             ],
             "credit_positive",
         )
+
+    def test_shared_capabilities_are_direct_static_interfaces(self):
+        shared_capabilities = (
+            "prepare_component_input_series",
+            "build_weighted_stance_score_breakdown",
+            "parse_rule_scores_n_parts",
+            "resolve_rule_mapped_stabilization_config",
+            "resolve_rule_mapped_stance_spec",
+            "build_rule_mapped_stance_score_breakdown",
+        )
+        removed_private_names = (
+            "_prepare_component_input_series",
+            "_build_weighted_stance_score_breakdown",
+            "_parse_rule_scores_n_parts",
+            "_resolve_rule_mapped_stabilization_config",
+            "_resolve_rule_mapped_stance_spec",
+            "_build_rule_mapped_stance_score_breakdown",
+        )
+
+        for capability_name in shared_capabilities:
+            self.assertIsInstance(
+                Module1Calculator.__dict__[capability_name],
+                staticmethod,
+            )
+        for private_name in removed_private_names:
+            self.assertFalse(hasattr(Module1Calculator, private_name))
+
+    def test_prepare_component_input_series_is_stateless_and_non_mutating(self):
+        series = pd.Series([1.0, 3.0, 5.0], name="input")
+        input_preparation = {"smoothing": "short"}
+        horizons = {"short": 2}
+        original_series = series.copy(deep=True)
+        original_input_preparation = copy.deepcopy(input_preparation)
+        original_horizons = copy.deepcopy(horizons)
+
+        prepared = Module1Calculator.prepare_component_input_series(
+            series,
+            input_preparation,
+            horizons,
+        )
+
+        pd.testing.assert_series_equal(
+            prepared,
+            pd.Series([float("nan"), 2.0, 4.0], name="input"),
+        )
+        pd.testing.assert_series_equal(series, original_series)
+        self.assertEqual(input_preparation, original_input_preparation)
+        self.assertEqual(horizons, original_horizons)
+        with self.assertRaisesRegex(ValueError, "Unknown horizon key: missing"):
+            Module1Calculator.prepare_component_input_series(
+                series,
+                {"smoothing": "missing"},
+                horizons,
+            )
+
+    def test_weighted_breakdown_is_stateless_and_non_mutating(self):
+        scores = pd.DataFrame(
+            {
+                "first_score": [1.0, 2.0, float("nan")],
+                "second_score": [3.0, 4.0, 5.0],
+            }
+        )
+        stance_config = {
+            "inputs": [
+                {"component": "first_score", "weight": 0.25},
+                {"component": "second_score", "weight": 0.75},
+            ],
+            "score_output": "combined_score",
+        }
+        original_scores = scores.copy(deep=True)
+        original_stance_config = copy.deepcopy(stance_config)
+
+        breakdown = Module1Calculator.build_weighted_stance_score_breakdown(
+            scores,
+            "example",
+            stance_config,
+        )
+
+        self.assertEqual(
+            list(breakdown.columns),
+            [
+                "first_score",
+                "second_score",
+                "first_score_weight",
+                "first_score_contribution",
+                "second_score_weight",
+                "second_score_contribution",
+                "combined_score",
+            ],
+        )
+        pd.testing.assert_series_equal(
+            breakdown["combined_score"],
+            pd.Series([2.5, 3.5, float("nan")], name="combined_score"),
+        )
+        pd.testing.assert_frame_equal(scores, original_scores)
+        self.assertEqual(stance_config, original_stance_config)
+
+        invalid_config = copy.deepcopy(stance_config)
+        invalid_config.pop("score_output")
+        with self.assertRaisesRegex(
+            ValueError,
+            "Exposure stance example score output is missing",
+        ):
+            Module1Calculator.build_weighted_stance_score_breakdown(
+                scores,
+                "example",
+                invalid_config,
+            )
+
+    def test_rule_parsing_and_stabilization_interfaces_are_non_mutating(self):
+        rule_scores = {"positive|wide": 1, "negative|tight": -1.5}
+        original_rule_scores = copy.deepcopy(rule_scores)
+        parsed = Module1Calculator.parse_rule_scores_n_parts(
+            rule_scores,
+            expected_parts=2,
+            context="example",
+        )
+
+        self.assertEqual(
+            parsed,
+            {
+                ("positive", "wide"): 1.0,
+                ("negative", "tight"): -1.5,
+            },
+        )
+        self.assertEqual(rule_scores, original_rule_scores)
+        with self.assertRaisesRegex(
+            ValueError,
+            "example rule score key must have exactly 2 part",
+        ):
+            Module1Calculator.parse_rule_scores_n_parts(
+                {"positive": 1.0},
+                expected_parts=2,
+                context="example",
+            )
+
+        stance_config = {
+            "state_stabilization": {
+                "state": {
+                    "hysteresis_buffer": 0,
+                    "min_state_persistence": 2,
+                }
+            }
+        }
+        original_stance_config = copy.deepcopy(stance_config)
+        stabilization = (
+            Module1Calculator.resolve_rule_mapped_stabilization_config(
+                stance_config,
+                ["state"],
+                context="example",
+            )
+        )
+
+        self.assertEqual(
+            stabilization,
+            {
+                "state": {
+                    "hysteresis_buffer": 0.0,
+                    "min_state_persistence": 2,
+                }
+            },
+        )
+        self.assertEqual(stance_config, original_stance_config)
+
+        invalid_stance_config = copy.deepcopy(stance_config)
+        invalid_stance_config["state_stabilization"]["state"].pop(
+            "hysteresis_buffer"
+        )
+        with self.assertRaisesRegex(
+            ValueError,
+            "example state_stabilization.state.hysteresis_buffer is required",
+        ):
+            Module1Calculator.resolve_rule_mapped_stabilization_config(
+                invalid_stance_config,
+                ["state"],
+                context="example",
+            )
+
+    def test_rule_mapped_capabilities_are_stateless_and_non_mutating(self):
+        config = self.result.module1_config
+        component_config = {"components": copy.deepcopy(config["components"])}
+        original_component_config = copy.deepcopy(component_config)
+        original_scores = self.result.scores.copy(deep=True)
+        configured_rule_mapped_stances = []
+
+        for stance_name, configured_stance in config["exposure_stances"].items():
+            if "rule_mapped" not in configured_stance:
+                continue
+
+            configured_rule_mapped_stances.append(stance_name)
+            stance_config = copy.deepcopy(configured_stance)
+            original_stance_config = copy.deepcopy(stance_config)
+            spec = Module1Calculator.resolve_rule_mapped_stance_spec(
+                stance_name,
+                stance_config,
+                component_config,
+            )
+            original_spec = copy.deepcopy(spec)
+
+            self.assertIsInstance(spec, RuleMappedStanceSpec)
+            self.assertEqual(spec.stance_name, stance_name)
+            self.assertEqual(stance_config, original_stance_config)
+            self.assertEqual(component_config, original_component_config)
+
+            breakdown = (
+                Module1Calculator.build_rule_mapped_stance_score_breakdown(
+                    self.result.scores,
+                    component_config,
+                    stance_name,
+                    stance_config,
+                    spec,
+                )
+            )
+            required_score_columns = [
+                state_input.source_score_col for state_input in spec.state_inputs
+            ]
+            expected_columns = list(required_score_columns)
+            for state_input in spec.state_inputs:
+                expected_columns.extend(
+                    [
+                        state_input.raw_output_col,
+                        state_input.stabilized_output_col,
+                    ]
+                )
+            expected_columns.extend(
+                state_input.stabilization_changed_output_col
+                for state_input in spec.state_inputs
+            )
+            expected_columns.append(spec.stabilization_changed_any_output_col)
+            expected_columns.append(spec.rule_case_output_col)
+            if spec.base_rule_score_output_col is not None:
+                expected_columns.append(spec.base_rule_score_output_col)
+            if spec.adjustment is not None:
+                expected_columns.extend(spec.adjustment.metadata_output_cols)
+                if spec.adjustment.adjustment_output_col is not None:
+                    expected_columns.append(spec.adjustment.adjustment_output_col)
+            expected_columns.append(spec.score_output_col)
+
+            self.assertEqual(list(breakdown.columns), expected_columns)
+            pd.testing.assert_series_equal(
+                breakdown[spec.score_output_col],
+                self.result.stance_scores[spec.score_output_col],
+            )
+            pd.testing.assert_frame_equal(self.result.scores, original_scores)
+            self.assertEqual(component_config, original_component_config)
+            self.assertEqual(stance_config, original_stance_config)
+            self.assertEqual(spec, original_spec)
+
+        self.assertEqual(
+            configured_rule_mapped_stances,
+            ["duration", "credit", "curve_positioning"],
+        )
+
+        invalid_stance_config = copy.deepcopy(
+            config["exposure_stances"]["duration"]
+        )
+        invalid_stance_config["rule_mapped"]["function"] = "invalid"
+        with self.assertRaisesRegex(
+            ValueError,
+            "rule_mapped.function must be rule_mapped_stance",
+        ):
+            Module1Calculator.resolve_rule_mapped_stance_spec(
+                "duration",
+                invalid_stance_config,
+                component_config,
+            )
+
+        valid_stance_config = copy.deepcopy(
+            config["exposure_stances"]["duration"]
+        )
+        valid_spec = Module1Calculator.resolve_rule_mapped_stance_spec(
+            "duration",
+            valid_stance_config,
+            component_config,
+        )
+        missing_scores = self.result.scores.drop(
+            columns=[valid_spec.state_inputs[0].source_score_col]
+        )
+        with self.assertRaisesRegex(
+            ValueError,
+            "Missing component score column",
+        ):
+            Module1Calculator.build_rule_mapped_stance_score_breakdown(
+                missing_scores,
+                component_config,
+                "duration",
+                valid_stance_config,
+                valid_spec,
+            )
 
     def test_migrated_consumers_resolve_metadata_from_module1_config(self):
         config = self.result.module1_config
