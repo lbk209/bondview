@@ -8,7 +8,7 @@ from module1_analysis import Module1Analysis, TargetContextResult
 from module1_calculator import (
     Module1Calculator,
     Module1Result,
-    _RuleMappedStanceSpec,
+    RuleMappedStanceSpec,
 )
 
 
@@ -17,7 +17,7 @@ class RuleMappedDiagnosticSpec:
     target: str
     stance_config: dict
     function: str
-    rule_mapped_schema: _RuleMappedStanceSpec
+    rule_mapped_schema: RuleMappedStanceSpec
     score_input_cols: tuple[str, ...]
     raw_state_cols: tuple[str, ...]
     stabilized_state_cols: tuple[str, ...]
@@ -53,9 +53,25 @@ class Module1Diagnostics:
         self.scores = self._copy_result_value(result.scores)
         self.labels = self._copy_result_value(result.labels)
         self.exposure_stance = self._copy_result_value(result.exposure_stance)
-        self.feature_config = self._copy_result_value(result.feature_config)
-        self.component_config = self._copy_result_value(result.component_config)
-        self.exposure_stance_config = self._copy_result_value(result.exposure_stance_config)
+        module1_config = result.module1_config
+        self.feature_config = self._copy_result_value(
+            None
+            if module1_config is None
+            else {"features": module1_config["features"]}
+        )
+        self.component_config = self._copy_result_value(
+            None
+            if module1_config is None
+            else {"components": module1_config["components"]}
+        )
+        self.exposure_stance_config = self._copy_result_value(
+            None
+            if module1_config is None
+            else {
+                "stance_label_rules": module1_config["stance_label_rules"],
+                "exposure_stances": module1_config["exposure_stances"],
+            }
+        )
         self.horizons = self._copy_result_value(result.horizons)
 
     @staticmethod
@@ -111,7 +127,9 @@ class Module1Diagnostics:
 
     def _component_by_score_output(self) -> dict[str, str]:
         if self.component_config is None:
-            raise ValueError("Run load_module1_config() before resolving component outputs.")
+            raise ValueError(
+                "Module1Result.module1_config is required for component resolution."
+            )
 
         return {
             component.get("score", {}).get("output"): component_name
@@ -126,7 +144,9 @@ class Module1Diagnostics:
         if target is None:
             return None
         if self.exposure_stance_config is None:
-            raise ValueError("Run load_module1_config() before prepared-input diagnostics.")
+            raise ValueError(
+                "Module1Result.module1_config is required for prepared-input diagnostics."
+            )
 
         stance_config = self.exposure_stance_config["exposure_stances"].get(target)
         if stance_config is None:
@@ -168,7 +188,9 @@ class Module1Diagnostics:
         kinds: tuple[str, ...] = ("prepared", "filtered"),
     ) -> tuple[DiagnosticInputSpec, ...]:
         if self.component_config is None:
-            raise ValueError("Run load_module1_config() before prepared-input diagnostics.")
+            raise ValueError(
+                "Module1Result.module1_config is required for prepared-input diagnostics."
+            )
 
         components = self.component_config["components"]
         target_component_names = self._diagnostic_component_names_for_target(target)
@@ -235,9 +257,13 @@ class Module1Diagnostics:
 
     def _prepared_filtered_input_columns(self, target: str) -> pd.DataFrame:
         if self.features is None:
-            raise ValueError("Run calculate_features() before prepared-input diagnostics.")
+            raise ValueError(
+                "Module1Result.features is required for prepared-input diagnostics."
+            )
         if self.component_config is None:
-            raise ValueError("Run load_module1_config() before prepared-input diagnostics.")
+            raise ValueError(
+                "Module1Result.module1_config is required for prepared-input diagnostics."
+            )
 
         components = self.component_config["components"]
         specs = self._diagnostic_input_specs(
@@ -255,7 +281,7 @@ class Module1Diagnostics:
             if spec.source not in self.features.columns:
                 continue
             score_config = components.get(spec.component, {}).get("score", {})
-            prepared[spec.output] = Module1Calculator._prepare_component_input_series(
+            prepared[spec.output] = Module1Calculator.prepare_component_input_series(
                 self.features[spec.source],
                 score_config.get("input_preparation"),
                 self.horizons,
@@ -296,23 +322,24 @@ class Module1Diagnostics:
     ) -> pd.DataFrame:
         if self.scores is None:
             raise ValueError(
-                "Run calculate_component_scores() before _trace_weighted_stance_score()."
+                "Module1Result.scores is required for weighted stance diagnostics."
             )
         if self.exposure_stance is None:
             raise ValueError(
-                "Run calculate_exposure_stance() before _trace_weighted_stance_score()."
+                "Module1Result.exposure_stance is required for weighted stance diagnostics."
             )
         if self.component_config is None:
             raise ValueError(
-                "Run load_module1_config() before _trace_weighted_stance_score()."
+                "Module1Result.module1_config is required for weighted stance diagnostics."
             )
         if self.exposure_stance_config is None:
             raise ValueError(
-                "Run load_module1_config() before _trace_weighted_stance_score()."
+                "Module1Result.module1_config is required for weighted stance diagnostics."
             )
         if include_labels and self.labels is None:
             raise ValueError(
-                "Run calculate_component_labels() before _trace_weighted_stance_score(include_labels=True)."
+                "Module1Result.labels is required for weighted stance diagnostics "
+                "with include_labels=True."
             )
 
         ctx = self.get_target_context(
@@ -340,7 +367,7 @@ class Module1Diagnostics:
                 f"{missing_stance_cols}"
             )
 
-        diagnostics = Module1Calculator._build_weighted_stance_score_breakdown(
+        diagnostics = Module1Calculator.build_weighted_stance_score_breakdown(
             self.scores,
             stance_name,
             stance_config,
@@ -409,7 +436,7 @@ class Module1Diagnostics:
                 f"Unsupported rule-mapped stance diagnostic target {target}: "
                 f"{function}. Schema-backed rule_mapped config is required."
             )
-        rule_mapped_schema = Module1Calculator._resolve_rule_mapped_stance_spec(
+        rule_mapped_schema = Module1Calculator.resolve_rule_mapped_stance_spec(
             stance_name,
             stance_config,
             self.component_config,
@@ -474,20 +501,20 @@ class Module1Diagnostics:
     ) -> pd.DataFrame:
         if self.scores is None:
             raise ValueError(
-                "Run calculate_component_scores() before rule-mapped stance diagnostics."
+                "Module1Result.scores is required for rule-mapped stance diagnostics."
             )
         if self.exposure_stance is None:
             raise ValueError(
-                "Run calculate_exposure_stance() before rule-mapped stance diagnostics."
+                "Module1Result.exposure_stance is required for rule-mapped stance diagnostics."
             )
         if self.exposure_stance_config is None:
             raise ValueError(
-                "Run load_module1_config() before rule-mapped stance diagnostics."
+                "Module1Result.module1_config is required for rule-mapped stance diagnostics."
             )
         if include_labels and self.labels is None:
             raise ValueError(
-                "Run calculate_component_labels() before rule-mapped stance "
-                "diagnostics with include_labels=True."
+                "Module1Result.labels is required for rule-mapped stance diagnostics "
+                "with include_labels=True."
             )
 
         ctx = self.get_target_context(
@@ -513,7 +540,7 @@ class Module1Diagnostics:
                 f"{missing_stance_cols}"
             )
 
-        diagnostics = Module1Calculator._build_rule_mapped_stance_score_breakdown(
+        diagnostics = Module1Calculator.build_rule_mapped_stance_score_breakdown(
             self.scores,
             self.component_config,
             spec.target,

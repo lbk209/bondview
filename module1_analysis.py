@@ -137,10 +137,12 @@ class Module1Analysis:
         )
 
         if normalized_level in {None, "component"}:
-            if self.result.component_config is None:
-                raise ValueError("Run load_module1_config() before historical review.")
+            if self.result.module1_config is None:
+                raise ValueError(
+                    "Module1Result.module1_config is required for historical review."
+                )
 
-            for component_name, component_config in self.result.component_config[
+            for component_name, component_config in self.result.module1_config[
                 "components"
             ].items():
                 score_col = component_config.get("score", {}).get("output")
@@ -152,10 +154,12 @@ class Module1Analysis:
                         aliases[self._normalize_review_label(alias)] = canonical
 
         if normalized_level in {None, "stance"}:
-            if self.result.exposure_stance_config is None:
-                raise ValueError("Run load_module1_config() before historical review.")
+            if self.result.module1_config is None:
+                raise ValueError(
+                    "Module1Result.module1_config is required for historical review."
+                )
 
-            for stance_name, stance_config in self.result.exposure_stance_config[
+            for stance_name, stance_config in self.result.module1_config[
                 "exposure_stances"
             ].items():
                 score_col = stance_config.get("score_output")
@@ -173,7 +177,9 @@ class Module1Analysis:
 
     def _historical_review_target_groups(self) -> dict:
         if self.result.module1_config is None:
-            raise ValueError("Run load_module1_config() before historical review.")
+            raise ValueError(
+                "Module1Result.module1_config is required for historical review."
+            )
 
         target_groups = (
             self.result.module1_config
@@ -198,7 +204,7 @@ class Module1Analysis:
         kind: str = "target",
     ) -> TargetResolution:
         if level == "stance":
-            stance_config = self.result.exposure_stance_config["exposure_stances"][
+            stance_config = self.result.module1_config["exposure_stances"][
                 canonical_target
             ]
             score_col = stance_config.get("score_output")
@@ -218,7 +224,7 @@ class Module1Analysis:
                 score_col=score_col,
                 label_col=label_col,
                 strength_col=strength_col,
-                config=stance_config,
+                config=copy.deepcopy(stance_config),
                 related_score_cols=tuple(
                     col for col in [score_col] if col is not None
                 ),
@@ -240,7 +246,7 @@ class Module1Analysis:
                 ),
             )
 
-        component_config = self.result.component_config["components"][canonical_target]
+        component_config = self.result.module1_config["components"][canonical_target]
         score_col = component_config.get("score", {}).get("output")
         label_col = component_config.get("label", {}).get("output")
         return TargetResolution(
@@ -252,7 +258,7 @@ class Module1Analysis:
             score_col=score_col,
             label_col=label_col,
             strength_col=None,
-            config=component_config,
+            config=copy.deepcopy(component_config),
             related_score_cols=tuple(col for col in [score_col] if col is not None),
             related_label_cols=tuple(col for col in [label_col] if col is not None),
             related_targets=((level, canonical_target),),
@@ -297,7 +303,9 @@ class Module1Analysis:
 
         if normalized_level == "raw_input":
             if self.result.data is None:
-                raise ValueError("Run load_data() before resolving raw inputs.")
+                raise ValueError(
+                    "Module1Result.data is required for raw-input resolution."
+                )
             matches = {
                 self._normalize_review_label(col): col
                 for col in self.result.data.columns
@@ -323,16 +331,18 @@ class Module1Analysis:
             )
 
         if normalized_level == "feature":
-            if self.result.feature_config is None:
-                raise ValueError("Run load_module1_config() before resolving features.")
+            if self.result.module1_config is None:
+                raise ValueError(
+                    "Module1Result.module1_config is required for feature resolution."
+                )
             matches = {
                 self._normalize_review_label(col): col
-                for col in self.result.feature_config["features"]
+                for col in self.result.module1_config["features"]
             }
             canonical = matches.get(normalized_target)
             if canonical is None:
                 raise ValueError(f"Unknown feature target: {target}")
-            feature_def = self.result.feature_config["features"][canonical]
+            feature_def = self.result.module1_config["features"][canonical]
             return TargetResolution(
                 requested_target=target,
                 normalized_target=normalized_target,
@@ -342,7 +352,7 @@ class Module1Analysis:
                 score_col=canonical,
                 label_col=None,
                 strength_col=None,
-                config=feature_def,
+                config=copy.deepcopy(feature_def),
                 related_score_cols=(canonical,),
                 related_targets=(("feature", canonical),),
                 source_layer="feature",
@@ -525,10 +535,12 @@ class Module1Analysis:
         self,
         component_score: str,
     ) -> tuple[str, dict]:
-        if self.result.component_config is None:
-            raise ValueError("Run load_module1_config() first.")
+        if self.result.module1_config is None:
+            raise ValueError(
+                "Module1Result.module1_config is required for component resolution."
+            )
 
-        for component_name, component_config in self.result.component_config[
+        for component_name, component_config in self.result.module1_config[
             "components"
         ].items():
             if component_config.get("score", {}).get("output") == component_score:
@@ -554,10 +566,12 @@ class Module1Analysis:
         if self.result.data is not None and feature_name in self.result.data.columns:
             return (feature_name,), {}
 
-        if self.result.feature_config is None:
-            raise ValueError("Run load_module1_config() first.")
+        if self.result.module1_config is None:
+            raise ValueError(
+                "Module1Result.module1_config is required for dependency resolution."
+            )
 
-        feature_defs = self.result.feature_config["features"]
+        feature_defs = self.result.module1_config["features"]
 
         if feature_name not in feature_defs:
             raise ValueError(f"Feature not found in feature_config: {feature_name}")
@@ -837,15 +851,9 @@ class Module1Analysis:
         if table is not None:
             return table
 
-        missing_steps = {
-            "data": "load_data()",
-            "features": "calculate_features()",
-            "scores": "calculate_component_scores()",
-            "labels": "calculate_component_labels()",
-            "exposure_stance": "calculate_exposure_stance()",
-        }
-        step = missing_steps.get(table_name, f"create {table_name}")
-        raise ValueError(f"Run {step} before {purpose}; missing self.{table_name}.")
+        raise ValueError(
+            f"Module1Result.{table_name} is required for {purpose}."
+        )
 
     def _window_series_or_frame(self, obj, start=None, end=None):
         if obj is None:
