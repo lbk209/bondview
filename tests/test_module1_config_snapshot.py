@@ -261,12 +261,16 @@ def build_constructed_module1_result(**overrides) -> Module1Result:
                 "weighted_negative",
                 "weighted_neutral",
             ],
-            "weighted_strength": [
-                "weighted_moderate",
-                "weighted_moderate",
-                "weighted_moderate",
-                "weighted_weak",
-            ],
+            "weighted_strength": pd.Series(
+                [
+                    "weighted_moderate",
+                    "weighted_weak",
+                    "weighted_moderate",
+                    "weighted_weak",
+                ],
+                index=index,
+                dtype="object",
+            ),
             "rule_score": stance_scores["rule_score"],
             "rule_stance": [
                 "rule_positive",
@@ -274,12 +278,16 @@ def build_constructed_module1_result(**overrides) -> Module1Result:
                 "rule_negative",
                 "rule_positive",
             ],
-            "rule_strength": [
-                "rule_strong",
-                "rule_weak",
-                "rule_strong",
-                "rule_strong",
-            ],
+            "rule_strength": pd.Series(
+                [
+                    "rule_strong",
+                    "rule_weak",
+                    "rule_strong",
+                    "rule_strong",
+                ],
+                index=index,
+                dtype="object",
+            ),
         },
         index=index,
     )
@@ -527,6 +535,10 @@ class Module1ConfigSnapshotTests(unittest.TestCase):
             "resolve_rule_mapped_stabilization_config",
             "resolve_rule_mapped_stance_spec",
             "build_rule_mapped_stance_score_breakdown",
+            "calculate_component_score",
+            "classify_component_score_buckets",
+            "label_exposure_stance_score",
+            "calculate_exposure_stance_outputs",
         )
         removed_private_names = (
             "_prepare_component_input_series",
@@ -931,6 +943,89 @@ class Module1ConfigSnapshotTests(unittest.TestCase):
             sensitivity.module1_config["exposure_stances"],
         )
 
+    def test_horizon_scenarios_use_normal_calculators_and_apply_overrides(self):
+        cases = [
+            {"case_id": "same_a", "rates": 126},
+            {"case_id": "same_b", "rates": 126},
+            {"case_id": "modified", "rates": 90},
+        ]
+        with patch(
+            "module1_sensitivity_diagnostics.Module1Calculator",
+            wraps=Module1Calculator,
+        ) as calculator_class:
+            comparison = Module1SensitivityDiagnostics.compare_horizon_cases(
+                horizon_cases=cases,
+                target="duration_preference",
+                level="component",
+                output="summary",
+            )
+
+        self.assertEqual(calculator_class.call_count, 4)
+        same_a = comparison.loc[comparison["case_id"] == "same_a"].iloc[0]
+        same_b = comparison.loc[comparison["case_id"] == "same_b"].iloc[0]
+        modified = comparison.loc[
+            comparison["case_id"] == "modified"
+        ].iloc[0]
+        pd.testing.assert_series_equal(
+            same_a.drop(labels=["case_id"]),
+            same_b.drop(labels=["case_id"]),
+            check_names=False,
+        )
+        self.assertNotEqual(
+            modified["mixed"],
+            same_a["mixed"],
+        )
+        self.assertNotEqual(
+            modified["inconsistent"],
+            same_a["inconsistent"],
+        )
+
+    def test_credit_persistence_is_repeatable_and_does_not_mutate_result(self):
+        result = self.calculator.to_module1_result()
+        original_data = result.data.copy(deep=True)
+        original_features = result.features.copy(deep=True)
+        original_scores = result.scores.copy(deep=True)
+        original_labels = result.labels.copy(deep=True)
+        original_stance_scores = result.stance_scores.copy(deep=True)
+        original_exposure_stance = result.exposure_stance.copy(deep=True)
+        original_config = copy.deepcopy(result.module1_config)
+        sensitivity = Module1SensitivityDiagnostics(result)
+        cases = {
+            "base_p1_p1": {
+                "credit_spread_change": 1,
+                "credit_spread_state": 1,
+            }
+        }
+
+        first = sensitivity.compare_credit_stance_persistence_cases(
+            cases=cases,
+            include_diagnostics=False,
+        )
+        second = sensitivity.compare_credit_stance_persistence_cases(
+            cases=cases,
+            include_diagnostics=False,
+        )
+
+        self.assertEqual(first.keys(), second.keys())
+        for output_name in first:
+            pd.testing.assert_frame_equal(
+                first[output_name],
+                second[output_name],
+            )
+        pd.testing.assert_frame_equal(result.data, original_data)
+        pd.testing.assert_frame_equal(result.features, original_features)
+        pd.testing.assert_frame_equal(result.scores, original_scores)
+        pd.testing.assert_frame_equal(result.labels, original_labels)
+        pd.testing.assert_frame_equal(
+            result.stance_scores,
+            original_stance_scores,
+        )
+        pd.testing.assert_frame_equal(
+            result.exposure_stance,
+            original_exposure_stance,
+        )
+        self.assertEqual(result.module1_config, original_config)
+
     def test_representative_pipeline_outputs_are_unchanged(self):
         latest = pd.Timestamp("2026-05-08")
 
@@ -957,6 +1052,120 @@ class Module1ConfigSnapshotTests(unittest.TestCase):
 class Module1ConstructedResultTests(unittest.TestCase):
     def setUp(self):
         self.result = build_constructed_module1_result()
+
+    def test_sensitivity_constructs_no_calculator_and_uses_no_external_setup(self):
+        original_data = self.result.data.copy(deep=True)
+        original_scores = self.result.scores.copy(deep=True)
+        original_config = copy.deepcopy(self.result.module1_config)
+
+        with (
+            patch.object(
+                Module1Calculator,
+                "__init__",
+                side_effect=AssertionError("calculator initialization attempted"),
+            ),
+            patch.object(
+                Module1Calculator,
+                "_load_yaml_config",
+                side_effect=AssertionError("Module 1 YAML access attempted"),
+            ),
+            patch(
+                "module1_schema.validate_module1_config",
+                side_effect=AssertionError("raw configuration validation attempted"),
+            ),
+            patch("builtins.open", side_effect=AssertionError("file I/O attempted")),
+            patch(
+                "os.getenv",
+                side_effect=AssertionError("environment lookup attempted"),
+            ),
+        ):
+            sensitivity = Module1SensitivityDiagnostics(self.result)
+            first = sensitivity.trace_stance_score(
+                "rule",
+                include_raw_input=False,
+                include_labels=False,
+            )
+            second = sensitivity.trace_stance_score(
+                "rule",
+                include_raw_input=False,
+                include_labels=False,
+            )
+
+        self.assertFalse(hasattr(sensitivity, "calculator"))
+        self.assertNotIn("__getattr__", Module1SensitivityDiagnostics.__dict__)
+        for obsolete_name in (
+            "_CALCULATOR_STATE_FIELDS",
+            "_CALCULATOR_HELPERS",
+            "_sync_calculator_state",
+        ):
+            self.assertFalse(hasattr(Module1SensitivityDiagnostics, obsolete_name))
+        pd.testing.assert_frame_equal(first, second)
+        pd.testing.assert_frame_equal(self.result.data, original_data)
+        pd.testing.assert_frame_equal(self.result.scores, original_scores)
+        self.assertEqual(self.result.module1_config, original_config)
+
+    def test_explicit_calculator_capabilities_are_stateless_and_non_mutating(self):
+        features = self.result.features.copy(deep=True)
+        scores = self.result.scores.copy(deep=True)
+        config = copy.deepcopy(self.result.module1_config)
+        original_features = features.copy(deep=True)
+        original_scores = scores.copy(deep=True)
+        original_config = copy.deepcopy(config)
+
+        component_score = Module1Calculator.calculate_component_score(
+            features,
+            "component_a",
+            config["components"]["component_a"]["score"],
+            {"short": 2},
+            apply_score_smoothing=False,
+        )
+        pd.testing.assert_series_equal(
+            component_score,
+            pd.Series(
+                [float("nan"), 0.3, 0.7, 0.0],
+                index=features.index,
+                name="feature_a",
+            ),
+        )
+
+        stance_scores, exposure_stance = (
+            Module1Calculator.calculate_exposure_stance_outputs(
+                scores,
+                {"components": config["components"]},
+                {
+                    "stance_label_rules": config["stance_label_rules"],
+                    "exposure_stances": config["exposure_stances"],
+                },
+            )
+        )
+        pd.testing.assert_frame_equal(stance_scores, self.result.stance_scores)
+        pd.testing.assert_frame_equal(
+            exposure_stance,
+            self.result.exposure_stance,
+        )
+
+        bucket_config = {
+            "positive": {"score": 1.0},
+            "negative": {"score": -1.0},
+            "neutral": {"default": True},
+        }
+        original_bucket_config = copy.deepcopy(bucket_config)
+        buckets = Module1Calculator.classify_component_score_buckets(
+            pd.Series([1.0, 0.0, -1.0, float("nan")]),
+            bucket_config,
+        )
+        pd.testing.assert_series_equal(
+            buckets,
+            pd.Series(
+                ["positive", "neutral", "negative", pd.NA],
+                dtype="str",
+            ),
+        )
+
+        pd.testing.assert_frame_equal(features, original_features)
+        pd.testing.assert_frame_equal(scores, original_scores)
+        self.assertEqual(config, original_config)
+        self.assertEqual(bucket_config, original_bucket_config)
 
     def test_builder_creates_fresh_coherent_results_without_external_setup(self):
         with (
