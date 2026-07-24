@@ -155,7 +155,8 @@ class Module1HistoricalAnalysis:
             Load historical_context.yaml with strict expected-label validation.
 
             Historical expectations are checked against the already-loaded
-            module1_config.yaml, which is the source of truth for label vocabulary.
+            Module1Result.module1_config snapshot, which is the source of truth
+            for label vocabulary.
             When strict expected-label validation fails, the method raises ValueError
             before committing the candidate context and case tables to
             historical_context or historical_cases. The expected-label validation
@@ -258,7 +259,10 @@ class Module1HistoricalAnalysis:
             Build strict historical label vocabularies from loaded Module 1 config.
             """
             if self.component_config is None or self.exposure_stance_config is None:
-                raise ValueError("Run load_module1_config() before validating historical labels.")
+                raise ValueError(
+                    "Module1Result.module1_config is required for historical "
+                    "label validation."
+                )
 
             labels = {}
             strengths = {}
@@ -522,7 +526,10 @@ class Module1HistoricalAnalysis:
             expectations: pd.DataFrame,
         ) -> pd.DataFrame:
             if self.component_config is None or self.exposure_stance_config is None:
-                raise ValueError("Run load_module1_config() before load_historical_context().")
+                raise ValueError(
+                    "Module1Result.module1_config is required for historical "
+                    "context loading."
+                )
 
             event_map = {
                 event["context_id"]: event
@@ -1592,7 +1599,9 @@ class Module1HistoricalAnalysis:
                 negative_threshold = thresholds["negative"]
             elif level == "stance":
                 if self.exposure_stance_config is None:
-                    raise ValueError("Run load_module1_config() first.")
+                    raise ValueError(
+                        "Module1Result.module1_config is required for stance score zones."
+                    )
 
                 rules = self.exposure_stance_config.get("stance_label_rules", {})
                 direction_thresholds = rules.get("direction_thresholds", {})

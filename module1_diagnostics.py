@@ -127,7 +127,9 @@ class Module1Diagnostics:
 
     def _component_by_score_output(self) -> dict[str, str]:
         if self.component_config is None:
-            raise ValueError("Run load_module1_config() before resolving component outputs.")
+            raise ValueError(
+                "Module1Result.module1_config is required for component resolution."
+            )
 
         return {
             component.get("score", {}).get("output"): component_name
@@ -142,7 +144,9 @@ class Module1Diagnostics:
         if target is None:
             return None
         if self.exposure_stance_config is None:
-            raise ValueError("Run load_module1_config() before prepared-input diagnostics.")
+            raise ValueError(
+                "Module1Result.module1_config is required for prepared-input diagnostics."
+            )
 
         stance_config = self.exposure_stance_config["exposure_stances"].get(target)
         if stance_config is None:
@@ -184,7 +188,9 @@ class Module1Diagnostics:
         kinds: tuple[str, ...] = ("prepared", "filtered"),
     ) -> tuple[DiagnosticInputSpec, ...]:
         if self.component_config is None:
-            raise ValueError("Run load_module1_config() before prepared-input diagnostics.")
+            raise ValueError(
+                "Module1Result.module1_config is required for prepared-input diagnostics."
+            )
 
         components = self.component_config["components"]
         target_component_names = self._diagnostic_component_names_for_target(target)
@@ -251,9 +257,13 @@ class Module1Diagnostics:
 
     def _prepared_filtered_input_columns(self, target: str) -> pd.DataFrame:
         if self.features is None:
-            raise ValueError("Run calculate_features() before prepared-input diagnostics.")
+            raise ValueError(
+                "Module1Result.features is required for prepared-input diagnostics."
+            )
         if self.component_config is None:
-            raise ValueError("Run load_module1_config() before prepared-input diagnostics.")
+            raise ValueError(
+                "Module1Result.module1_config is required for prepared-input diagnostics."
+            )
 
         components = self.component_config["components"]
         specs = self._diagnostic_input_specs(
@@ -312,23 +322,24 @@ class Module1Diagnostics:
     ) -> pd.DataFrame:
         if self.scores is None:
             raise ValueError(
-                "Run calculate_component_scores() before _trace_weighted_stance_score()."
+                "Module1Result.scores is required for weighted stance diagnostics."
             )
         if self.exposure_stance is None:
             raise ValueError(
-                "Run calculate_exposure_stance() before _trace_weighted_stance_score()."
+                "Module1Result.exposure_stance is required for weighted stance diagnostics."
             )
         if self.component_config is None:
             raise ValueError(
-                "Run load_module1_config() before _trace_weighted_stance_score()."
+                "Module1Result.module1_config is required for weighted stance diagnostics."
             )
         if self.exposure_stance_config is None:
             raise ValueError(
-                "Run load_module1_config() before _trace_weighted_stance_score()."
+                "Module1Result.module1_config is required for weighted stance diagnostics."
             )
         if include_labels and self.labels is None:
             raise ValueError(
-                "Run calculate_component_labels() before _trace_weighted_stance_score(include_labels=True)."
+                "Module1Result.labels is required for weighted stance diagnostics "
+                "with include_labels=True."
             )
 
         ctx = self.get_target_context(
@@ -490,20 +501,20 @@ class Module1Diagnostics:
     ) -> pd.DataFrame:
         if self.scores is None:
             raise ValueError(
-                "Run calculate_component_scores() before rule-mapped stance diagnostics."
+                "Module1Result.scores is required for rule-mapped stance diagnostics."
             )
         if self.exposure_stance is None:
             raise ValueError(
-                "Run calculate_exposure_stance() before rule-mapped stance diagnostics."
+                "Module1Result.exposure_stance is required for rule-mapped stance diagnostics."
             )
         if self.exposure_stance_config is None:
             raise ValueError(
-                "Run load_module1_config() before rule-mapped stance diagnostics."
+                "Module1Result.module1_config is required for rule-mapped stance diagnostics."
             )
         if include_labels and self.labels is None:
             raise ValueError(
-                "Run calculate_component_labels() before rule-mapped stance "
-                "diagnostics with include_labels=True."
+                "Module1Result.labels is required for rule-mapped stance diagnostics "
+                "with include_labels=True."
             )
 
         ctx = self.get_target_context(

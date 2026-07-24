@@ -138,7 +138,9 @@ class Module1Analysis:
 
         if normalized_level in {None, "component"}:
             if self.result.module1_config is None:
-                raise ValueError("Run load_module1_config() before historical review.")
+                raise ValueError(
+                    "Module1Result.module1_config is required for historical review."
+                )
 
             for component_name, component_config in self.result.module1_config[
                 "components"
@@ -153,7 +155,9 @@ class Module1Analysis:
 
         if normalized_level in {None, "stance"}:
             if self.result.module1_config is None:
-                raise ValueError("Run load_module1_config() before historical review.")
+                raise ValueError(
+                    "Module1Result.module1_config is required for historical review."
+                )
 
             for stance_name, stance_config in self.result.module1_config[
                 "exposure_stances"
@@ -173,7 +177,9 @@ class Module1Analysis:
 
     def _historical_review_target_groups(self) -> dict:
         if self.result.module1_config is None:
-            raise ValueError("Run load_module1_config() before historical review.")
+            raise ValueError(
+                "Module1Result.module1_config is required for historical review."
+            )
 
         target_groups = (
             self.result.module1_config
@@ -297,7 +303,9 @@ class Module1Analysis:
 
         if normalized_level == "raw_input":
             if self.result.data is None:
-                raise ValueError("Run load_data() before resolving raw inputs.")
+                raise ValueError(
+                    "Module1Result.data is required for raw-input resolution."
+                )
             matches = {
                 self._normalize_review_label(col): col
                 for col in self.result.data.columns
@@ -324,7 +332,9 @@ class Module1Analysis:
 
         if normalized_level == "feature":
             if self.result.module1_config is None:
-                raise ValueError("Run load_module1_config() before resolving features.")
+                raise ValueError(
+                    "Module1Result.module1_config is required for feature resolution."
+                )
             matches = {
                 self._normalize_review_label(col): col
                 for col in self.result.module1_config["features"]
@@ -526,7 +536,9 @@ class Module1Analysis:
         component_score: str,
     ) -> tuple[str, dict]:
         if self.result.module1_config is None:
-            raise ValueError("Run load_module1_config() first.")
+            raise ValueError(
+                "Module1Result.module1_config is required for component resolution."
+            )
 
         for component_name, component_config in self.result.module1_config[
             "components"
@@ -555,7 +567,9 @@ class Module1Analysis:
             return (feature_name,), {}
 
         if self.result.module1_config is None:
-            raise ValueError("Run load_module1_config() first.")
+            raise ValueError(
+                "Module1Result.module1_config is required for dependency resolution."
+            )
 
         feature_defs = self.result.module1_config["features"]
 
@@ -837,15 +851,9 @@ class Module1Analysis:
         if table is not None:
             return table
 
-        missing_steps = {
-            "data": "load_data()",
-            "features": "calculate_features()",
-            "scores": "calculate_component_scores()",
-            "labels": "calculate_component_labels()",
-            "exposure_stance": "calculate_exposure_stance()",
-        }
-        step = missing_steps.get(table_name, f"create {table_name}")
-        raise ValueError(f"Run {step} before {purpose}; missing self.{table_name}.")
+        raise ValueError(
+            f"Module1Result.{table_name} is required for {purpose}."
+        )
 
     def _window_series_or_frame(self, obj, start=None, end=None):
         if obj is None:

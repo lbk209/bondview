@@ -1,7 +1,7 @@
 import copy
 import os
 import unittest
-from dataclasses import fields
+from dataclasses import fields, replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -11,11 +11,302 @@ import yaml
 from module1_analysis import Module1Analysis
 from module1_calculator import (
     Module1Calculator,
+    Module1Result,
     RuleMappedStanceSpec,
 )
 from module1_diagnostics import Module1Diagnostics
 from module1_historical_analysis import Module1HistoricalAnalysis
 from module1_sensitivity_diagnostics import Module1SensitivityDiagnostics
+
+
+def build_constructed_module1_result(**overrides) -> Module1Result:
+    """Build a small, coherent result without calculator initialization or I/O."""
+    index = pd.date_range("2024-01-01", periods=4, freq="D")
+    module1_config = {
+        "model_metadata": {
+            "target_groups": {
+                "constructed_group": {
+                    "component": ["component_a"],
+                    "stance": ["weighted"],
+                }
+            }
+        },
+        "horizons": {"short": 2},
+        "features": {
+            "feature_a": {
+                "method": "level",
+                "input": "raw_a",
+            },
+            "feature_b": {
+                "method": "change",
+                "input": "raw_b",
+            },
+        },
+        "components": {
+            "component_a": {
+                "score": {
+                    "function": "single_feature_score",
+                    "input": "feature_a",
+                    "input_preparation": {
+                        "smoothing": "short",
+                        "min_abs_value": 0.5,
+                    },
+                    "output": "component_a_score",
+                },
+                "label": {
+                    "output": "component_a_label",
+                    "thresholds": {
+                        "positive": 0.5,
+                        "negative": -0.5,
+                    },
+                    "labels": {
+                        "positive": "a_positive",
+                        "neutral": "a_neutral",
+                        "negative": "a_negative",
+                    },
+                },
+                "diagnostics": {
+                    "prepared_inputs": {
+                        "enabled": True,
+                    }
+                },
+            },
+            "component_b": {
+                "score": {
+                    "function": "single_feature_score",
+                    "input": "feature_b",
+                    "output": "component_b_score",
+                },
+                "label": {
+                    "output": "component_b_label",
+                    "thresholds": {
+                        "positive": 0.5,
+                        "negative": -0.5,
+                    },
+                    "labels": {
+                        "positive": "b_positive",
+                        "neutral": "b_neutral",
+                        "negative": "b_negative",
+                    },
+                },
+            },
+        },
+        "stance_label_rules": {
+            "direction_thresholds": {
+                "positive_min": 0.5,
+                "negative_max": -0.5,
+            },
+            "strength_thresholds": {
+                "weak_max_abs": 0.25,
+                "moderate_max_abs": 0.75,
+                "strong_min_abs": 0.75,
+            },
+        },
+        "exposure_stances": {
+            "weighted": {
+                "function": "weighted_sum",
+                "inputs": [
+                    {"component": "component_a_score", "weight": 0.6},
+                    {"component": "component_b_score", "weight": 0.4},
+                ],
+                "score_output": "weighted_score",
+                "stance_output": "weighted_stance",
+                "strength_output": "weighted_strength",
+                "labels": {
+                    "direction": {
+                        "positive": "weighted_positive",
+                        "neutral": "weighted_neutral",
+                        "negative": "weighted_negative",
+                    },
+                    "strength": {
+                        "weak": "weighted_weak",
+                        "moderate": "weighted_moderate",
+                        "strong": "weighted_strong",
+                    },
+                },
+            },
+            "rule": {
+                "function": "rule_mapped_stance",
+                "inputs": [
+                    {"component": "component_a_score"},
+                ],
+                "score_output": "rule_score",
+                "stance_output": "rule_stance",
+                "strength_output": "rule_strength",
+                "labels": {
+                    "direction": {
+                        "positive": "rule_positive",
+                        "neutral": "rule_neutral",
+                        "negative": "rule_negative",
+                    },
+                    "strength": {
+                        "weak": "rule_weak",
+                        "moderate": "rule_moderate",
+                        "strong": "rule_strong",
+                    },
+                },
+                "rule_mapped": {
+                    "function": "rule_mapped_stance",
+                    "state_inputs": [
+                        {
+                            "name": "state",
+                            "source_score": "component_a_score",
+                            "classification": "threshold_state",
+                            "raw_output": "rule_state_raw",
+                            "stabilized_output": "rule_state",
+                            "stabilization_changed_output": (
+                                "rule_state_stabilization_changed"
+                            ),
+                            "state_buckets": {
+                                "positive": "positive",
+                                "neutral": "neutral",
+                                "negative": "negative",
+                            },
+                        }
+                    ],
+                    "state_stabilization": {
+                        "state": {
+                            "hysteresis_buffer": 0,
+                            "min_state_persistence": 1,
+                        }
+                    },
+                    "rule_scores": {
+                        "positive": 1,
+                        "neutral": 0,
+                        "negative": -1,
+                    },
+                    "rule_case_output": "rule_case",
+                    "stabilization_changed_any_output": (
+                        "rule_stabilization_changed"
+                    ),
+                    "score_output": "rule_score",
+                    "stance_output": "rule_stance",
+                    "strength_output": "rule_strength",
+                },
+            },
+        },
+    }
+    data = pd.DataFrame(
+        {
+            "raw_a": [1.0, 2.0, 3.0, 4.0],
+            "raw_b": [10.0, 11.0, 13.0, 12.0],
+        },
+        index=index,
+    )
+    features = pd.DataFrame(
+        {
+            "feature_a": [0.2, 0.4, 1.0, -1.0],
+            "feature_b": [0.0, 1.0, 2.0, -1.0],
+        },
+        index=index,
+    )
+    scores = pd.DataFrame(
+        {
+            "component_a_score": [1.0, 0.0, -1.0, 1.0],
+            "component_b_score": [0.0, 1.0, 0.0, -1.0],
+        },
+        index=index,
+    )
+    labels = pd.DataFrame(
+        {
+            "component_a_label": [
+                "a_positive",
+                "a_neutral",
+                "a_negative",
+                "a_positive",
+            ],
+            "component_b_label": [
+                "b_neutral",
+                "b_positive",
+                "b_neutral",
+                "b_negative",
+            ],
+        },
+        index=index,
+    )
+
+    weighted_config = module1_config["exposure_stances"]["weighted"]
+    weighted_breakdown = Module1Calculator.build_weighted_stance_score_breakdown(
+        scores,
+        "weighted",
+        weighted_config,
+    )
+    rule_config = module1_config["exposure_stances"]["rule"]
+    component_config = {"components": module1_config["components"]}
+    rule_spec = Module1Calculator.resolve_rule_mapped_stance_spec(
+        "rule",
+        rule_config,
+        component_config,
+    )
+    rule_breakdown = Module1Calculator.build_rule_mapped_stance_score_breakdown(
+        scores,
+        component_config,
+        "rule",
+        rule_config,
+        rule_spec,
+    )
+    stance_scores = pd.DataFrame(
+        {
+            "weighted_score": weighted_breakdown["weighted_score"],
+            "rule_score": rule_breakdown["rule_score"],
+        },
+        index=index,
+    )
+    exposure_stance = pd.DataFrame(
+        {
+            "weighted_score": stance_scores["weighted_score"],
+            "weighted_stance": [
+                "weighted_positive",
+                "weighted_neutral",
+                "weighted_negative",
+                "weighted_neutral",
+            ],
+            "weighted_strength": [
+                "weighted_moderate",
+                "weighted_moderate",
+                "weighted_moderate",
+                "weighted_weak",
+            ],
+            "rule_score": stance_scores["rule_score"],
+            "rule_stance": [
+                "rule_positive",
+                "rule_neutral",
+                "rule_negative",
+                "rule_positive",
+            ],
+            "rule_strength": [
+                "rule_strong",
+                "rule_weak",
+                "rule_strong",
+                "rule_strong",
+            ],
+        },
+        index=index,
+    )
+
+    values = {
+        "data": data,
+        "features": features,
+        "scores": scores,
+        "labels": labels,
+        "stance_scores": stance_scores,
+        "exposure_stance": exposure_stance,
+        "module1_config": module1_config,
+        "horizons": {"short": 2},
+        "default_horizons": {"short": 2},
+        "horizon_overrides": None,
+        "module1_config_validation": {"issues": pd.DataFrame()},
+    }
+    unknown_overrides = sorted(set(overrides) - set(values))
+    if unknown_overrides:
+        raise TypeError(f"Unknown Module1Result override(s): {unknown_overrides}")
+    values.update(
+        {
+            field_name: copy.deepcopy(field_value)
+            for field_name, field_value in overrides.items()
+        }
+    )
+    return Module1Result(**values)
 
 
 class Module1ConfigSnapshotTests(unittest.TestCase):
@@ -661,6 +952,410 @@ class Module1ConfigSnapshotTests(unittest.TestCase):
             self.result.exposure_stance.loc[latest, "curve_positioning"],
             "short_end",
         )
+
+
+class Module1ConstructedResultTests(unittest.TestCase):
+    def setUp(self):
+        self.result = build_constructed_module1_result()
+
+    def test_builder_creates_fresh_coherent_results_without_external_setup(self):
+        with (
+            patch.object(
+                Module1Calculator,
+                "__init__",
+                side_effect=AssertionError("calculator initialization attempted"),
+            ),
+            patch("builtins.open", side_effect=AssertionError("file I/O attempted")),
+            patch(
+                "os.getenv",
+                side_effect=AssertionError("environment lookup attempted"),
+            ),
+        ):
+            first = build_constructed_module1_result()
+            second = build_constructed_module1_result()
+
+        table_names = (
+            "data",
+            "features",
+            "scores",
+            "labels",
+            "stance_scores",
+            "exposure_stance",
+        )
+        for table_name in table_names:
+            first_table = getattr(first, table_name)
+            second_table = getattr(second, table_name)
+            self.assertTrue(first_table.index.equals(first.data.index))
+            self.assertIsNot(first_table, second_table)
+
+        self.assertIsNot(first.module1_config, second.module1_config)
+        self.assertIsNot(
+            first.module1_config["components"],
+            second.module1_config["components"],
+        )
+        for component in first.module1_config["components"].values():
+            self.assertIn(component["score"]["output"], first.scores.columns)
+            self.assertIn(component["label"]["output"], first.labels.columns)
+        for stance in first.module1_config["exposure_stances"].values():
+            self.assertIn(stance["score_output"], first.stance_scores.columns)
+            self.assertIn(stance["score_output"], first.exposure_stance.columns)
+            self.assertIn(stance["stance_output"], first.exposure_stance.columns)
+            self.assertIn(stance["strength_output"], first.exposure_stance.columns)
+
+        first.data.loc[first.data.index[0], "raw_a"] = 999.0
+        first.module1_config["components"]["component_a"]["score"][
+            "output"
+        ] = "mutated"
+        self.assertEqual(second.data.iloc[0]["raw_a"], 1.0)
+        self.assertEqual(
+            second.module1_config["components"]["component_a"]["score"]["output"],
+            "component_a_score",
+        )
+
+    def test_analysis_resolves_constructed_result_layers_and_dependencies(self):
+        with (
+            patch.object(
+                Module1Calculator,
+                "__init__",
+                side_effect=AssertionError("calculator initialization attempted"),
+            ),
+            patch.object(
+                Module1Calculator,
+                "_load_yaml_config",
+                side_effect=AssertionError("Module 1 YAML access attempted"),
+            ),
+            patch(
+                "module1_schema.validate_module1_config",
+                side_effect=AssertionError("raw configuration validation attempted"),
+            ),
+            patch("yaml.safe_load", side_effect=AssertionError("YAML access attempted")),
+        ):
+            analysis = Module1Analysis(self.result)
+            raw_context = analysis.get_target_context(
+                "raw_a",
+                "raw_input",
+                dependency_level="none",
+            )
+            feature_context = analysis.get_target_context(
+                "feature_a",
+                "feature",
+                dependency_level="full",
+            )
+            component_context = analysis.get_target_context(
+                "component_a_score",
+                "component",
+                dependency_level="full",
+            )
+            stance_context = analysis.get_target_context(
+                "weighted_stance",
+                "stance",
+                dependency_level="full",
+            )
+            component_alias = analysis.resolve_target(
+                "component_a_label",
+                "component",
+            )
+            target_group = analysis.resolve_target(
+                "constructed_group",
+                allow_group=True,
+            )
+            raw_dependencies = analysis.raw_inputs_for_target(
+                "weighted",
+                "stance",
+            )
+
+        self.assertEqual(raw_context.returned_columns["target"], ("raw_a",))
+        self.assertEqual(
+            feature_context.returned_columns,
+            {
+                "target": ("feature_a",),
+                "component_scores": (),
+                "component_labels": (),
+                "features": ("feature_a",),
+                "raw_inputs": ("raw_a",),
+                "labels": (),
+                "strength": (),
+            },
+        )
+        self.assertEqual(component_alias.canonical_target, "component_a")
+        self.assertEqual(
+            target_group.related_targets,
+            (
+                ("component", "component_a"),
+                ("stance", "weighted"),
+            ),
+        )
+        self.assertEqual(
+            raw_dependencies,
+            ["raw_a", "raw_b"],
+        )
+        self.assertEqual(
+            list(component_context.data.columns),
+            [
+                "component_a_score",
+                "component_a_label",
+                "feature_a",
+                "raw_a",
+            ],
+        )
+        self.assertEqual(
+            list(stance_context.data.columns),
+            [
+                "weighted_score",
+                "weighted_stance",
+                "weighted_strength",
+                "component_a_score",
+                "component_b_score",
+                "component_a_label",
+                "component_b_label",
+                "feature_a",
+                "feature_b",
+                "raw_a",
+                "raw_b",
+            ],
+        )
+
+        component_alias.config["score"]["output"] = "mutated"
+        self.assertEqual(
+            self.result.module1_config["components"]["component_a"]["score"][
+                "output"
+            ],
+            "component_a_score",
+        )
+
+    def test_diagnostics_use_stateless_capabilities_and_preserve_trace_order(self):
+        with (
+            patch.object(
+                Module1Calculator,
+                "__init__",
+                side_effect=AssertionError("calculator initialization attempted"),
+            ),
+            patch.object(
+                Module1Calculator,
+                "_load_yaml_config",
+                side_effect=AssertionError("Module 1 YAML access attempted"),
+            ),
+            patch(
+                "module1_schema.validate_module1_config",
+                side_effect=AssertionError("raw configuration validation attempted"),
+            ),
+            patch("yaml.safe_load", side_effect=AssertionError("YAML access attempted")),
+            patch.object(
+                Module1Calculator,
+                "prepare_component_input_series",
+                wraps=Module1Calculator.prepare_component_input_series,
+            ) as prepare_input,
+            patch.object(
+                Module1Calculator,
+                "build_weighted_stance_score_breakdown",
+                wraps=Module1Calculator.build_weighted_stance_score_breakdown,
+            ) as weighted_breakdown,
+            patch.object(
+                Module1Calculator,
+                "resolve_rule_mapped_stance_spec",
+                wraps=Module1Calculator.resolve_rule_mapped_stance_spec,
+            ) as resolve_rule_spec,
+            patch.object(
+                Module1Calculator,
+                "build_rule_mapped_stance_score_breakdown",
+                wraps=Module1Calculator.build_rule_mapped_stance_score_breakdown,
+            ) as rule_breakdown,
+        ):
+            diagnostics = Module1Diagnostics(self.result)
+            prepared = diagnostics._prepared_filtered_input_columns("weighted")
+            weighted = diagnostics.trace_stance_score(
+                "weighted",
+                include_raw_input=False,
+            )
+            rule = diagnostics.diagnose_rule_mapped_stance("rule", view="state")
+
+        self.assertEqual(
+            list(prepared.columns),
+            [
+                "feature_a_prepared_for_component_a",
+                "feature_a_filtered_for_component_a",
+            ],
+        )
+        pd.testing.assert_series_equal(
+            prepared["feature_a_prepared_for_component_a"],
+            pd.Series(
+                [float("nan"), 0.3, 0.7, 0.0],
+                index=self.result.features.index,
+                name="feature_a_prepared_for_component_a",
+            ),
+        )
+        pd.testing.assert_series_equal(
+            prepared["feature_a_filtered_for_component_a"],
+            pd.Series(
+                [float("nan"), 0.0, 0.7, 0.0],
+                index=self.result.features.index,
+                name="feature_a_filtered_for_component_a",
+            ),
+        )
+        self.assertEqual(
+            list(weighted.columns),
+            [
+                "component_a_score",
+                "component_b_score",
+                "component_a_score_weight",
+                "component_a_score_contribution",
+                "component_b_score_weight",
+                "component_b_score_contribution",
+                "weighted_score",
+                "weighted_stance",
+                "weighted_strength",
+                "component_a_label",
+                "component_b_label",
+            ],
+        )
+        self.assertEqual(
+            list(rule.columns),
+            [
+                "component_a_score",
+                "rule_state_raw",
+                "rule_state",
+                "rule_state_stabilization_changed",
+                "rule_stabilization_changed",
+                "rule_case",
+                "rule_score",
+                "rule_stance",
+                "rule_strength",
+            ],
+        )
+        prepare_input.assert_called_once()
+        weighted_breakdown.assert_called_once()
+        resolve_rule_spec.assert_called_once()
+        rule_breakdown.assert_called_once()
+
+        diagnostics.component_config["components"]["component_a"]["score"][
+            "output"
+        ] = "mutated"
+        self.assertEqual(
+            self.result.module1_config["components"]["component_a"]["score"][
+                "output"
+            ],
+            "component_a_score",
+        )
+
+    def test_historical_analysis_uses_result_snapshot_and_in_memory_context(self):
+        event_index = self.result.data.index
+        historical_context = {
+            "events": pd.DataFrame(
+                {
+                    "context_id": ["constructed_event"],
+                    "start": [event_index[1]],
+                    "end": [event_index[2]],
+                }
+            ),
+            "expectations": pd.DataFrame(),
+        }
+
+        with (
+            patch.object(
+                Module1Calculator,
+                "__init__",
+                side_effect=AssertionError("calculator initialization attempted"),
+            ),
+            patch.object(
+                Module1Calculator,
+                "_load_yaml_config",
+                side_effect=AssertionError("Module 1 YAML access attempted"),
+            ),
+            patch.object(
+                Module1HistoricalAnalysis,
+                "_load_yaml_config",
+                side_effect=AssertionError("YAML access attempted"),
+            ),
+            patch(
+                "module1_schema.validate_module1_config",
+                side_effect=AssertionError("raw configuration validation attempted"),
+            ),
+        ):
+            historical = Module1HistoricalAnalysis(
+                self.result,
+                historical_context=historical_context,
+            )
+            target = historical.analysis.resolve_target(
+                "weighted_score",
+                "stance",
+            )
+            context = historical.get_target_context(
+                "weighted",
+                "stance",
+                dependency_level="components",
+                context_id="constructed_event",
+            )
+
+        self.assertEqual(target.canonical_target, "weighted")
+        self.assertEqual(context.context_id, "constructed_event")
+        self.assertEqual(
+            list(context.data.index),
+            list(event_index[1:3]),
+        )
+        historical.exposure_stance_config["exposure_stances"]["weighted"][
+            "score_output"
+        ] = "mutated"
+        self.assertEqual(
+            self.result.module1_config["exposure_stances"]["weighted"][
+                "score_output"
+            ],
+            "weighted_score",
+        )
+
+    def test_incomplete_results_fail_with_result_specific_errors(self):
+        no_config = replace(self.result, module1_config=None)
+        with self.assertRaisesRegex(
+            ValueError,
+            r"Module1Result\.module1_config is required for feature resolution",
+        ):
+            Module1Analysis(no_config).get_target_context("feature_a", "feature")
+
+        no_data = replace(self.result, data=None)
+        with self.assertRaisesRegex(
+            ValueError,
+            r"Module1Result\.data is required for raw-input resolution",
+        ):
+            Module1Analysis(no_data).get_target_context("raw_a", "raw_input")
+
+        no_features = replace(self.result, features=None)
+        with self.assertRaisesRegex(
+            ValueError,
+            r"Module1Result\.features is required for prepared-input diagnostics",
+        ):
+            Module1Diagnostics(no_features)._prepared_filtered_input_columns(
+                "weighted"
+            )
+
+        no_scores = replace(self.result, scores=None)
+        with self.assertRaisesRegex(
+            ValueError,
+            r"Module1Result\.scores is required for weighted stance diagnostics",
+        ):
+            Module1Diagnostics(no_scores).trace_stance_score(
+                "weighted",
+                include_raw_input=False,
+            )
+
+        missing_component_score = replace(
+            self.result,
+            scores=self.result.scores.drop(columns=["component_a_score"]),
+        )
+        with self.assertRaisesRegex(
+            ValueError,
+            r"Missing component_score column\(s\) in self\.scores",
+        ):
+            Module1Analysis(missing_component_score).get_target_context(
+                "component_a",
+                "component",
+            )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            r"Module1Result\.module1_config is required for historical label validation",
+        ):
+            Module1HistoricalAnalysis(
+                no_config
+            )._valid_historical_label_vocabularies()
 
 
 if __name__ == "__main__":
