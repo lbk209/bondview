@@ -75,26 +75,6 @@ class DiagnosticInputSpec:
 class Module1SensitivityDiagnostics:
     """Sensitivity and comparison diagnostics for completed Module 1 results."""
 
-    _CALCULATOR_STATE_FIELDS = (
-        "data", "features", "scores", "labels", "stance_scores",
-        "exposure_stance", "module1_config", "feature_config",
-        "component_config", "exposure_stance_config", "horizons",
-        "default_horizons", "horizon_overrides", "module1_config_validation",
-    )
-    _CALCULATOR_HELPERS = {
-        "_clip_score",
-        "_calculate_single_feature_component_score",
-        "_calculate_weighted_feature_component_score",
-        "_calculate_curve_move_driver_score",
-        "_curve_move_driver_bucket_scores",
-        "_component_score_bucket_config",
-        "_score_bucket",
-        "_label_stance_direction",
-        "_label_stance_strength",
-        "calculate_exposure_stance",
-        "_curve_move_driver_score_from_prepared_inputs",
-    }
-
     def __init__(
         self,
         result: Module1Result,
@@ -104,7 +84,6 @@ class Module1SensitivityDiagnostics:
     ):
         self.result = result
         self.analysis = Module1Analysis(result)
-        self.calculator = object.__new__(Module1Calculator)
         self.data = self._copy_result_value(result.data)
         self.features = self._copy_result_value(result.features)
         self.scores = self._copy_result_value(result.scores)
@@ -131,13 +110,9 @@ class Module1SensitivityDiagnostics:
             }
         )
         self.horizons = self._copy_result_value(result.horizons)
-        self.default_horizons = self._copy_result_value(result.default_horizons)
-        self.horizon_overrides = self._copy_result_value(result.horizon_overrides)
-        self.module1_config_validation = self._copy_result_value(result.module1_config_validation)
         self.historical_context = historical_context
         self.historical_cases = historical_cases
         self.historical_expected_label_validation = historical_expected_label_validation
-        self._sync_calculator_state()
 
     @staticmethod
     def _copy_result_value(value):
@@ -148,21 +123,6 @@ class Module1SensitivityDiagnostics:
         if isinstance(value, pd.Series):
             return value.copy(deep=True)
         return copy.deepcopy(value)
-
-    def _sync_calculator_state(self) -> None:
-        for field_name in self._CALCULATOR_STATE_FIELDS:
-            setattr(self.calculator, field_name, getattr(self, field_name))
-        self.calculator.fred = None
-        self.calculator.series_config_path = None
-        self.calculator.module1_config_path = None
-        self.calculator.data_path = None
-        self.calculator.series_config = None
-
-    def __getattr__(self, name):
-        if name in self._CALCULATOR_HELPERS:
-            self._sync_calculator_state()
-            return getattr(self.calculator, name)
-        raise AttributeError(name)
 
     def _resolve_target(self, target: str, level: str | None, allow_group: bool = False):
         return self.analysis.resolve_target(target, level, allow_group=allow_group)
@@ -428,51 +388,35 @@ class Module1SensitivityDiagnostics:
             apply_input_preparation: bool,
         ) -> pd.Series:
             function = score_config.get("function")
-            fixed_anchor = score_config.get("state_transform") == "fixed_anchor"
-            if fixed_anchor and function not in {
-                "single_feature_score",
-                "weighted_feature_score",
-            }:
+            if (
+                score_config.get("state_transform") == "fixed_anchor"
+                and function not in {
+                    "single_feature_score",
+                    "weighted_feature_score",
+                }
+            ):
                 raise ValueError(
                     f"Unsupported current-state score function for "
                     f"{component_name}: {function}"
                 )
-
-            normalization = score_config.get("normalization")
-            normalization_horizon = score_config.get(
-                "normalization_horizon",
-                "normalization",
-            )
-
-            if function == "single_feature_score":
-                score = self._calculate_single_feature_component_score(
-                    component_name,
-                    score_config,
-                    normalization,
-                    normalization_horizon,
-                    apply_input_preparation=apply_input_preparation,
-                )
-            elif function == "weighted_feature_score":
-                score = self._calculate_weighted_feature_component_score(
-                    component_name,
-                    score_config,
-                    normalization,
-                    normalization_horizon,
-                    apply_input_preparation=apply_input_preparation,
-                )
-            elif function == "curve_move_driver_score":
-                score = self._calculate_curve_move_driver_score(
-                    component_name,
-                    score_config,
-                    apply_input_preparation=apply_input_preparation,
-                )
-            else:
+            if function not in {
+                "single_feature_score",
+                "weighted_feature_score",
+                "curve_move_driver_score",
+            }:
                 raise ValueError(
                     f"Unsupported score function for diagnostic component {component_name}: "
                     f"{function}"
                 )
 
-            return self._clip_score(score, score_config.get("clip"))
+            return Module1Calculator.calculate_component_score(
+                self.features,
+                component_name,
+                score_config,
+                self.horizons,
+                apply_input_preparation=apply_input_preparation,
+                apply_score_smoothing=False,
+            )
 
     def _recalculate_component_scores_for_input_preparation_diagnostic(
             self,
@@ -516,31 +460,11 @@ class Module1SensitivityDiagnostics:
             score: pd.Series,
             stance_config: dict,
         ) -> tuple[pd.Series, pd.Series]:
-            rules = self.exposure_stance_config["stance_label_rules"]
-            direction_thresholds = rules.get("direction_thresholds", {})
-            strength_thresholds = rules.get("strength_thresholds", {})
-            neutral_strength = rules.get("neutral_strength", "weak")
-            labels = stance_config.get("labels", {})
-            direction_labels = labels.get("direction", {})
-            strength_labels = labels.get("strength", {})
-            direction = score.apply(
-                lambda value: self._label_stance_direction(
-                    value,
-                    direction_thresholds,
-                    direction_labels,
-                )
+            return Module1Calculator.label_exposure_stance_score(
+                score,
+                stance_config,
+                self.exposure_stance_config["stance_label_rules"],
             )
-            strength = pd.Series(index=score.index, dtype="object")
-            for idx, value in score.items():
-                strength.loc[idx] = self._label_stance_strength(
-                    value,
-                    direction.loc[idx],
-                    direction_labels,
-                    strength_thresholds,
-                    strength_labels,
-                    neutral_strength,
-                )
-            return direction, strength
 
     def _reconstruct_rule_mapped_stance_for_input_preparation_diagnostic(
             self,
@@ -1852,14 +1776,6 @@ class Module1SensitivityDiagnostics:
                 "full_history": (None, None),
             }
 
-    def _curve_move_driver_score_from_prepared_inputs(self, front_end: pd.Series, long_end: pd.Series, bucket_scores: dict[str, float]) -> pd.Series:
-        self._sync_calculator_state()
-        return self.calculator._curve_move_driver_score_from_prepared_inputs(
-            front_end,
-            long_end,
-            bucket_scores,
-        )
-
     def compare_curve_move_driver_threshold_effect(
             self,
             include_detail: bool = True,
@@ -1928,24 +1844,35 @@ class Module1SensitivityDiagnostics:
                 front_end_filtered = prepared_inputs[front_end_filtered_spec.output]
                 long_end_filtered = prepared_inputs[long_end_filtered_spec.output]
 
-            curve_move_driver_bucket_scores = self._curve_move_driver_bucket_scores(
-                self._component_score_bucket_config("curve_move_driver")
+            curve_features_without_threshold = pd.DataFrame(
+                {
+                    front_end_prepared_spec.source: front_end_prepared,
+                    long_end_prepared_spec.source: long_end_prepared,
+                },
+                index=self.features.index,
             )
-            score_without_threshold = self._clip_score(
-                self._curve_move_driver_score_from_prepared_inputs(
-                    front_end_prepared,
-                    long_end_prepared,
-                    curve_move_driver_bucket_scores,
-                ),
-                curve_move_driver_config.get("clip"),
+            curve_features_with_threshold = pd.DataFrame(
+                {
+                    front_end_prepared_spec.source: front_end_filtered,
+                    long_end_prepared_spec.source: long_end_filtered,
+                },
+                index=self.features.index,
             )
-            score_with_threshold = self._clip_score(
-                self._curve_move_driver_score_from_prepared_inputs(
-                    front_end_filtered,
-                    long_end_filtered,
-                    curve_move_driver_bucket_scores,
-                ),
-                curve_move_driver_config.get("clip"),
+            score_without_threshold = Module1Calculator.calculate_component_score(
+                curve_features_without_threshold,
+                "curve_move_driver",
+                curve_move_driver_config,
+                self.horizons,
+                apply_input_preparation=False,
+                apply_score_smoothing=False,
+            )
+            score_with_threshold = Module1Calculator.calculate_component_score(
+                curve_features_with_threshold,
+                "curve_move_driver",
+                curve_move_driver_config,
+                self.horizons,
+                apply_input_preparation=False,
+                apply_score_smoothing=False,
             )
 
             parameter_effect = self._rule_mapped_component_parameter_effect_detail(
@@ -1994,20 +1921,17 @@ class Module1SensitivityDiagnostics:
             detail["curve_move_driver_score_with_threshold"] = parameter_effect[
                 "curve_move_driver_score_with_threshold"
             ]
+            bucket_config = curve_move_driver_config.get("buckets")
             detail["curve_move_driver_bucket_without_threshold"] = (
-                score_without_threshold.apply(
-                    lambda value: self._score_bucket(
-                        value,
-                        self._component_score_bucket_config("curve_move_driver"),
-                    )
+                Module1Calculator.classify_component_score_buckets(
+                    score_without_threshold,
+                    bucket_config,
                 )
             )
             detail["curve_move_driver_bucket_with_threshold"] = (
-                score_with_threshold.apply(
-                    lambda value: self._score_bucket(
-                        value,
-                        self._component_score_bucket_config("curve_move_driver"),
-                    )
+                Module1Calculator.classify_component_score_buckets(
+                    score_with_threshold,
+                    bucket_config,
                 )
             )
             for column in [
@@ -2715,7 +2639,14 @@ class Module1SensitivityDiagnostics:
                         },
                     }
                     self.exposure_stance_config = case_exposure_stance_config
-                    self.calculate_exposure_stance()
+                    (
+                        self.stance_scores,
+                        self.exposure_stance,
+                    ) = Module1Calculator.calculate_exposure_stance_outputs(
+                        self.scores,
+                        self.component_config,
+                        self.exposure_stance_config,
+                    )
                     diag = self.trace_stance_score(
                         "credit",
                         include_raw_input=True,

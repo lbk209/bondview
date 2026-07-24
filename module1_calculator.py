@@ -572,10 +572,11 @@ class Module1Calculator:
         return features
 
 
+    @staticmethod
     def _normalize_score_input(
-        self,
         sr: pd.Series,
         method: str | None,
+        horizons: dict | None,
         horizon_key: str = "normalization",
     ) -> pd.Series:
         if method is None:
@@ -584,13 +585,13 @@ class Module1Calculator:
         if method not in {"rolling_zscore", "rolling_std"}:
             raise ValueError(f"Unsupported normalization method: {method}")
 
-        if self.horizons is None:
+        if horizons is None:
             raise ValueError("Run load_module1_config() before normalizing scores.")
 
-        if horizon_key not in self.horizons:
+        if horizon_key not in horizons:
             raise ValueError(f"Unknown normalization horizon key: {horizon_key}")
 
-        window = self.horizons[horizon_key]
+        window = horizons[horizon_key]
         valid = sr.dropna()
         rolling = valid.rolling(window=window, min_periods=window)
         rolling_std = rolling.std()
@@ -603,17 +604,22 @@ class Module1Calculator:
         return normalized.reindex(sr.index)
 
 
-    def _smooth_score(self, sr: pd.Series, method: str | None) -> pd.Series:
+    @staticmethod
+    def _smooth_score(
+        sr: pd.Series,
+        method: str | None,
+        horizons: dict | None,
+    ) -> pd.Series:
         if method is None:
             return sr
 
-        if self.horizons is None:
+        if horizons is None:
             raise ValueError("Run load_module1_config() before smoothing scores.")
 
-        if method not in self.horizons:
+        if method not in horizons:
             raise ValueError(f"Unknown smoothing horizon key: {method}")
 
-        window = self.horizons[method]
+        window = horizons[method]
         return sr.dropna().rolling(window=window, min_periods=window).mean().reindex(sr.index)
 
 
@@ -639,10 +645,12 @@ class Module1Calculator:
         )
 
 
+    @staticmethod
     def _prepared_component_score_inputs(
-        self,
+        features: pd.DataFrame,
         component_name: str,
         score_config: dict,
+        horizons: dict | None,
         *,
         expected_count: int | None = None,
         apply_input_preparation: bool = True,
@@ -667,15 +675,15 @@ class Module1Calculator:
                 )
 
             feature_name = item.get("feature")
-            if feature_name not in self.features.columns:
+            if feature_name not in features.columns:
                 raise ValueError(f"Missing feature for {component_name}: {feature_name}")
 
-            score_input = self.features[feature_name]
+            score_input = features[feature_name]
             if apply_input_preparation:
-                score_input = self.prepare_component_input_series(
+                score_input = Module1Calculator.prepare_component_input_series(
                     score_input,
                     input_preparation,
-                    self.horizons,
+                    horizons,
                 )
 
             prepared.append(score_input)
@@ -692,7 +700,11 @@ class Module1Calculator:
         return prepared
 
 
-    def _clip_score(self, sr: pd.Series, clip_config: dict | None) -> pd.Series:
+    @staticmethod
+    def _clip_score(
+        sr: pd.Series,
+        clip_config: dict | None,
+    ) -> pd.Series:
         if not clip_config:
             return sr
 
@@ -702,7 +714,11 @@ class Module1Calculator:
         )
 
 
-    def _apply_sign(self, sr: pd.Series, sign: str | None) -> pd.Series:
+    @staticmethod
+    def _apply_sign(
+        sr: pd.Series,
+        sign: str | None,
+    ) -> pd.Series:
         if sign in {None, "direct"}:
             return sr
 
@@ -712,8 +728,8 @@ class Module1Calculator:
         raise ValueError(f"Unsupported score sign: {sign}")
 
 
+    @staticmethod
     def _fixed_anchor_state_score(
-        self,
         sr: pd.Series,
         anchors: dict,
         *,
@@ -776,48 +792,59 @@ class Module1Calculator:
         return self.scores
 
 
+    @staticmethod
     def _calculate_single_feature_component_score(
-        self,
+        features: pd.DataFrame,
         component_name: str,
         score_config: dict,
         normalization: str | None,
         normalization_horizon: str,
+        horizons: dict | None,
         *,
         apply_input_preparation: bool = True,
     ) -> pd.Series:
         feature_name = score_config.get("input")
-        if feature_name not in self.features.columns:
+        if feature_name not in features.columns:
             raise ValueError(f"Missing feature for {component_name}: {feature_name}")
 
-        score = self.features[feature_name]
+        score = features[feature_name]
         if apply_input_preparation:
-            score = self.prepare_component_input_series(
+            score = Module1Calculator.prepare_component_input_series(
                 score,
                 score_config.get("input_preparation"),
-                self.horizons,
+                horizons,
             )
         if score_config.get("state_transform") == "fixed_anchor":
-            score = self._fixed_anchor_state_score(
+            score = Module1Calculator._fixed_anchor_state_score(
                 score,
                 score_config.get("anchors", {}),
                 context=component_name,
             )
-            return self._apply_sign(score, score_config.get("sign"))
+            return Module1Calculator._apply_sign(
+                score,
+                score_config.get("sign"),
+            )
 
-        score = self._apply_sign(score, score_config.get("sign"))
-        return self._normalize_score_input(
+        score = Module1Calculator._apply_sign(
+            score,
+            score_config.get("sign"),
+        )
+        return Module1Calculator._normalize_score_input(
             score,
             normalization,
+            horizons,
             normalization_horizon,
         )
 
 
+    @staticmethod
     def _calculate_weighted_feature_component_score(
-        self,
+        features: pd.DataFrame,
         component_name: str,
         score_config: dict,
         normalization: str | None,
         normalization_horizon: str,
+        horizons: dict | None,
         *,
         apply_input_preparation: bool = True,
     ) -> pd.Series:
@@ -848,7 +875,7 @@ class Module1Calculator:
                 raise ValueError(f"{context} inputs[{idx}] must be a mapping.")
 
             feature_name = item.get("feature")
-            if feature_name not in self.features.columns:
+            if feature_name not in features.columns:
                 raise ValueError(f"Missing feature for {component_name}: {feature_name}")
 
             if not fixed_anchor and "weight" not in item:
@@ -867,16 +894,16 @@ class Module1Calculator:
                         "numeric and not bool."
                     )
 
-            score_input = self.features[feature_name]
+            score_input = features[feature_name]
             if apply_input_preparation:
-                score_input = self.prepare_component_input_series(
+                score_input = Module1Calculator.prepare_component_input_series(
                     score_input,
                     score_config.get("input_preparation"),
-                    self.horizons,
+                    horizons,
                 )
 
             if fixed_anchor:
-                feature_score = self._fixed_anchor_state_score(
+                feature_score = Module1Calculator._fixed_anchor_state_score(
                     score_input,
                     item.get("anchors", {}),
                     context=f"{component_name} {feature_name}",
@@ -900,25 +927,29 @@ class Module1Calculator:
                         f"inputs[{idx}].weight must be numeric and not bool."
                     )
             else:
-                feature_score = self._normalize_score_input(
+                feature_score = Module1Calculator._normalize_score_input(
                     score_input,
                     normalization,
+                    horizons,
                     normalization_horizon,
                 )
 
             weighted_terms.append((feature_score, float(weight)))
 
-        score = self._weighted_sum_score(
+        score = Module1Calculator._weighted_sum_score(
             weighted_terms,
             context=context,
         )
         if fixed_anchor:
-            return self._apply_sign(score, score_config.get("sign"))
+            return Module1Calculator._apply_sign(
+                score,
+                score_config.get("sign"),
+            )
         return score
 
 
+    @staticmethod
     def _curve_move_driver_score_from_prepared_inputs(
-        self,
         front_end: pd.Series,
         long_end: pd.Series,
         bucket_scores: dict[str, float],
@@ -936,31 +967,43 @@ class Module1Calculator:
         return score
 
 
+    @staticmethod
     def _calculate_curve_move_driver_score(
-        self,
+        features: pd.DataFrame,
         component_name: str,
         score_config: dict,
+        horizons: dict | None,
         *,
         apply_input_preparation: bool = True,
     ) -> pd.Series:
-        front_end, long_end = self._prepared_component_score_inputs(
+        front_end, long_end = Module1Calculator._prepared_component_score_inputs(
+            features,
             component_name,
             score_config,
+            horizons,
             expected_count=2,
             apply_input_preparation=apply_input_preparation,
             apply_min_abs_value=True,
         )
-        bucket_scores = self._curve_move_driver_bucket_scores(
-            self._component_score_bucket_config(component_name)
+        bucket_config = score_config.get("buckets")
+        if not isinstance(bucket_config, dict) or not bucket_config:
+            raise ValueError(
+                f"Component {component_name} score.buckets must be a non-empty mapping."
+            )
+        bucket_scores = Module1Calculator._curve_move_driver_bucket_scores(
+            bucket_config
         )
-        return self._curve_move_driver_score_from_prepared_inputs(
+        return Module1Calculator._curve_move_driver_score_from_prepared_inputs(
             front_end,
             long_end,
             bucket_scores,
         )
 
 
-    def _curve_move_driver_bucket_scores(self, bucket_config: dict) -> dict[str, float]:
+    @staticmethod
+    def _curve_move_driver_bucket_scores(
+        bucket_config: dict,
+    ) -> dict[str, float]:
         def bucket_score(bucket_name: str) -> float:
             bucket_rule = bucket_config.get(bucket_name)
             if not isinstance(bucket_rule, dict) or "score" not in bucket_rule:
@@ -986,6 +1029,79 @@ class Module1Calculator:
             "front_end_down_long_end_up": bucket_score("front_end_down_long_end_up"),
             "front_end_up_long_end_down": bucket_score("front_end_up_long_end_down"),
         }
+
+
+    @staticmethod
+    def calculate_component_score(
+        features: pd.DataFrame,
+        component_name: str,
+        score_config: dict,
+        horizons: dict | None,
+        *,
+        apply_input_preparation: bool = True,
+        apply_score_smoothing: bool = True,
+    ) -> pd.Series:
+        """Calculate one configured component score from explicit inputs."""
+        function = score_config.get("function")
+        normalization = score_config.get("normalization")
+        normalization_horizon = score_config.get(
+            "normalization_horizon",
+            "normalization",
+        )
+        fixed_anchor = score_config.get("state_transform") == "fixed_anchor"
+
+        if fixed_anchor and function not in {
+            "single_feature_score",
+            "weighted_feature_score",
+        }:
+            raise ValueError(
+                f"Unsupported current-state score function for "
+                f"{component_name}: {function}"
+            )
+
+        if function == "single_feature_score":
+            score = Module1Calculator._calculate_single_feature_component_score(
+                features,
+                component_name,
+                score_config,
+                normalization,
+                normalization_horizon,
+                horizons,
+                apply_input_preparation=apply_input_preparation,
+            )
+        elif function == "weighted_feature_score":
+            score = Module1Calculator._calculate_weighted_feature_component_score(
+                features,
+                component_name,
+                score_config,
+                normalization,
+                normalization_horizon,
+                horizons,
+                apply_input_preparation=apply_input_preparation,
+            )
+        elif function == "curve_move_driver_score":
+            score = Module1Calculator._calculate_curve_move_driver_score(
+                features,
+                component_name,
+                score_config,
+                horizons,
+                apply_input_preparation=apply_input_preparation,
+            )
+        else:
+            raise ValueError(
+                f"Unsupported score function for {component_name}: {function}"
+            )
+
+        if not fixed_anchor and apply_score_smoothing:
+            score = Module1Calculator._smooth_score(
+                score,
+                score_config.get("smoothing"),
+                horizons,
+            )
+        return Module1Calculator._clip_score(
+            score,
+            score_config.get("clip"),
+        )
 
 
     def _component_score_bucket_config(self, component_name: str) -> dict:
@@ -1678,7 +1794,8 @@ class Module1Calculator:
         return bucket_labels
 
 
-    def _component_bucket_style(self, bucket_config: dict) -> str:
+    @staticmethod
+    def _component_bucket_style(bucket_config: dict) -> str:
         non_default_rules = [
             bucket_rule
             for bucket_rule in bucket_config.values()
@@ -1701,11 +1818,26 @@ class Module1Calculator:
         return "threshold"
 
 
-    def _component_bucket_for_score(self, score, bucket_config: dict):
-        style = self._component_bucket_style(bucket_config)
+    @staticmethod
+    def _component_bucket_for_score(score, bucket_config: dict):
+        style = Module1Calculator._component_bucket_style(bucket_config)
         if style == "score":
-            return self._score_bucket(score, bucket_config)
-        return self._threshold_bucket(score, bucket_config)
+            return Module1Calculator._score_bucket(score, bucket_config)
+        return Module1Calculator._threshold_bucket(score, bucket_config)
+
+
+    @staticmethod
+    def classify_component_score_buckets(
+        score: pd.Series,
+        bucket_config: dict,
+    ) -> pd.Series:
+        """Classify explicit component scores with configured bucket semantics."""
+        return score.apply(
+            lambda value: Module1Calculator._component_bucket_for_score(
+                value,
+                bucket_config,
+            )
+        )
 
 
     def calculate_component_scores(self) -> pd.DataFrame:
@@ -1721,58 +1853,16 @@ class Module1Calculator:
         for component_name, component in self.component_config["components"].items():
             score_config = component.get("score", {})
             output = score_config.get("output")
-            function = score_config.get("function")
 
             if output is None:
                 raise ValueError(f"Component {component_name} score is missing output.")
 
-            normalization = score_config.get("normalization")
-            normalization_horizon = score_config.get(
-                "normalization_horizon",
-                "normalization",
+            scores[output] = self.calculate_component_score(
+                self.features,
+                component_name,
+                score_config,
+                self.horizons,
             )
-            fixed_anchor = score_config.get("state_transform") == "fixed_anchor"
-
-            if fixed_anchor and function not in {
-                "single_feature_score",
-                "weighted_feature_score",
-            }:
-                raise ValueError(
-                    f"Unsupported current-state score function for "
-                    f"{component_name}: {function}"
-                )
-
-            if function == "single_feature_score":
-                score = self._calculate_single_feature_component_score(
-                    component_name,
-                    score_config,
-                    normalization,
-                    normalization_horizon,
-                )
-
-            elif function == "weighted_feature_score":
-                score = self._calculate_weighted_feature_component_score(
-                    component_name,
-                    score_config,
-                    normalization,
-                    normalization_horizon,
-                )
-
-            elif function == "curve_move_driver_score":
-                score = self._calculate_curve_move_driver_score(
-                    component_name,
-                    score_config,
-                )
-
-            else:
-                raise ValueError(
-                    f"Unsupported score function for {component_name}: {function}"
-                )
-
-            if not fixed_anchor:
-                score = self._smooth_score(score, score_config.get("smoothing"))
-            score = self._clip_score(score, score_config.get("clip"))
-            scores[output] = score
 
         self.scores = scores
         self.align_component_scores()
@@ -1858,8 +1948,8 @@ class Module1Calculator:
         return labels
 
 
+    @staticmethod
     def _label_stance_direction(
-        self,
         score: float,
         direction_thresholds: dict,
         labels: dict,
@@ -1876,8 +1966,8 @@ class Module1Calculator:
         return labels.get("neutral")
 
 
+    @staticmethod
     def _label_stance_strength(
-        self,
         score: float,
         direction_label,
         direction_labels: dict,
@@ -1903,6 +1993,56 @@ class Module1Calculator:
             return strength_labels.get("strong")
 
         return strength_labels.get("moderate")
+
+
+    @staticmethod
+    def label_exposure_stance_score(
+        score: pd.Series,
+        stance_config: dict,
+        stance_label_rules: dict,
+    ) -> tuple[pd.Series, pd.Series]:
+        """Label an explicit exposure-stance score Series."""
+        direction_thresholds = stance_label_rules.get(
+            "direction_thresholds",
+            {},
+        )
+        strength_thresholds = stance_label_rules.get(
+            "strength_thresholds",
+            {},
+        )
+        neutral_strength = stance_label_rules.get("neutral_strength", "weak")
+
+        for key in ["positive_min", "negative_max"]:
+            if key not in direction_thresholds:
+                raise ValueError(f"Missing direction threshold: {key}")
+
+        for key in ["weak_max_abs", "moderate_max_abs", "strong_min_abs"]:
+            if key not in strength_thresholds:
+                raise ValueError(f"Missing strength threshold: {key}")
+
+        labels = stance_config.get("labels", {})
+        direction_labels = labels.get("direction", {})
+        strength_labels = labels.get("strength", {})
+        direction = score.apply(
+            lambda value: Module1Calculator._label_stance_direction(
+                value,
+                direction_thresholds,
+                direction_labels,
+            )
+        )
+        strength = pd.Series(index=score.index, dtype="object")
+
+        for idx, value in score.items():
+            strength.loc[idx] = Module1Calculator._label_stance_strength(
+                value,
+                direction.loc[idx],
+                direction_labels,
+                strength_thresholds,
+                strength_labels,
+                neutral_strength,
+            )
+
+        return direction, strength
 
 
     @staticmethod
@@ -2707,8 +2847,10 @@ class Module1Calculator:
         return adjusted_score, adjusted_score - base_score
 
 
+    @staticmethod
     def _calculate_exposure_stance_score(
-        self,
+        scores: pd.DataFrame,
+        component_config: dict,
         stance_name: str,
         stance_config: dict,
     ) -> pd.Series:
@@ -2719,8 +2861,8 @@ class Module1Calculator:
             if score_output is None:
                 raise ValueError(f"Exposure stance {stance_name} score output is missing.")
 
-            breakdown = self.build_weighted_stance_score_breakdown(
-                self.scores,
+            breakdown = Module1Calculator.build_weighted_stance_score_breakdown(
+                scores,
                 stance_name,
                 stance_config,
             )
@@ -2731,14 +2873,14 @@ class Module1Calculator:
             if score_output is None:
                 raise ValueError(f"Exposure stance {stance_name} score output is missing.")
 
-            rule_mapped_spec = self.resolve_rule_mapped_stance_spec(
+            rule_mapped_spec = Module1Calculator.resolve_rule_mapped_stance_spec(
                 stance_name,
                 stance_config,
-                self.component_config,
+                component_config,
             )
-            breakdown = self.build_rule_mapped_stance_score_breakdown(
-                self.scores,
-                self.component_config,
+            breakdown = Module1Calculator.build_rule_mapped_stance_score_breakdown(
+                scores,
+                component_config,
                 stance_name,
                 stance_config,
                 rule_mapped_spec,
@@ -2750,32 +2892,27 @@ class Module1Calculator:
         )
 
 
-    def calculate_exposure_stance(self) -> pd.DataFrame:
-        if self.scores is None:
-            raise ValueError("Run calculate_component_scores() before calculate_exposure_stance().")
-
-        if self.exposure_stance_config is None:
-            raise ValueError(
-                "Run load_module1_config() before calculate_exposure_stance()."
-            )
-
-        rules = self.exposure_stance_config["stance_label_rules"]
+    @staticmethod
+    def calculate_exposure_stance_outputs(
+        scores: pd.DataFrame,
+        component_config: dict,
+        exposure_stance_config: dict,
+    ) -> tuple[pd.DataFrame, pd.DataFrame]:
+        """Calculate stance score and labeled output tables from explicit inputs."""
+        rules = exposure_stance_config["stance_label_rules"]
         direction_thresholds = rules.get("direction_thresholds", {})
         strength_thresholds = rules.get("strength_thresholds", {})
-        neutral_strength = rules.get("neutral_strength", "weak")
-
         for key in ["positive_min", "negative_max"]:
             if key not in direction_thresholds:
                 raise ValueError(f"Missing direction threshold: {key}")
-
         for key in ["weak_max_abs", "moderate_max_abs", "strong_min_abs"]:
             if key not in strength_thresholds:
                 raise ValueError(f"Missing strength threshold: {key}")
 
-        stance_scores = pd.DataFrame(index=self.scores.index)
-        exposure_stance = pd.DataFrame(index=self.scores.index)
+        stance_scores = pd.DataFrame(index=scores.index)
+        exposure_stance = pd.DataFrame(index=scores.index)
 
-        for stance_name, stance_config in self.exposure_stance_config[
+        for stance_name, stance_config in exposure_stance_config[
             "exposure_stances"
         ].items():
             score_output = stance_config.get("score_output")
@@ -2785,38 +2922,42 @@ class Module1Calculator:
             if score_output is None or stance_output is None or strength_output is None:
                 raise ValueError(f"Exposure stance {stance_name} outputs are incomplete.")
 
-            score = self._calculate_exposure_stance_score(
+            score = Module1Calculator._calculate_exposure_stance_score(
+                scores,
+                component_config,
                 stance_name,
                 stance_config,
             )
-            labels = stance_config.get("labels", {})
-            direction_labels = labels.get("direction", {})
-            strength_labels = labels.get("strength", {})
-
-            direction = score.apply(
-                lambda value: self._label_stance_direction(
-                    value,
-                    direction_thresholds,
-                    direction_labels,
+            direction, strength = (
+                Module1Calculator.label_exposure_stance_score(
+                    score,
+                    stance_config,
+                    rules,
                 )
             )
-            strength = pd.Series(index=score.index, dtype="object")
-
-            for idx, value in score.items():
-                strength.loc[idx] = self._label_stance_strength(
-                    value,
-                    direction.loc[idx],
-                    direction_labels,
-                    strength_thresholds,
-                    strength_labels,
-                    neutral_strength,
-                )
 
             stance_scores[score_output] = score
             exposure_stance[score_output] = score
             exposure_stance[stance_output] = direction
             exposure_stance[strength_output] = strength
 
+        return stance_scores, exposure_stance
+
+
+    def calculate_exposure_stance(self) -> pd.DataFrame:
+        if self.scores is None:
+            raise ValueError("Run calculate_component_scores() before calculate_exposure_stance().")
+
+        if self.exposure_stance_config is None:
+            raise ValueError(
+                "Run load_module1_config() before calculate_exposure_stance()."
+            )
+
+        stance_scores, exposure_stance = self.calculate_exposure_stance_outputs(
+            self.scores,
+            self.component_config,
+            self.exposure_stance_config,
+        )
         self.stance_scores = stance_scores
         self.exposure_stance = exposure_stance
         return exposure_stance
