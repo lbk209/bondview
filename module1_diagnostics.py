@@ -53,9 +53,25 @@ class Module1Diagnostics:
         self.scores = self._copy_result_value(result.scores)
         self.labels = self._copy_result_value(result.labels)
         self.exposure_stance = self._copy_result_value(result.exposure_stance)
-        self.feature_config = self._copy_result_value(result.feature_config)
-        self.component_config = self._copy_result_value(result.component_config)
-        self.exposure_stance_config = self._copy_result_value(result.exposure_stance_config)
+        module1_config = result.module1_config
+        self.feature_config = self._copy_result_value(
+            None
+            if module1_config is None
+            else {"features": module1_config["features"]}
+        )
+        self.component_config = self._copy_result_value(
+            None
+            if module1_config is None
+            else {"components": module1_config["components"]}
+        )
+        self.exposure_stance_config = self._copy_result_value(
+            None
+            if module1_config is None
+            else {
+                "stance_label_rules": module1_config["stance_label_rules"],
+                "exposure_stances": module1_config["exposure_stances"],
+            }
+        )
         self.horizons = self._copy_result_value(result.horizons)
 
     @staticmethod

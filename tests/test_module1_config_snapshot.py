@@ -1,6 +1,7 @@
 import copy
 import os
 import unittest
+from dataclasses import fields
 from pathlib import Path
 from unittest.mock import patch
 
@@ -9,6 +10,9 @@ import yaml
 
 from module1_analysis import Module1Analysis
 from module1_calculator import Module1Calculator
+from module1_diagnostics import Module1Diagnostics
+from module1_historical_analysis import Module1HistoricalAnalysis
+from module1_sensitivity_diagnostics import Module1SensitivityDiagnostics
 
 
 class Module1ConfigSnapshotTests(unittest.TestCase):
@@ -33,22 +37,19 @@ class Module1ConfigSnapshotTests(unittest.TestCase):
         self.assertEqual(self.operational_config, parsed_config)
         self.assertEqual(self.calculator.module1_config, self.operational_config)
         self.assertEqual(self.result.module1_config, self.operational_config)
-        self.assertEqual(
-            self.result.feature_config,
-            {"features": self.operational_config["features"]},
-        )
-        self.assertEqual(
-            self.result.component_config,
-            {"components": self.operational_config["components"]},
-        )
-        self.assertEqual(
-            self.result.exposure_stance_config,
-            {
-                "stance_label_rules": self.operational_config["stance_label_rules"],
-                "exposure_stances": self.operational_config["exposure_stances"],
-            },
-        )
         self.assertTrue(self.result.module1_config_validation["issues"].empty)
+
+    def test_result_has_no_independently_stored_config_subsection_fields(self):
+        result_field_names = {field.name for field in fields(type(self.result))}
+
+        for field_name in (
+            "feature_config",
+            "component_config",
+            "exposure_stance_config",
+        ):
+            self.assertNotIn(field_name, result_field_names)
+            self.assertNotIn(field_name, self.result.__dict__)
+            self.assertFalse(hasattr(self.result, field_name))
 
     def test_calculator_and_result_configuration_are_deeply_isolated(self):
         with patch.dict(os.environ, {"FRED_API_KEY": "test"}):
@@ -63,18 +64,24 @@ class Module1ConfigSnapshotTests(unittest.TestCase):
 
         self.assertEqual(result.module1_config["horizons"]["rates"], 126)
         self.assertNotEqual(
-            result.component_config["components"]["duration_preference"]["score"][
+            result.module1_config["components"]["duration_preference"]["score"][
                 "clip"
             ],
             [-99.0, 99.0],
         )
 
         result.module1_config["horizons"]["rates"] = 777
-        result.component_config["components"]["duration_preference"]["score"][
+        result.module1_config["components"]["duration_preference"]["score"][
             "clip"
         ] = [-77.0, 77.0]
 
         self.assertEqual(calculator.module1_config["horizons"]["rates"], 999)
+        self.assertEqual(
+            calculator.module1_config["components"]["duration_preference"]["score"][
+                "clip"
+            ],
+            [-99.0, 99.0],
+        )
         self.assertEqual(
             calculator.component_config["components"]["duration_preference"]["score"][
                 "clip"
@@ -101,6 +108,129 @@ class Module1ConfigSnapshotTests(unittest.TestCase):
 
         self.assertEqual(resolution.canonical_target, "duration_preference")
         self.assertEqual(resolution.kind, "target_group_member")
+
+    def test_migrated_consumers_resolve_metadata_from_module1_config(self):
+        config = self.result.module1_config
+        analysis = Module1Analysis(self.result)
+
+        feature = analysis._resolve_target_for_context("dgs2_change", "feature")
+        component = analysis.resolve_target("duration_preference_score", "component")
+        stance = analysis.resolve_target("credit_stance", "stance")
+        target_group = analysis.resolve_target(
+            "duration",
+            allow_group=True,
+        )
+
+        self.assertEqual(feature.config, config["features"]["dgs2_change"])
+        self.assertEqual(feature.score_col, "dgs2_change")
+        self.assertEqual(component.canonical_target, "duration_preference")
+        self.assertEqual(
+            component.config,
+            config["components"]["duration_preference"],
+        )
+        self.assertEqual(
+            (component.score_col, component.label_col),
+            (
+                config["components"]["duration_preference"]["score"]["output"],
+                config["components"]["duration_preference"]["label"]["output"],
+            ),
+        )
+        self.assertEqual(stance.canonical_target, "credit")
+        self.assertEqual(stance.config, config["exposure_stances"]["credit"])
+        self.assertEqual(
+            (stance.score_col, stance.label_col, stance.strength_col),
+            (
+                config["exposure_stances"]["credit"]["score_output"],
+                config["exposure_stances"]["credit"]["stance_output"],
+                config["exposure_stances"]["credit"]["strength_output"],
+            ),
+        )
+        self.assertEqual(
+            target_group.related_targets,
+            (
+                ("component", "duration_preference"),
+                ("component", "duration_rate_shock"),
+                ("stance", "duration"),
+            ),
+        )
+
+        diagnostics = Module1Diagnostics(self.result)
+        diagnostic_context = diagnostics.get_target_context(
+            "duration_preference",
+            "component",
+        )
+        self.assertEqual(
+            diagnostics.feature_config,
+            {"features": config["features"]},
+        )
+        self.assertEqual(
+            diagnostics.component_config,
+            {"components": config["components"]},
+        )
+        self.assertEqual(
+            diagnostics.exposure_stance_config,
+            {
+                "stance_label_rules": config["stance_label_rules"],
+                "exposure_stances": config["exposure_stances"],
+            },
+        )
+        self.assertEqual(
+            diagnostic_context.resolution["score_col"],
+            component.score_col,
+        )
+
+        historical = Module1HistoricalAnalysis(self.result)
+        historical.load_historical_context("data/historical_context.yaml")
+        historical_context = historical.get_target_context(
+            "duration_preference",
+            "component",
+            context_id="covid_shock_2020",
+        )
+        self.assertEqual(
+            historical.component_config,
+            {"components": config["components"]},
+        )
+        self.assertEqual(
+            historical.exposure_stance_config,
+            {
+                "stance_label_rules": config["stance_label_rules"],
+                "exposure_stances": config["exposure_stances"],
+            },
+        )
+        self.assertEqual(historical_context.context_id, "covid_shock_2020")
+        self.assertEqual(
+            historical_context.resolution["score_col"],
+            component.score_col,
+        )
+
+        sensitivity = Module1SensitivityDiagnostics(self.result)
+        self.assertEqual(
+            sensitivity.feature_config,
+            {"features": config["features"]},
+        )
+        self.assertEqual(
+            sensitivity.component_config,
+            {"components": config["components"]},
+        )
+        self.assertEqual(
+            sensitivity.exposure_stance_config,
+            {
+                "stance_label_rules": config["stance_label_rules"],
+                "exposure_stances": config["exposure_stances"],
+            },
+        )
+        self.assertIs(
+            sensitivity.feature_config["features"],
+            sensitivity.module1_config["features"],
+        )
+        self.assertIs(
+            sensitivity.component_config["components"],
+            sensitivity.module1_config["components"],
+        )
+        self.assertIs(
+            sensitivity.exposure_stance_config["exposure_stances"],
+            sensitivity.module1_config["exposure_stances"],
+        )
 
     def test_representative_pipeline_outputs_are_unchanged(self):
         latest = pd.Timestamp("2026-05-08")

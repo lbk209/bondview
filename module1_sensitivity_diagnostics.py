@@ -112,9 +112,24 @@ class Module1SensitivityDiagnostics:
         self.stance_scores = self._copy_result_value(result.stance_scores)
         self.exposure_stance = self._copy_result_value(result.exposure_stance)
         self.module1_config = self._copy_result_value(result.module1_config)
-        self.feature_config = self._copy_result_value(result.feature_config)
-        self.component_config = self._copy_result_value(result.component_config)
-        self.exposure_stance_config = self._copy_result_value(result.exposure_stance_config)
+        self.feature_config = (
+            None
+            if self.module1_config is None
+            else {"features": self.module1_config["features"]}
+        )
+        self.component_config = (
+            None
+            if self.module1_config is None
+            else {"components": self.module1_config["components"]}
+        )
+        self.exposure_stance_config = (
+            None
+            if self.module1_config is None
+            else {
+                "stance_label_rules": self.module1_config["stance_label_rules"],
+                "exposure_stances": self.module1_config["exposure_stances"],
+            }
+        )
         self.horizons = self._copy_result_value(result.horizons)
         self.default_horizons = self._copy_result_value(result.default_horizons)
         self.horizon_overrides = self._copy_result_value(result.horizon_overrides)

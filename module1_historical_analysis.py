@@ -22,8 +22,20 @@ class Module1HistoricalAnalysis:
         self.analysis = Module1Analysis(result)
         self.labels = result.labels
         self.exposure_stance = result.exposure_stance
-        self.component_config = result.component_config
-        self.exposure_stance_config = result.exposure_stance_config
+        module1_config = result.module1_config
+        self.component_config = (
+            None
+            if module1_config is None
+            else {"components": module1_config["components"]}
+        )
+        self.exposure_stance_config = (
+            None
+            if module1_config is None
+            else {
+                "stance_label_rules": module1_config["stance_label_rules"],
+                "exposure_stances": module1_config["exposure_stances"],
+            }
+        )
         self.historical_context = historical_context
         self.historical_cases = historical_cases
         self.historical_expected_label_validation = (
