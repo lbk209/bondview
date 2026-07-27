@@ -378,7 +378,117 @@ def assert_nested_outputs_equal(test_case, first, second):
             )
 
 
+class HorizonCaseCalculatorFake(Module1Calculator):
+    instances = []
+    configured_defaults = {
+        "rates": 126,
+        "credit": 63,
+        "inflation": 21,
+    }
+
+    def __init__(
+        self,
+        api_key_env="FRED_API_KEY",
+        series_config_path="data/fred_series_config.csv",
+        module1_config_path="data/module1_config.yaml",
+        data_path="data/raw_data_19980101_20260508.csv",
+        horizons=None,
+    ):
+        self.constructor_arguments = {
+            "api_key_env": api_key_env,
+            "series_config_path": series_config_path,
+            "module1_config_path": module1_config_path,
+            "data_path": data_path,
+        }
+        self.constructor_horizons = copy.deepcopy(horizons)
+        self.default_horizons = copy.deepcopy(self.configured_defaults)
+        self.horizon_overrides = copy.deepcopy(horizons)
+        self._horizons = copy.deepcopy(
+            self.default_horizons if horizons is None else horizons
+        )
+        self.validation_calls = []
+        self.pipeline_call_count = 0
+        self.result_call_count = 0
+        self.__class__.instances.append(self)
+
+    @property
+    def horizons(self):
+        return self._horizons
+
+    def validate_horizons(self, horizons=None, base_horizons=None):
+        self.validation_calls.append(
+            (
+                copy.deepcopy(horizons),
+                copy.deepcopy(base_horizons),
+            )
+        )
+        return super().validate_horizons(
+            horizons,
+            base_horizons=base_horizons,
+        )
+
+    def run_module1_pipeline(self):
+        self.pipeline_call_count += 1
+
+    def to_module1_result(self):
+        self.result_call_count += 1
+        return Module1Result(
+            data=None,
+            features=None,
+            scores=None,
+            labels=None,
+            stance_scores=None,
+            exposure_stance=None,
+            module1_config={"horizons": copy.deepcopy(self.default_horizons)},
+            horizons=copy.deepcopy(self.horizons),
+            default_horizons=copy.deepcopy(self.default_horizons),
+            horizon_overrides=copy.deepcopy(self.horizon_overrides),
+            module1_config_validation=None,
+        )
+
+
+class HorizonCaseHistoricalFake:
+    instances = []
+
+    def __init__(self, result):
+        self.result = result
+        self.context_paths = []
+        self.review_calls = []
+        self.__class__.instances.append(self)
+
+    def load_historical_context(self, path):
+        self.context_paths.append(path)
+        return {"path": path}
+
+    def review_historical_cases(self, **kwargs):
+        self.review_calls.append(copy.deepcopy(kwargs))
+        horizons = self.result.horizons
+        if kwargs["output"] == "report":
+            return pd.DataFrame(
+                {
+                    "metric": ["effective_total", "rates_metric"],
+                    "value": [
+                        sum(horizons.values()),
+                        horizons["rates"],
+                    ],
+                }
+            )
+        return pd.DataFrame(
+            {
+                "row_id": ["first", "second"],
+                "observed": [
+                    horizons["rates"],
+                    horizons["rates"] + 1,
+                ],
+            }
+        )
+
+
 class HorizonCasesOutputTests(unittest.TestCase):
+    def setUp(self):
+        HorizonCaseCalculatorFake.instances = []
+        HorizonCaseHistoricalFake.instances = []
+
     def test_explicit_cases_generate_ids_and_preserve_values_order_and_dtypes(self):
         cases = [
             {"rates": 126, "credit": 63},
@@ -525,6 +635,261 @@ class HorizonCasesOutputTests(unittest.TestCase):
         pd.testing.assert_frame_equal(first, expected)
         pd.testing.assert_frame_equal(first, second)
         self.assertEqual(cases, original_cases)
+
+    def test_compare_horizon_cases_executes_complete_constructor_horizons(self):
+        cases = pd.DataFrame(
+            {
+                "case_id": ["rates_only", "credit_only"],
+                "rates": [100.0, float("nan")],
+                "credit": [float("nan"), 45.0],
+            },
+            index=[8, 4],
+        )
+        base_horizons = {
+            "credit": 70,
+            "rates": 140,
+            "inflation": 30,
+        }
+        original_cases = cases.copy(deep=True)
+        original_base_horizons = copy.deepcopy(base_horizons)
+        call_arguments = {
+            "api_key_env": "CUSTOM_FRED_KEY",
+            "series_config_path": "custom/series.csv",
+            "module1_config_path": "custom/module1.yaml",
+            "data_path": "custom/raw.csv",
+            "historical_context_path": "custom/context.yaml",
+            "target": "duration_preference",
+            "context_id": "custom_context",
+            "level": "component",
+            "only_use_for_validation": False,
+            "include_low_relevance": True,
+            "min_obs": 11,
+            "plausible_threshold": 0.8,
+            "mixed_threshold": 0.3,
+            "output": "summary",
+        }
+
+        with (
+            patch(
+                "module1_sensitivity_diagnostics.Module1Calculator",
+                HorizonCaseCalculatorFake,
+            ),
+            patch(
+                "module1_sensitivity_diagnostics.Module1HistoricalAnalysis",
+                HorizonCaseHistoricalFake,
+            ),
+        ):
+            first = Module1SensitivityDiagnostics.compare_horizon_cases(
+                horizon_cases=cases,
+                base_horizons=base_horizons,
+                **call_arguments,
+            )
+            second = Module1SensitivityDiagnostics.compare_horizon_cases(
+                horizon_cases=cases,
+                base_horizons=base_horizons,
+                **call_arguments,
+            )
+
+        expected = pd.DataFrame(
+            {
+                "case_id": ["rates_only", "credit_only"],
+                "rates": [100, 140],
+                "credit": [70, 45],
+                "inflation": [30, 30],
+                "effective_total": [200, 215],
+                "rates_metric": [100, 140],
+            }
+        )
+        pd.testing.assert_frame_equal(first, expected)
+        pd.testing.assert_frame_equal(second, expected)
+        pd.testing.assert_frame_equal(cases, original_cases)
+        self.assertEqual(base_horizons, original_base_horizons)
+
+        calculators = HorizonCaseCalculatorFake.instances
+        self.assertEqual(len(calculators), 6)
+        expected_case_horizons = [
+            {"credit": 70, "rates": 100, "inflation": 30},
+            {"credit": 45, "rates": 140, "inflation": 30},
+        ]
+        for invocation_start in (0, 3):
+            base_calc = calculators[invocation_start]
+            case_calculators = calculators[
+                invocation_start + 1:invocation_start + 3
+            ]
+            self.assertIsNone(base_calc.constructor_horizons)
+            self.assertEqual(
+                base_calc.validation_calls,
+                [
+                    (
+                        original_base_horizons,
+                        HorizonCaseCalculatorFake.configured_defaults,
+                    ),
+                    (
+                        {"rates": 100},
+                        original_base_horizons,
+                    ),
+                    (
+                        {"credit": 45},
+                        original_base_horizons,
+                    ),
+                ],
+            )
+            self.assertEqual(base_calc.pipeline_call_count, 0)
+            self.assertEqual(base_calc.result_call_count, 0)
+            self.assertEqual(
+                [
+                    calc.constructor_horizons
+                    for calc in case_calculators
+                ],
+                expected_case_horizons,
+            )
+            self.assertEqual(
+                [calc.pipeline_call_count for calc in case_calculators],
+                [1, 1],
+            )
+            self.assertEqual(
+                [calc.result_call_count for calc in case_calculators],
+                [1, 1],
+            )
+            for calc, effective_horizons in zip(
+                case_calculators,
+                expected_case_horizons,
+            ):
+                self.assertEqual(calc.horizons, effective_horizons)
+                self.assertEqual(calc.horizon_overrides, effective_horizons)
+                self.assertEqual(
+                    calc.default_horizons,
+                    HorizonCaseCalculatorFake.configured_defaults,
+                )
+                self.assertEqual(
+                    calc.constructor_arguments,
+                    {
+                        key: call_arguments[key]
+                        for key in (
+                            "api_key_env",
+                            "series_config_path",
+                            "module1_config_path",
+                            "data_path",
+                        )
+                    },
+                )
+
+        historical_instances = HorizonCaseHistoricalFake.instances
+        self.assertEqual(len(historical_instances), 4)
+        expected_review_call = {
+            "target": "duration_preference",
+            "context_id": "custom_context",
+            "level": "component",
+            "only_use_for_validation": False,
+            "include_low_relevance": True,
+            "min_obs": 11,
+            "plausible_threshold": 0.8,
+            "mixed_threshold": 0.3,
+            "output": "report",
+        }
+        for historical, expected_horizons in zip(
+            historical_instances,
+            expected_case_horizons * 2,
+        ):
+            self.assertEqual(
+                historical.context_paths,
+                ["custom/context.yaml"],
+            )
+            self.assertEqual(historical.review_calls, [expected_review_call])
+            self.assertEqual(historical.result.horizons, expected_horizons)
+            self.assertEqual(
+                historical.result.horizon_overrides,
+                expected_horizons,
+            )
+            self.assertEqual(
+                historical.result.default_horizons,
+                HorizonCaseCalculatorFake.configured_defaults,
+            )
+
+    def test_compare_horizon_cases_non_summary_metadata_and_row_order(self):
+        grid = {
+            "rates": [90, 80],
+            "credit": [None],
+        }
+        base_horizons = {
+            "rates": 150,
+            "credit": 75,
+            "inflation": 25,
+        }
+        original_grid = copy.deepcopy(grid)
+        original_base_horizons = copy.deepcopy(base_horizons)
+
+        with (
+            patch(
+                "module1_sensitivity_diagnostics.Module1Calculator",
+                HorizonCaseCalculatorFake,
+            ),
+            patch(
+                "module1_sensitivity_diagnostics.Module1HistoricalAnalysis",
+                HorizonCaseHistoricalFake,
+            ),
+        ):
+            actual = Module1SensitivityDiagnostics.compare_horizon_cases(
+                horizon_grid=grid,
+                base_horizons=base_horizons,
+                historical_context_path="context/path.yaml",
+                output="detail",
+            )
+
+        expected = pd.DataFrame(
+            {
+                "case_id": [
+                    "case_000",
+                    "case_000",
+                    "case_001",
+                    "case_001",
+                ],
+                "rates": [90, 90, 80, 80],
+                "credit": [75, 75, 75, 75],
+                "inflation": [25, 25, 25, 25],
+                "row_id": ["first", "second", "first", "second"],
+                "observed": [90, 91, 80, 81],
+            }
+        )
+        pd.testing.assert_frame_equal(actual, expected)
+        self.assertEqual(grid, original_grid)
+        self.assertEqual(base_horizons, original_base_horizons)
+        self.assertEqual(len(HorizonCaseCalculatorFake.instances), 3)
+        self.assertEqual(
+            [
+                calc.constructor_horizons
+                for calc in HorizonCaseCalculatorFake.instances[1:]
+            ],
+            [
+                {"rates": 90, "credit": 75, "inflation": 25},
+                {"rates": 80, "credit": 75, "inflation": 25},
+            ],
+        )
+        self.assertEqual(
+            [
+                historical.context_paths
+                for historical in HorizonCaseHistoricalFake.instances
+            ],
+            [["context/path.yaml"], ["context/path.yaml"]],
+        )
+        expected_review_call = {
+            "target": None,
+            "context_id": None,
+            "level": None,
+            "only_use_for_validation": True,
+            "include_low_relevance": False,
+            "min_obs": 20,
+            "plausible_threshold": 0.70,
+            "mixed_threshold": 0.45,
+            "output": "detail",
+        }
+        self.assertEqual(
+            [
+                historical.review_calls
+                for historical in HorizonCaseHistoricalFake.instances
+            ],
+            [[expected_review_call], [expected_review_call]],
+        )
 
 
 class SensitivityPublicOutputTests(unittest.TestCase):
