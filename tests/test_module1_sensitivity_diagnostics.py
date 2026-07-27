@@ -75,6 +75,65 @@ SMOOTHING_DETAIL_COLUMNS = [
     "smoothed_credit_stance_strength",
 ]
 
+SMOOTHING_PAIR_METRIC_SUFFIXES = [
+    "both_valid_count",
+    "both_valid_changed_count",
+    "both_valid_changed_ratio",
+    "one_sided_missing_count",
+    "one_sided_missing_ratio",
+    "aligned_count",
+    "aligned_changed_count",
+    "aligned_changed_ratio",
+    "mean_abs_diff",
+]
+
+CURVE_SMOOTHING_SUMMARY_COLUMNS = [
+    "total_rows",
+    "valid_rows",
+    *[
+        f"{prefix}_{suffix}"
+        for prefix in (
+            "curve_change_score",
+            "curve_state_score",
+            "curve_move_driver_score",
+            "curve_positioning_score",
+        )
+        for suffix in SMOOTHING_PAIR_METRIC_SUFFIXES
+    ],
+    "raw_curve_score_change_count",
+    "smoothed_curve_score_change_count",
+    "curve_score_change_reduction_count",
+    "curve_score_change_reduction_ratio",
+    "raw_curve_one_day_spike_count",
+    "smoothed_curve_one_day_spike_count",
+    "curve_one_day_spike_reduction_count",
+    "curve_one_day_spike_reduction_ratio",
+]
+
+CURVE_SMOOTHING_DETAIL_COLUMNS = [
+    "curve_10y2y_change",
+    "curve_10y2y_level",
+    "curve_10y2y_change_prepared_for_curve_change",
+    "curve_10y2y_level_prepared_for_curve_state",
+    "dgs2_change_prepared_for_curve_move_driver",
+    "dgs10_change_prepared_for_curve_move_driver",
+    "dgs2_change_filtered_for_curve_move_driver",
+    "dgs10_change_filtered_for_curve_move_driver",
+    "raw_curve_change_score",
+    "raw_curve_state_score",
+    "raw_curve_move_driver_score",
+    "smoothed_curve_change_score",
+    "smoothed_curve_state_score",
+    "smoothed_curve_move_driver_score",
+    "raw_curve_positioning_score",
+    "smoothed_curve_positioning_score",
+    "score_diff",
+    "raw_curve_positioning",
+    "raw_curve_positioning_strength",
+    "smoothed_curve_positioning",
+    "smoothed_curve_positioning_strength",
+]
+
 THRESHOLD_SUMMARY_COLUMNS = [
     "min_abs_value",
     "total_rows",
@@ -1004,6 +1063,182 @@ class SensitivityPublicOutputTests(unittest.TestCase):
         self.assertEqual(
             frame_fingerprint(with_detail["detail"]),
             "728271beb289e32097402ca323f81dc212e20ae707abcce41308baef99360cbe",
+        )
+        self.assertEqual(windows, original_windows)
+        self.assert_result_unchanged(original_result)
+
+    def test_smoothing_auto_resolution_uses_configured_layers(self):
+        original_result = self.snapshot_result()
+
+        sole_score = Module1SensitivityDiagnostics(self.result)
+        sole_score_config = sole_score.module1_config["components"][
+            "credit_spread_change"
+        ]["score"]
+        sole_score_config["input_preparation"].pop("smoothing")
+        sole_score_config["smoothing"] = "score_smoothing"
+        sole_score_result = sole_score.compare_smoothing_effect("credit")
+        self.assertEqual(
+            sole_score_result["summary"].iloc[0].to_dict(),
+            {
+                "target": "credit",
+                "smoothing_layer": "score",
+                "status": "not_implemented",
+                "reason": "Score-level smoothing comparison is not implemented.",
+            },
+        )
+
+        ambiguous = Module1SensitivityDiagnostics(self.result)
+        ambiguous.module1_config["components"]["credit_spread_change"]["score"][
+            "smoothing"
+        ] = "score_smoothing"
+        with self.assertRaisesRegex(
+            ValueError,
+            (
+                r"Automatic smoothing-layer resolution is ambiguous for target "
+                r"'credit': configured layers are "
+                r"\['input_preparation', 'score'\]\. "
+                r"Pass smoothing_layer explicitly\."
+            ),
+        ):
+            ambiguous.compare_smoothing_effect("credit")
+
+        no_layer = Module1SensitivityDiagnostics(self.result)
+        no_layer_score = no_layer.module1_config["components"][
+            "credit_spread_change"
+        ]["score"]
+        no_layer_score["input_preparation"].pop("smoothing")
+        no_layer_result = no_layer.compare_smoothing_effect("credit")
+        self.assertEqual(
+            no_layer_result["summary"].iloc[0].to_dict(),
+            {
+                "target": "credit",
+                "smoothing_layer": "auto",
+                "status": "not_applicable",
+                "reason": "Target 'credit' does not use 'auto' smoothing.",
+            },
+        )
+
+        duration = self.sensitivity.compare_smoothing_effect("duration")
+        self.assertEqual(
+            duration["summary"].iloc[0][
+                ["target", "smoothing_layer", "status"]
+            ].tolist(),
+            ["duration", "score", "not_implemented"],
+        )
+        explicit_score = self.sensitivity.compare_smoothing_effect(
+            "credit",
+            smoothing_layer="score",
+        )
+        self.assertEqual(
+            explicit_score["summary"].iloc[0].to_dict(),
+            {
+                "target": "credit",
+                "smoothing_layer": "score",
+                "status": "not_applicable",
+                "reason": "Target 'credit' does not use 'score' smoothing.",
+            },
+        )
+        with self.assertRaisesRegex(
+            ValueError,
+            (
+                r"Unsupported smoothing_layer 'other'\. Allowed values are: "
+                r"\"auto\", \"input_preparation\", \"score\"\."
+            ),
+        ):
+            self.sensitivity.compare_smoothing_effect(
+                "credit",
+                smoothing_layer="other",
+            )
+        self.assert_result_unchanged(original_result)
+
+    def test_curve_smoothing_alias_context_and_fingerprints_are_unchanged(self):
+        windows = {
+            "focus": ("2020-03-02", "2020-03-06"),
+            "empty": ("1900-01-01", "1900-01-02"),
+        }
+        original_windows = copy.deepcopy(windows)
+        original_result = self.snapshot_result()
+
+        canonical = self.sensitivity.compare_smoothing_effect(
+            "curve_positioning",
+            windows=windows,
+            include_detail=True,
+        )
+        alias = self.sensitivity.compare_smoothing_effect(
+            "curve",
+            windows=windows,
+            include_detail=True,
+        )
+        explicit = self.sensitivity.compare_smoothing_effect(
+            "curve",
+            smoothing_layer="input_preparation",
+            windows=windows,
+            include_detail=False,
+        )
+
+        assert_nested_outputs_equal(self, canonical, alias)
+        self.assertEqual(list(explicit), ["summary", "window_summary"])
+        pd.testing.assert_frame_equal(canonical["summary"], explicit["summary"])
+        pd.testing.assert_frame_equal(
+            canonical["window_summary"],
+            explicit["window_summary"],
+        )
+        self.assertEqual(
+            list(canonical["summary"].columns),
+            CURVE_SMOOTHING_SUMMARY_COLUMNS,
+        )
+        self.assertEqual(
+            list(canonical["window_summary"].columns),
+            CURVE_SMOOTHING_SUMMARY_COLUMNS + ["window_id", "start", "end"],
+        )
+        self.assertEqual(
+            list(canonical["detail"].columns),
+            CURVE_SMOOTHING_DETAIL_COLUMNS,
+        )
+        self.assertTrue(canonical["detail"].index.equals(self.result.features.index))
+        self.assertTrue(canonical["detail"].iloc[0, :11].isna().all())
+        focus = canonical["detail"].loc["2020-03-02"]
+        self.assertAlmostEqual(focus["curve_10y2y_change"], 0.19)
+        self.assertAlmostEqual(
+            focus["curve_10y2y_change_prepared_for_curve_change"],
+            0.12133333333333339,
+        )
+        self.assertAlmostEqual(
+            focus["dgs2_change_prepared_for_curve_move_driver"],
+            -0.2293333333333334,
+        )
+        self.assertEqual(focus["raw_curve_move_driver_score"], 1.0)
+
+        summary = canonical["summary"].iloc[0]
+        self.assertEqual(
+            summary[
+                [
+                    "curve_positioning_score_one_sided_missing_count",
+                    "raw_curve_score_change_count",
+                    "smoothed_curve_score_change_count",
+                    "curve_score_change_reduction_count",
+                    "raw_curve_one_day_spike_count",
+                    "smoothed_curve_one_day_spike_count",
+                    "curve_one_day_spike_reduction_count",
+                ]
+            ].tolist(),
+            [388, 128, 19, 109, 37, 0, 37],
+        )
+        empty = canonical["window_summary"].iloc[1]
+        self.assertEqual(empty["total_rows"], 0)
+        self.assertTrue(pd.isna(empty["curve_score_change_reduction_ratio"]))
+        self.assertTrue(pd.isna(empty["curve_one_day_spike_reduction_ratio"]))
+        self.assertEqual(
+            frame_fingerprint(canonical["summary"]),
+            "c5b1e494b9cc90d35e62a4024390d475526f6f365fa5f6bac9ea0811074cd6b3",
+        )
+        self.assertEqual(
+            frame_fingerprint(canonical["window_summary"]),
+            "27d9c2ed7a071d9c7a0783ad8cec85fa634bbc5e98c4ee52a396214e29b0fd06",
+        )
+        self.assertEqual(
+            frame_fingerprint(canonical["detail"]),
+            "24f5f529340cd019c79ff19c716c1d6ca1eb9146d77b42d51a16b84e831ffcc9",
         )
         self.assertEqual(windows, original_windows)
         self.assert_result_unchanged(original_result)
