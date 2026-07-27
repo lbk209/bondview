@@ -1,75 +1,24 @@
 import copy
-from dataclasses import dataclass
-from collections.abc import Mapping
+from dataclasses import dataclass, replace
 
 import pandas as pd
 from tqdm.notebook import tqdm
 
-from module1_analysis import Module1Analysis, TargetContextResult
 from module1_calculator import Module1Calculator, Module1Result
+from module1_diagnostics import (
+    DiagnosticInputSpec,
+    Module1Diagnostics,
+    RuleMappedDiagnosticSpec,
+)
 from module1_historical_analysis import Module1HistoricalAnalysis
 
 
 @dataclass(frozen=True)
-class RuleMappedDiagnosticSpec:
-    target: str
-    function: str
-    score_input_cols: tuple[str, ...]
-    raw_state_cols: tuple[str, ...]
-    stabilized_state_cols: tuple[str, ...]
-    rule_case_col: str
-    final_score_col: str
-    stance_label_col: str
-    strength_label_col: str
-    component_names: tuple[str, ...] = ()
-    stabilization_change_cols: tuple[str, ...] = ()
-    stabilization_change_any_col: str | None = None
-    base_rule_score_col: str | None = None
-    adjustment_col: str | None = None
-    adjusted_score_col: str | None = None
-    rule_metadata_cols: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True)
-class SmoothingDiagnosticComponentScorePair:
-    source_score_col: str
-    raw_col: str
-    smoothed_col: str
-    metric_prefix: str
-
-
-@dataclass(frozen=True)
-class SmoothingDiagnosticContextColumn:
-    output_col: str
-    feature_col: str | None = None
-    data_col: str | None = None
-
-
-@dataclass(frozen=True)
 class SmoothingDiagnosticTargetProfile:
-    target: str
-    display_target: str
     spec: RuleMappedDiagnosticSpec
-    component_score_pairs: tuple[SmoothingDiagnosticComponentScorePair, ...]
-    context_columns: tuple[SmoothingDiagnosticContextColumn, ...]
-    raw_final_score_col: str
-    smoothed_final_score_col: str
-    raw_stance_label_col: str
-    smoothed_stance_label_col: str
-    raw_strength_label_col: str
-    smoothed_strength_label_col: str
+    display_target: str
     score_diff_col: str
-    final_score_metric_prefix: str
     score_change_metric_prefix: str
-
-
-@dataclass(frozen=True)
-class DiagnosticInputSpec:
-    component: str
-    source: str
-    kind: str
-    output: str
-    role: str | None = None
 
 
 class Module1SensitivityDiagnostics:
@@ -83,7 +32,7 @@ class Module1SensitivityDiagnostics:
         historical_expected_label_validation: dict | None = None,
     ):
         self.result = result
-        self.analysis = Module1Analysis(result)
+        self._diagnostics = Module1Diagnostics(result)
         self.data = self._copy_result_value(result.data)
         self.features = self._copy_result_value(result.features)
         self.scores = self._copy_result_value(result.scores)
@@ -111,8 +60,6 @@ class Module1SensitivityDiagnostics:
         )
         self.horizons = self._copy_result_value(result.horizons)
         self.historical_context = historical_context
-        self.historical_cases = historical_cases
-        self.historical_expected_label_validation = historical_expected_label_validation
 
     @staticmethod
     def _copy_result_value(value):
@@ -123,44 +70,6 @@ class Module1SensitivityDiagnostics:
         if isinstance(value, pd.Series):
             return value.copy(deep=True)
         return copy.deepcopy(value)
-
-    def _resolve_target(self, target: str, level: str | None, allow_group: bool = False):
-        return self.analysis.resolve_target(target, level, allow_group=allow_group)
-
-    def get_target_context(
-        self, target, level, dependency_level="auto", include_labels=True,
-        include_strength=True, start=None, end=None,
-        ffill_inputs=True,
-    ) -> TargetContextResult:
-        return self.analysis.get_target_context(
-            target=target, level=level, dependency_level=dependency_level,
-            include_labels=include_labels, include_strength=include_strength,
-            start=start, end=end, ffill_inputs=ffill_inputs,
-        )
-
-    def trace_stance_score(
-        self, target: str, start=None, end=None,
-        include_raw_input: bool = True, include_labels: bool = True,
-    ) -> pd.DataFrame:
-        if target is None or str(target).strip() == "":
-            raise ValueError("target must be a non-empty stance identifier.")
-        target_info = self._resolve_target(target, level="stance")
-        stance_name = target_info.canonical_target
-        stance_config = target_info.config
-        function = stance_config.get("function")
-        if (
-            function != "weighted_sum"
-            and isinstance(function, str)
-            and function.strip() != ""
-        ):
-            return self._trace_rule_mapped_stance_score(
-                stance_name, start=start, end=end,
-                include_raw_input=include_raw_input, include_labels=include_labels,
-            )
-        raise ValueError(
-            f"Unsupported stance trace function for sensitivity diagnostics: "
-            f"{stance_name}: {function}"
-        )
 
     @classmethod
     def compare_horizon_cases(
@@ -264,8 +173,8 @@ class Module1SensitivityDiagnostics:
                 series_config_path=series_config_path,
                 module1_config_path=module1_config_path,
                 data_path=data_path,
+                horizons=case_horizons,
             )
-            calc.horizons = case_horizons
             calc.run_module1_pipeline()
 
             historical = Module1HistoricalAnalysis(calc.to_module1_result())
@@ -427,14 +336,16 @@ class Module1SensitivityDiagnostics:
         ) -> pd.DataFrame:
             if self.features is None:
                 raise ValueError(
-                    "Run calculate_features() before recalculating diagnostic component scores."
+                    "Module1Result.features is required for recalculating "
+                    "diagnostic component scores."
                 )
             if self.component_config is None or self.exposure_stance_config is None:
                 raise ValueError(
-                    "Run load_module1_config() before recalculating diagnostic component scores."
+                    "Module1Result.module1_config is required for recalculating "
+                    "diagnostic component scores."
                 )
 
-            component_names = self._diagnostic_component_names_for_target(target)
+            component_names = self._diagnostics.diagnostic_component_names(target)
             if component_names is None:
                 raise ValueError(f"Unable to resolve diagnostic components for target: {target}")
 
@@ -473,16 +384,17 @@ class Module1SensitivityDiagnostics:
         ) -> dict[str, pd.Series]:
             if self.scores is None:
                 raise ValueError(
-                    "Run calculate_component_scores() before reconstructing diagnostic stances."
+                    "Module1Result.scores is required for reconstructing "
+                    "diagnostic stances."
                 )
             if self.exposure_stance_config is None:
                 raise ValueError(
-                    "Run load_module1_config() before reconstructing diagnostic stances."
+                    "Module1Result.module1_config is required for reconstructing "
+                    "diagnostic stances."
                 )
 
-            context = self._resolve_rule_mapped_diagnostic_config(target)
-            spec = self._derive_rule_mapped_diagnostic_spec_from_context(context)
-            stance_config = context["stance_config"]
+            spec = self._diagnostics.rule_mapped_diagnostic_spec(target)
+            stance_config = spec.stance_config
             temporary_scores = self.scores.copy()
             for score_col in spec.score_input_cols:
                 alternate_col = f"raw_{score_col}"
@@ -498,7 +410,7 @@ class Module1SensitivityDiagnostics:
                 self.component_config,
                 spec.target,
                 stance_config,
-                context["rule_mapped_spec"],
+                spec.rule_mapped_schema,
             )
 
             score = reconstruction[spec.final_score_col]
@@ -526,11 +438,10 @@ class Module1SensitivityDiagnostics:
         ) -> pd.DataFrame:
             if self.scores is None:
                 raise ValueError(
-                    "Run calculate_component_scores() before comparing parameter effects."
+                    "Module1Result.scores is required for comparing parameter effects."
                 )
 
-            context = self._resolve_rule_mapped_diagnostic_config(target)
-            spec = self._derive_rule_mapped_diagnostic_spec_from_context(context)
+            spec = self._diagnostics.rule_mapped_diagnostic_spec(target)
             if component_score_col not in spec.score_input_cols:
                 raise ValueError(
                     f"{component_score_col} is not an input to rule-mapped stance {target}."
@@ -579,199 +490,24 @@ class Module1SensitivityDiagnostics:
             )
             return detail
 
-    def _diagnostic_input_column_name(
-            self,
-            source: str,
-            kind: str,
-            component: str,
-        ) -> str:
-            if kind not in {"prepared", "filtered"}:
-                raise ValueError(f"Unsupported diagnostic input kind: {kind}")
-            return f"{source}_{kind}_for_{component}"
-
-    def _component_by_score_output(self) -> dict[str, str]:
-            if self.component_config is None:
-                raise ValueError("Run load_module1_config() before resolving component outputs.")
-
-            return {
-                component.get("score", {}).get("output"): component_name
-                for component_name, component in self.component_config["components"].items()
-                if component.get("score", {}).get("output") is not None
-            }
-
-    def _diagnostic_component_filter_for_target(
-            self,
-            target: str | None,
-        ) -> set[str] | None:
-            component_names = self._diagnostic_component_names_for_target(target)
-            return None if component_names is None else set(component_names)
-
-    def _diagnostic_component_names_for_target(
-            self,
-            target: str | None,
-        ) -> tuple[str, ...] | None:
-            if target is None:
-                return None
-            if self.exposure_stance_config is None:
-                raise ValueError("Run load_module1_config() before prepared-input diagnostics.")
-
-            stance_config = self.exposure_stance_config["exposure_stances"].get(target)
-            if stance_config is None:
-                raise ValueError(f"Unknown prepared-input diagnostic target: {target}")
-
-            component_by_score_output = self._component_by_score_output()
-            component_names = set()
-            for item in stance_config.get("inputs", []):
-                if not isinstance(item, dict):
-                    continue
-                score_output = item.get("component")
-                component_name = component_by_score_output.get(score_output)
-                if component_name is not None:
-                    component_names.add(component_name)
-            return tuple(
-                component_name
-                for component_name in component_by_score_output.values()
-                if component_name in component_names
-            )
-
-    def _score_input_features_for_diagnostic_component(
-            self,
-            component_name: str,
-            score_config: dict,
-        ) -> tuple[str, ...]:
-            input_name = score_config.get("input")
-            if input_name is not None:
-                return (input_name,)
-
-            inputs = score_config.get("inputs")
-            if not isinstance(inputs, list):
-                return ()
-
-            return tuple(
-                item.get("feature")
-                for item in inputs
-                if isinstance(item, dict) and item.get("feature") is not None
-            )
-
-    def _score_input_features_for_diagnostic_components(
-            self,
-            component_names: tuple[str, ...],
-        ) -> tuple[str, ...]:
-            if self.component_config is None:
-                raise ValueError("Run load_module1_config() before prepared-input diagnostics.")
-
-            features = []
-            seen = set()
-            components = self.component_config["components"]
-            for component_name in component_names:
-                score_config = components[component_name].get("score", {})
-                for feature in self._score_input_features_for_diagnostic_component(
-                    component_name,
-                    score_config,
-                ):
-                    if feature not in seen:
-                        features.append(feature)
-                        seen.add(feature)
-            return tuple(features)
-
-    def _diagnostic_input_specs(
-            self,
-            target: str | None = None,
-            *,
-            kinds: tuple[str, ...] = ("prepared", "filtered"),
-        ) -> tuple[DiagnosticInputSpec, ...]:
-            if self.component_config is None:
-                raise ValueError("Run load_module1_config() before prepared-input diagnostics.")
-
-            components = self.component_config["components"]
-            target_component_filter = self._diagnostic_component_filter_for_target(target)
-            specs = []
-            requested_kinds = set(kinds)
-            for component_name, component in components.items():
-                if (
-                    target_component_filter is not None
-                    and component_name not in target_component_filter
-                ):
-                    continue
-
-                diagnostics = component.get("diagnostics") or {}
-                prepared_inputs = diagnostics.get("prepared_inputs") or {}
-                if prepared_inputs.get("enabled") is not True:
-                    continue
-
-                score_config = component.get("score", {})
-                sources = self._score_input_features_for_diagnostic_component(
-                    component_name,
-                    score_config,
-                )
-                if not sources:
-                    raise ValueError(
-                        "Prepared-input diagnostics are enabled but no score input "
-                        f"feature is configured for component: {component_name}"
-                    )
-
-                input_roles = prepared_inputs.get("input_roles") or {}
-                for source in sources:
-                    role = input_roles.get(source)
-                    if "prepared" in requested_kinds:
-                        specs.append(
-                            DiagnosticInputSpec(
-                                component=component_name,
-                                source=source,
-                                kind="prepared",
-                                role=role,
-                                output=self._diagnostic_input_column_name(
-                                    source,
-                                    "prepared",
-                                    component_name,
-                                ),
-                            )
-                        )
-                    input_preparation = score_config.get("input_preparation") or {}
-                    if (
-                        "filtered" in requested_kinds
-                        and input_preparation.get("min_abs_value") is not None
-                    ):
-                        specs.append(
-                            DiagnosticInputSpec(
-                                component=component_name,
-                                source=source,
-                                kind="filtered",
-                                role=role,
-                                output=self._diagnostic_input_column_name(
-                                    source,
-                                    "filtered",
-                                    component_name,
-                                ),
-                            )
-                        )
-            return tuple(specs)
-
-    def _diagnostic_input_spec(
+    def _prepared_input_sources_for_diagnostic_components(
             self,
             target: str,
-            component: str,
-            source: str,
-            kind: str,
-            role: str | None = None,
-        ) -> DiagnosticInputSpec:
-            matches = [
-                spec
-                for spec in self._diagnostic_input_specs(
-                    target,
-                    kinds=("prepared", "filtered"),
-                )
-                if spec.component == component
-                and spec.source == source
-                and spec.kind == kind
-                and (role is None or spec.role == role)
-            ]
-            if len(matches) != 1:
-                raise ValueError(
-                    "Expected exactly one prepared/filtered diagnostic input spec for "
-                    f"{target} {component} {source} {kind}, found {len(matches)}."
-                )
-            return matches[0]
+            component_names: tuple[str, ...],
+        ) -> tuple[str, ...]:
+            specs = self._diagnostics.diagnostic_input_specs(
+                target,
+                kinds=("prepared",),
+            )
+            features = []
+            seen = set()
+            for component_name in component_names:
+                for spec in specs:
+                    if spec.component != component_name or spec.source in seen:
+                        continue
+                    features.append(spec.source)
+                    seen.add(spec.source)
+            return tuple(features)
 
     def _diagnostic_input_spec_by_role(
             self,
@@ -782,7 +518,7 @@ class Module1SensitivityDiagnostics:
         ) -> DiagnosticInputSpec:
             matches = [
                 spec
-                for spec in self._diagnostic_input_specs(
+                for spec in self._diagnostics.diagnostic_input_specs(
                     target,
                     kinds=("prepared", "filtered"),
                 )
@@ -796,311 +532,6 @@ class Module1SensitivityDiagnostics:
                     f"{target} {component} {kind} role={role}, found {len(matches)}."
                 )
             return matches[0]
-
-    def _prepared_filtered_input_columns(self, target: str) -> pd.DataFrame:
-            if self.features is None:
-                raise ValueError("Run calculate_features() before prepared-input diagnostics.")
-            if self.component_config is None:
-                raise ValueError("Run load_module1_config() before prepared-input diagnostics.")
-
-            components = self.component_config["components"]
-            specs = self._diagnostic_input_specs(
-                target,
-                kinds=("prepared", "filtered"),
-            )
-            prepared = pd.DataFrame(index=self.features.index)
-
-            prepared_specs = [spec for spec in specs if spec.kind == "prepared"]
-            for spec in prepared_specs:
-                if spec.source not in self.features.columns:
-                    continue
-                score_config = components.get(spec.component, {}).get("score", {})
-                prepared[spec.output] = Module1Calculator.prepare_component_input_series(
-                    self.features[spec.source],
-                    score_config.get("input_preparation"),
-                    self.horizons,
-                )
-
-            for spec in (spec for spec in specs if spec.kind == "filtered"):
-                source_spec = self._diagnostic_input_spec(
-                    target,
-                    spec.component,
-                    spec.source,
-                    "prepared",
-                    role=spec.role,
-                )
-                if source_spec.output not in prepared.columns:
-                    continue
-                score_config = components.get(spec.component, {}).get("score", {})
-                input_preparation = score_config.get("input_preparation") or {}
-                min_abs_value = input_preparation.get("min_abs_value")
-                if min_abs_value is None:
-                    continue
-                prepared[spec.output] = prepared[source_spec.output].mask(
-                    prepared[source_spec.output].abs() < min_abs_value,
-                    0.0,
-                )
-
-            return prepared
-
-    def _resolve_rule_mapped_diagnostic_config(self, target: str) -> dict:
-            if target is None or str(target).strip() == "":
-                raise ValueError("target must be a non-empty stance identifier.")
-
-            target_info = self._resolve_target(target, level="stance")
-            stance_name = target_info.canonical_target
-            stance_config = target_info.config
-            function = stance_config.get("function") if stance_config else None
-            if not isinstance(stance_config, Mapping) or "rule_mapped" not in stance_config:
-                raise ValueError(
-                    f"Unsupported rule-mapped stance diagnostic target {target}: "
-                    f"{function}. Schema-backed rule_mapped config is required."
-                )
-            rule_mapped_spec = Module1Calculator.resolve_rule_mapped_stance_spec(
-                stance_name,
-                stance_config,
-                self.component_config,
-            )
-            score_input_cols = tuple(
-                state_input.source_score_col
-                for state_input in rule_mapped_spec.state_inputs
-            )
-            return {
-                "target_info": target_info,
-                "stance_name": stance_name,
-                "stance_config": stance_config,
-                "function": function,
-                "score_input_cols": score_input_cols,
-                "final_score_col": target_info.score_col or stance_config["score_output"],
-                "stance_label_col": target_info.label_col or stance_config["stance_output"],
-                "strength_label_col": (
-                    target_info.strength_col or stance_config["strength_output"]
-                ),
-                "rule_mapped_spec": rule_mapped_spec,
-            }
-
-    def _derive_rule_mapped_diagnostic_spec_from_context(
-            self,
-            context: dict,
-        ) -> RuleMappedDiagnosticSpec:
-            stance_name = context["stance_name"]
-            function = context["function"]
-            rule_mapped_spec = context.get("rule_mapped_spec")
-            adjustment = rule_mapped_spec.adjustment
-
-            return RuleMappedDiagnosticSpec(
-                target=stance_name,
-                function=function,
-                score_input_cols=tuple(
-                    state_input.source_score_col
-                    for state_input in rule_mapped_spec.state_inputs
-                ),
-                raw_state_cols=tuple(
-                    state_input.raw_output_col
-                    for state_input in rule_mapped_spec.state_inputs
-                ),
-                stabilized_state_cols=tuple(
-                    state_input.stabilized_output_col
-                    for state_input in rule_mapped_spec.state_inputs
-                ),
-                rule_case_col=rule_mapped_spec.rule_case_output_col,
-                final_score_col=context["final_score_col"],
-                stance_label_col=context["stance_label_col"],
-                strength_label_col=context["strength_label_col"],
-                component_names=tuple(
-                    state_input.diagnostic_component or state_input.component_name
-                    for state_input in rule_mapped_spec.state_inputs
-                ),
-                stabilization_change_cols=tuple(
-                    state_input.stabilization_changed_output_col
-                    for state_input in rule_mapped_spec.state_inputs
-                ),
-                stabilization_change_any_col=(
-                    rule_mapped_spec.stabilization_changed_any_output_col
-                ),
-                base_rule_score_col=rule_mapped_spec.base_rule_score_output_col,
-                adjustment_col=(
-                    adjustment.adjustment_output_col
-                    if adjustment is not None
-                    else None
-                ),
-                adjusted_score_col=rule_mapped_spec.adjusted_score_output_col,
-                rule_metadata_cols=(
-                    adjustment.metadata_output_cols
-                    if adjustment is not None
-                    else ()
-                ),
-            )
-
-    def _trace_rule_mapped_stance_score(
-            self,
-            target: str,
-            start=None,
-            end=None,
-            include_raw_input: bool = True,
-            include_labels: bool = True,
-        ) -> pd.DataFrame:
-            if self.scores is None:
-                raise ValueError(
-                    "Run calculate_component_scores() before rule-mapped stance diagnostics."
-                )
-            if self.exposure_stance is None:
-                raise ValueError(
-                    "Run calculate_exposure_stance() before rule-mapped stance diagnostics."
-                )
-            if self.exposure_stance_config is None:
-                raise ValueError(
-                    "Run load_module1_config() before rule-mapped stance diagnostics."
-                )
-            if include_labels and self.labels is None:
-                raise ValueError(
-                    "Run calculate_component_labels() before rule-mapped stance "
-                    "diagnostics with include_labels=True."
-                )
-
-            context = self._resolve_rule_mapped_diagnostic_config(target)
-            spec = self._derive_rule_mapped_diagnostic_spec_from_context(context)
-            target_info = self._resolve_target(spec.target, level="stance")
-            stance_config = target_info.config
-            ctx = self.get_target_context(
-                target=spec.target,
-                level="stance",
-                dependency_level="full" if include_raw_input else "components",
-                include_labels=True,
-                include_strength=True,
-            )
-            required_stance_cols = [
-                spec.final_score_col,
-                spec.stance_label_col,
-                spec.strength_label_col,
-            ]
-            missing_stance_cols = [
-                col
-                for col in required_stance_cols
-                if col is None or col not in ctx.data.columns
-            ]
-            if missing_stance_cols:
-                raise ValueError(
-                    f"Rule-mapped stance outputs are missing for {spec.target}: "
-                    f"{missing_stance_cols}"
-                )
-
-            diagnostics = Module1Calculator.build_rule_mapped_stance_score_breakdown(
-                self.scores,
-                self.component_config,
-                spec.target,
-                stance_config,
-                context["rule_mapped_spec"],
-            )
-            diagnostics = pd.concat(
-                [
-                    diagnostics,
-                    ctx.data[[spec.stance_label_col, spec.strength_label_col]].reindex(
-                        diagnostics.index
-                    ),
-                ],
-                axis=1,
-            )
-
-            if include_labels:
-                label_cols = list(ctx.returned_columns["component_labels"])
-                missing_label_cols = [
-                    col for col in label_cols if col not in ctx.data.columns
-                ]
-                if missing_label_cols:
-                    raise ValueError(
-                        f"Component labels are missing for {spec.target}: "
-                        f"{missing_label_cols}"
-                    )
-                diagnostics = pd.concat(
-                    [diagnostics, ctx.data[label_cols].reindex(diagnostics.index)],
-                    axis=1,
-                )
-
-            if include_raw_input:
-                context_parts = self._rule_mapped_trace_context_parts(
-                    spec,
-                    ctx,
-                    diagnostics.index,
-                )
-                if context_parts:
-                    diagnostics = pd.concat([diagnostics, *context_parts], axis=1)
-
-            if start is not None:
-                diagnostics = diagnostics.loc[diagnostics.index >= pd.to_datetime(start)]
-            if end is not None:
-                diagnostics = diagnostics.loc[diagnostics.index <= pd.to_datetime(end)]
-
-            return diagnostics
-
-    def _rule_mapped_trace_context_parts(
-            self,
-            spec: RuleMappedDiagnosticSpec,
-            ctx: TargetContextResult,
-            index: pd.Index,
-        ) -> list[pd.DataFrame]:
-            if spec.target == "credit":
-                context_parts = []
-                feature_cols = list(ctx.returned_columns["features"])
-                raw_input_cols = list(ctx.returned_columns["raw_inputs"])
-                if "baa10y_change" in feature_cols:
-                    context_parts.append(ctx.data[["baa10y_change"]].reindex(index))
-                if "baa10y" in raw_input_cols:
-                    context_parts.append(ctx.data[["baa10y"]].reindex(index))
-                context_parts.append(
-                    self._prepared_filtered_input_columns(spec.target).reindex(index)
-                )
-                return context_parts
-
-            if spec.target == "curve_positioning":
-                context_cols = [
-                    col
-                    for col in ["dgs2", "dgs10"]
-                    if col in ctx.returned_columns["raw_inputs"]
-                ]
-                component_names = self._diagnostic_component_names_for_target(spec.target)
-                feature_cols = (
-                    self._score_input_features_for_diagnostic_components(
-                        tuple(reversed(component_names))
-                    )
-                    if component_names is not None
-                    else ()
-                )
-                context_cols.extend(
-                    col
-                    for col in feature_cols
-                    if col in ctx.returned_columns["features"]
-                )
-                context_parts = []
-                if context_cols:
-                    context_parts.append(ctx.data[context_cols].reindex(index))
-                context_parts.append(
-                    self._prepared_filtered_input_columns(spec.target).reindex(index)
-                )
-                return context_parts
-
-            raw_inputs = list(ctx.returned_columns["raw_inputs"])
-            missing_raw_inputs = [col for col in raw_inputs if col not in ctx.data.columns]
-            if missing_raw_inputs:
-                raise ValueError(
-                    f"Raw input columns are unavailable for {spec.target}: "
-                    f"{missing_raw_inputs}"
-                )
-            if raw_inputs:
-                return [ctx.data[raw_inputs].reindex(index)]
-            return []
-
-    def _curve_positioning_stance_config(self) -> dict:
-            if self.exposure_stance_config is None:
-                raise ValueError("Run load_module1_config() before curve diagnostics.")
-
-            stance_config = self.exposure_stance_config["exposure_stances"].get(
-                "curve_positioning"
-            )
-            if stance_config is None:
-                raise ValueError("Curve positioning stance config is missing.")
-
-            return stance_config
 
     def _smoothing_diagnostic_windows(self, windows: dict | None) -> dict:
             if windows is not None:
@@ -1156,7 +587,9 @@ class Module1SensitivityDiagnostics:
 
     def _target_smoothing_layers(self, target: str) -> set[str]:
             if self.module1_config is None:
-                raise ValueError("Run load_module1_config() before smoothing diagnostics.")
+                raise ValueError(
+                    "Module1Result.module1_config is required for smoothing diagnostics."
+                )
 
             target_group = "curve" if target == "curve_positioning" else target
             groups = self.module1_config.get("model_metadata", {}).get("target_groups", {})
@@ -1176,96 +609,32 @@ class Module1SensitivityDiagnostics:
     def _resolve_smoothing_layer(self, target: str, smoothing_layer: str) -> str:
             if smoothing_layer != "auto":
                 return smoothing_layer
-            if target in {"credit", "curve_positioning"}:
-                return "input_preparation"
-            if target == "duration":
-                return "score"
+            configured_layers = self._target_smoothing_layers(target)
+            if len(configured_layers) == 1:
+                return next(iter(configured_layers))
+            if len(configured_layers) > 1:
+                raise ValueError(
+                    "Automatic smoothing-layer resolution is ambiguous for "
+                    f"target {target!r}: configured layers are "
+                    f"{sorted(configured_layers)}. Pass smoothing_layer explicitly."
+                )
             return smoothing_layer
-
-    def _smoothing_context_columns(
-            self,
-            target: str,
-            spec: RuleMappedDiagnosticSpec,
-        ) -> tuple[SmoothingDiagnosticContextColumn, ...]:
-            if target == "credit":
-                component_by_score_output = self._component_by_score_output()
-                components = self.component_config["components"]
-                context_columns = []
-                for score_col in spec.score_input_cols:
-                    component_name = component_by_score_output.get(score_col)
-                    if component_name is None:
-                        continue
-                    score_config = components[component_name].get("score", {})
-                    features = self._score_input_features_for_diagnostic_component(
-                        component_name,
-                        score_config,
-                    )
-                    for feature in features:
-                        feature_config = self.feature_config["features"].get(feature, {})
-                        data_col = (
-                            feature_config.get("input")
-                            if feature_config.get("method") == "level"
-                            else None
-                        )
-                        output_col = data_col if data_col is not None else feature
-                        context_columns.append(
-                            SmoothingDiagnosticContextColumn(
-                                output_col=output_col,
-                                feature_col=feature,
-                                data_col=data_col,
-                            )
-                        )
-                return tuple(
-                    column
-                    for idx, column in enumerate(context_columns)
-                    if column.output_col
-                    not in {prior.output_col for prior in context_columns[:idx]}
-                )
-
-            component_names = self._diagnostic_component_names_for_target(target)
-            return tuple(
-                SmoothingDiagnosticContextColumn(
-                    output_col=feature,
-                    feature_col=feature,
-                )
-                for feature in self._score_input_features_for_diagnostic_components(
-                    component_names or (),
-                )
-            )
 
     def _smoothing_diagnostic_target_profile(
             self,
             target: str,
         ) -> SmoothingDiagnosticTargetProfile:
-            context = self._resolve_rule_mapped_diagnostic_config(target)
-            spec = self._derive_rule_mapped_diagnostic_spec_from_context(context)
-            component_score_pairs = tuple(
-                SmoothingDiagnosticComponentScorePair(
-                    source_score_col=score_col,
-                    raw_col=f"raw_{score_col}",
-                    smoothed_col=f"smoothed_{score_col}",
-                    metric_prefix=score_col,
-                )
-                for score_col in spec.score_input_cols
-            )
+            spec = self._diagnostics.rule_mapped_diagnostic_spec(target)
             return SmoothingDiagnosticTargetProfile(
-                target=spec.target,
-                display_target="curve" if spec.target == "curve_positioning" else spec.target,
                 spec=spec,
-                component_score_pairs=component_score_pairs,
-                context_columns=self._smoothing_context_columns(spec.target, spec),
-                raw_final_score_col=f"raw_{spec.final_score_col}",
-                smoothed_final_score_col=f"smoothed_{spec.final_score_col}",
-                raw_stance_label_col=f"raw_{spec.stance_label_col}",
-                smoothed_stance_label_col=f"smoothed_{spec.stance_label_col}",
-                raw_strength_label_col=f"raw_{spec.strength_label_col}",
-                smoothed_strength_label_col=f"smoothed_{spec.strength_label_col}",
+                display_target=(
+                    "curve" if spec.target == "curve_positioning" else spec.target
+                ),
                 score_diff_col=(
                     "score_diff"
                     if spec.target == "curve_positioning"
                     else f"{spec.final_score_col}_diff"
                 ),
-                final_score_metric_prefix=spec.final_score_col,
                 score_change_metric_prefix=(
                     "curve" if spec.target == "curve_positioning" else spec.target
                 ),
@@ -1274,41 +643,63 @@ class Module1SensitivityDiagnostics:
     def _validate_input_smoothing_detail_prerequisites(self, target: str) -> None:
             if self.features is None:
                 raise ValueError(
-                    f"Run calculate_features() before comparing {target} input smoothing."
+                    f"Module1Result.features is required for comparing "
+                    f"{target} input smoothing."
                 )
             if self.scores is None:
                 raise ValueError(
-                    "Run calculate_component_scores() before comparing "
+                    "Module1Result.scores is required for comparing "
                     f"{target} input smoothing."
                 )
             if self.exposure_stance is None:
                 raise ValueError(
-                    "Run calculate_exposure_stance() before comparing "
+                    "Module1Result.exposure_stance is required for comparing "
                     f"{target} input smoothing."
                 )
             if self.component_config is None or self.exposure_stance_config is None:
                 raise ValueError(
-                    "Run load_module1_config() before comparing "
+                    "Module1Result.module1_config is required for comparing "
                     f"{target} input smoothing."
                 )
 
     def _add_smoothing_context_columns(
             self,
             detail: pd.DataFrame,
-            profile: SmoothingDiagnosticTargetProfile,
+            spec: RuleMappedDiagnosticSpec,
         ) -> None:
-            for column in profile.context_columns:
-                if column.data_col is not None and self.data is not None:
-                    if column.data_col in self.data.columns:
-                        detail[column.output_col] = (
-                            self.data[column.data_col].reindex(detail.index).ffill()
-                        )
-                        continue
+            features = self._prepared_input_sources_for_diagnostic_components(
+                spec.target,
+                spec.component_names,
+            )
+            if spec.target != "credit":
+                for feature in features:
+                    if feature in self.features.columns:
+                        detail[feature] = self.features[feature]
+                return
+
+            seen_outputs = set()
+            for feature in features:
+                feature_config = self.feature_config["features"].get(feature, {})
+                data_col = (
+                    feature_config.get("input")
+                    if feature_config.get("method") == "level"
+                    else None
+                )
+                output_col = data_col if data_col is not None else feature
+                if output_col in seen_outputs:
+                    continue
+                seen_outputs.add(output_col)
                 if (
-                    column.feature_col is not None
-                    and column.feature_col in self.features.columns
+                    data_col is not None
+                    and self.data is not None
+                    and data_col in self.data.columns
                 ):
-                    detail[column.output_col] = self.features[column.feature_col]
+                    detail[output_col] = (
+                        self.data[data_col].reindex(detail.index).ffill()
+                    )
+                    continue
+                if feature in self.features.columns:
+                    detail[output_col] = self.features[feature]
 
     def _rule_mapped_input_smoothing_effect_detail(
             self,
@@ -1316,12 +707,13 @@ class Module1SensitivityDiagnostics:
             profile: SmoothingDiagnosticTargetProfile | None = None,
         ) -> pd.DataFrame:
             profile = profile or self._smoothing_diagnostic_target_profile(target)
+            spec = profile.spec
             self._validate_input_smoothing_detail_prerequisites(profile.display_target)
 
             required_stance_cols = [
-                profile.spec.final_score_col,
-                profile.spec.stance_label_col,
-                profile.spec.strength_label_col,
+                spec.final_score_col,
+                spec.stance_label_col,
+                spec.strength_label_col,
             ]
             missing_stance_cols = [
                 col
@@ -1330,51 +722,53 @@ class Module1SensitivityDiagnostics:
             ]
             if missing_stance_cols:
                 raise ValueError(
-                    f"{profile.target} exposure stance outputs are missing: "
+                    f"{spec.target} exposure stance outputs are missing: "
                     f"{missing_stance_cols}"
                 )
 
             raw_scores = self._recalculate_component_scores_for_input_preparation_diagnostic(
-                profile.target,
+                spec.target,
                 apply_input_preparation=False,
                 output_prefix="raw_",
             )
             detail = pd.DataFrame(index=self.features.index)
-            self._add_smoothing_context_columns(detail, profile)
+            self._add_smoothing_context_columns(detail, spec)
             detail = pd.concat(
                 [
                     detail,
-                    self._prepared_filtered_input_columns(profile.target).reindex(
-                        detail.index
-                    ),
+                    self._diagnostics.prepared_filtered_input_columns(
+                        spec.target
+                    ).reindex(detail.index),
                 ],
                 axis=1,
             )
             detail = pd.concat([detail, raw_scores], axis=1)
-            for pair in profile.component_score_pairs:
-                detail[pair.smoothed_col] = self.scores[pair.source_score_col]
+            for score_col in spec.score_input_cols:
+                detail[f"smoothed_{score_col}"] = self.scores[score_col]
 
             raw_stance = (
                 self._reconstruct_rule_mapped_stance_for_input_preparation_diagnostic(
-                    profile.target,
+                    spec.target,
                     raw_scores,
                 )
             )
-            detail[profile.raw_final_score_col] = raw_stance["score"]
-            detail[profile.smoothed_final_score_col] = self.exposure_stance[
-                profile.spec.final_score_col
+            raw_final_score_col = f"raw_{spec.final_score_col}"
+            smoothed_final_score_col = f"smoothed_{spec.final_score_col}"
+            detail[raw_final_score_col] = raw_stance["score"]
+            detail[smoothed_final_score_col] = self.exposure_stance[
+                spec.final_score_col
             ]
             detail[profile.score_diff_col] = (
-                detail[profile.smoothed_final_score_col]
-                - detail[profile.raw_final_score_col]
+                detail[smoothed_final_score_col]
+                - detail[raw_final_score_col]
             )
-            detail[profile.raw_stance_label_col] = raw_stance["direction"]
-            detail[profile.raw_strength_label_col] = raw_stance["strength"]
-            detail[profile.smoothed_stance_label_col] = self.exposure_stance[
-                profile.spec.stance_label_col
+            detail[f"raw_{spec.stance_label_col}"] = raw_stance["direction"]
+            detail[f"raw_{spec.strength_label_col}"] = raw_stance["strength"]
+            detail[f"smoothed_{spec.stance_label_col}"] = self.exposure_stance[
+                spec.stance_label_col
             ]
-            detail[profile.smoothed_strength_label_col] = self.exposure_stance[
-                profile.spec.strength_label_col
+            detail[f"smoothed_{spec.strength_label_col}"] = self.exposure_stance[
+                spec.strength_label_col
             ]
             return detail
 
@@ -1392,7 +786,12 @@ class Module1SensitivityDiagnostics:
                 window_detail = self._inclusive_window_slice(detail, start, end)
                 row = summary_row_builder(window_detail)
                 window_rows.append(
-                    self._window_summary_row(window_id, start, end, row)
+                    {
+                        **row,
+                        "window_id": window_id,
+                        "start": start,
+                        "end": end,
+                    }
                 )
 
             result = {
@@ -1494,14 +893,6 @@ class Module1SensitivityDiagnostics:
                 ),
             )
 
-    def _credit_stance_config(self) -> dict:
-            if self.exposure_stance_config is None:
-                raise ValueError("Run load_module1_config() before credit diagnostics.")
-            stance_config = self.exposure_stance_config["exposure_stances"].get("credit")
-            if stance_config is None:
-                raise ValueError("Credit exposure stance config is missing.")
-            return stance_config
-
     def _ratio_or_na(self, numerator, denominator):
             return numerator / denominator if denominator else pd.NA
 
@@ -1552,39 +943,18 @@ class Module1SensitivityDiagnostics:
                 "mean_abs_diff": mean_abs_diff,
             }
 
-    def _smoothing_pair_comparison_metrics_for_columns(
-            self,
-            frame: pd.DataFrame,
-            raw_col: str,
-            smoothed_col: str,
-            *,
-            tolerance: float = 1e-10,
-        ) -> dict:
-            return self._smoothing_pair_comparison_metrics(
-                frame[raw_col],
-                frame[smoothed_col],
-                tolerance=tolerance,
-            )
-
-    def _add_prefixed_smoothing_pair_metrics(
-            self,
-            row: dict,
-            prefix: str,
-            metrics: dict,
-        ) -> None:
-            for metric, value in metrics.items():
-                row[f"{prefix}_{metric}"] = value
-
     def _rule_mapped_input_smoothing_summary_row(
             self,
             detail: pd.DataFrame,
             profile: SmoothingDiagnosticTargetProfile,
         ):
             tolerance = 1e-10
-            final_metrics = self._smoothing_pair_comparison_metrics_for_columns(
-                detail,
-                profile.raw_final_score_col,
-                profile.smoothed_final_score_col,
+            spec = profile.spec
+            raw_final_score_col = f"raw_{spec.final_score_col}"
+            smoothed_final_score_col = f"smoothed_{spec.final_score_col}"
+            final_metrics = self._smoothing_pair_comparison_metrics(
+                detail[raw_final_score_col],
+                detail[smoothed_final_score_col],
                 tolerance=tolerance,
             )
 
@@ -1592,39 +962,39 @@ class Module1SensitivityDiagnostics:
                 "total_rows": int(len(detail)),
                 "valid_rows": final_metrics["both_valid_count"],
             }
-            for pair in profile.component_score_pairs:
-                metrics = self._smoothing_pair_comparison_metrics_for_columns(
-                    detail,
-                    pair.raw_col,
-                    pair.smoothed_col,
-                    tolerance=tolerance,
+            for score_col in spec.score_input_cols:
+                row.update(
+                    {
+                        f"{score_col}_{metric}": value
+                        for metric, value in self._smoothing_pair_comparison_metrics(
+                            detail[f"raw_{score_col}"],
+                            detail[f"smoothed_{score_col}"],
+                            tolerance=tolerance,
+                        ).items()
+                    }
                 )
-                self._add_prefixed_smoothing_pair_metrics(
-                    row,
-                    pair.metric_prefix,
-                    metrics,
-                )
-            self._add_prefixed_smoothing_pair_metrics(
-                row,
-                profile.final_score_metric_prefix,
-                final_metrics,
+            row.update(
+                {
+                    f"{spec.final_score_col}_{metric}": value
+                    for metric, value in final_metrics.items()
+                }
             )
 
             change_prefix = profile.score_change_metric_prefix
-            raw_score_change_count = self._count_series_changes(
-                detail[profile.raw_final_score_col]
+            raw_score_change_count = int(
+                self._series_change_mask(detail[raw_final_score_col]).sum()
             )
-            smoothed_score_change_count = self._count_series_changes(
-                detail[profile.smoothed_final_score_col]
+            smoothed_score_change_count = int(
+                self._series_change_mask(detail[smoothed_final_score_col]).sum()
             )
             score_change_reduction_count = (
                 raw_score_change_count - smoothed_score_change_count
             )
-            raw_one_day_spike_count = self._count_one_day_spikes(
-                detail[profile.raw_final_score_col]
+            raw_one_day_spike_count = int(
+                self._one_day_spike_mask(detail[raw_final_score_col]).sum()
             )
-            smoothed_one_day_spike_count = self._count_one_day_spikes(
-                detail[profile.smoothed_final_score_col]
+            smoothed_one_day_spike_count = int(
+                self._one_day_spike_mask(detail[smoothed_final_score_col]).sum()
             )
             one_day_spike_reduction_count = (
                 raw_one_day_spike_count - smoothed_one_day_spike_count
@@ -1670,17 +1040,6 @@ class Module1SensitivityDiagnostics:
                 window = window.loc[window.index <= pd.to_datetime(end)]
             return window
 
-    def _window_summary_row(
-            self,
-            window_id: str,
-            start,
-            end,
-            summary_row: dict,
-        ) -> dict:
-            row = summary_row.copy()
-            row.update({"window_id": window_id, "start": start, "end": end})
-            return row
-
     def _series_mismatch_mask(
             self,
             left: pd.Series,
@@ -1709,28 +1068,27 @@ class Module1SensitivityDiagnostics:
                 return pd.NA
             return values.mode().iloc[0]
 
-    def _count_series_changes(self, series: pd.Series) -> int:
+    def _series_change_mask(self, series: pd.Series) -> pd.Series:
+            mask = pd.Series(False, index=series.index, dtype=bool)
             valid = series.dropna()
-            if valid.empty:
-                return 0
-            return int(valid.ne(valid.shift(1)).iloc[1:].sum())
+            if len(valid) < 2:
+                return mask
+            valid_changes = valid.ne(valid.shift(1))
+            valid_changes.iloc[0] = False
+            mask.loc[valid.index] = valid_changes
+            return mask
 
-    def _count_one_day_spikes(self, series: pd.Series) -> int:
-            values = series.reset_index(drop=True)
-            count = 0
-            for idx in range(1, len(values) - 1):
-                previous_value = values.iloc[idx - 1]
-                current_value = values.iloc[idx]
-                next_value = values.iloc[idx + 1]
-                if (
-                    pd.isna(previous_value)
-                    or pd.isna(current_value)
-                    or pd.isna(next_value)
-                ):
-                    continue
-                if current_value != previous_value and current_value != next_value and previous_value == next_value:
-                    count += 1
-            return count
+    def _one_day_spike_mask(self, series: pd.Series) -> pd.Series:
+            previous = series.shift(1)
+            following = series.shift(-1)
+            return (
+                series.notna()
+                & previous.notna()
+                & following.notna()
+                & series.ne(previous)
+                & series.ne(following)
+                & previous.eq(following)
+            )
 
     def _default_curve_stabilization_cases(self) -> dict:
             neutral_case = self._neutral_curve_positioning_stabilization_overrides()
@@ -1786,19 +1144,23 @@ class Module1SensitivityDiagnostics:
             """
             if self.features is None:
                 raise ValueError(
-                    "Run calculate_features() before comparing curve_move_driver threshold."
+                    "Module1Result.features is required for comparing "
+                    "curve_move_driver threshold."
                 )
             if self.scores is None:
                 raise ValueError(
-                    "Run calculate_component_scores() before comparing curve_move_driver threshold."
+                    "Module1Result.scores is required for comparing "
+                    "curve_move_driver threshold."
                 )
             if self.exposure_stance is None:
                 raise ValueError(
-                    "Run calculate_exposure_stance() before comparing curve_move_driver threshold."
+                    "Module1Result.exposure_stance is required for comparing "
+                    "curve_move_driver threshold."
                 )
             if self.component_config is None or self.exposure_stance_config is None:
                 raise ValueError(
-                    "Run load_module1_config() before comparing curve_move_driver threshold."
+                    "Module1Result.module1_config is required for comparing "
+                    "curve_move_driver threshold."
                 )
 
             target = "curve_positioning"
@@ -1808,7 +1170,9 @@ class Module1SensitivityDiagnostics:
             input_preparation = curve_move_driver_config.get("input_preparation") or {}
             min_abs_value = input_preparation.get("min_abs_value")
 
-            prepared_inputs = self._prepared_filtered_input_columns(target)
+            prepared_inputs = self._diagnostics.prepared_filtered_input_columns(
+                target
+            )
             front_end_prepared_spec = self._diagnostic_input_spec_by_role(
                 target,
                 "curve_move_driver",
@@ -1897,20 +1261,20 @@ class Module1SensitivityDiagnostics:
             detail[long_end_prepared_spec.output] = long_end_prepared
             if front_end_filtered_spec is None:
                 detail[
-                    self._diagnostic_input_column_name(
-                        front_end_prepared_spec.source,
-                        "filtered",
-                        "curve_move_driver",
+                    front_end_prepared_spec.output.replace(
+                        "_prepared_for_",
+                        "_filtered_for_",
+                        1,
                     )
                 ] = front_end_filtered
             else:
                 detail[front_end_filtered_spec.output] = front_end_filtered
             if long_end_filtered_spec is None:
                 detail[
-                    self._diagnostic_input_column_name(
-                        long_end_prepared_spec.source,
-                        "filtered",
-                        "curve_move_driver",
+                    long_end_prepared_spec.output.replace(
+                        "_prepared_for_",
+                        "_filtered_for_",
+                        1,
                     )
                 ] = long_end_filtered
             else:
@@ -2014,207 +1378,108 @@ class Module1SensitivityDiagnostics:
                 result["detail"] = detail
             return result
 
-    def _rule_mapped_stabilization_case_detail_comparison(
+    def _curve_stabilization_case_detail(
             self,
-            stance_name: str,
-            stance_config: dict,
-            *,
-            baseline_stabilization_overrides: dict,
-            case_stabilization_overrides: dict,
-            detail_columns: dict,
+            baseline_diag: pd.DataFrame,
+            case_diag: pd.DataFrame,
+            spec: RuleMappedDiagnosticSpec,
         ) -> pd.DataFrame:
-            spec = Module1Calculator.resolve_rule_mapped_stance_spec(
-                stance_name,
-                stance_config,
-                self.component_config,
-            )
-            baseline_diag = Module1Calculator.build_rule_mapped_stance_score_breakdown(
-                self.scores,
-                self.component_config,
-                stance_name,
-                stance_config,
-                spec,
-                stabilization_overrides=baseline_stabilization_overrides,
-            )
-            case_diag = Module1Calculator.build_rule_mapped_stance_score_breakdown(
-                self.scores,
-                self.component_config,
-                stance_name,
-                stance_config,
-                spec,
-                stabilization_overrides=case_stabilization_overrides,
-            )
+            rule_spec = spec.rule_mapped_schema
+            state_inputs = {
+                state_input.name: state_input
+                for state_input in rule_spec.state_inputs
+            }
+            curve_change = state_inputs["curve_change"]
+            curve_state = state_inputs["curve_state"]
+            curve_move_driver = state_inputs["curve_move_driver"]
             detail = pd.DataFrame(index=self.scores.index)
 
-            for state_input in spec.state_inputs:
-                output_col = detail_columns["score_inputs"].get(
-                    state_input.name,
-                    state_input.source_score_col,
-                )
-                detail[output_col] = self.scores[state_input.source_score_col]
-
-            for state_input in spec.state_inputs:
-                state_columns = detail_columns["states"][state_input.name]
-                detail[state_columns["raw"]] = baseline_diag[
-                    state_input.stabilized_output_col
-                ]
-                detail[state_columns["stabilized"]] = case_diag[
-                    state_input.stabilized_output_col
-                ]
-
-            rule_case_columns = detail_columns["rule_case"]
-            detail[rule_case_columns["raw"]] = baseline_diag[spec.rule_case_output_col]
-            detail[rule_case_columns["stabilized"]] = case_diag[spec.rule_case_output_col]
-
-            score_columns = detail_columns["score"]
-            detail[score_columns["raw"]] = baseline_diag[spec.score_output_col]
-            detail[score_columns["stabilized"]] = case_diag[spec.score_output_col]
-            detail[detail_columns["score_diff"]] = (
-                detail[score_columns["stabilized"]]
-                - detail[score_columns["raw"]]
+            detail["curve_change_score"] = self.scores[
+                curve_change.source_score_col
+            ]
+            detail["curve_state_score"] = self.scores[
+                curve_state.source_score_col
+            ]
+            detail["curve_move_driver_score"] = self.scores[
+                curve_move_driver.source_score_col
+            ]
+            detail["raw_curve_change_bucket"] = baseline_diag[
+                curve_change.stabilized_output_col
+            ]
+            detail["stabilized_curve_change_bucket"] = case_diag[
+                curve_change.stabilized_output_col
+            ]
+            detail["raw_curve_state_bucket"] = baseline_diag[
+                curve_state.stabilized_output_col
+            ]
+            detail["stabilized_curve_state_bucket"] = case_diag[
+                curve_state.stabilized_output_col
+            ]
+            detail["raw_yield_move_driver_bucket"] = baseline_diag[
+                curve_move_driver.stabilized_output_col
+            ]
+            detail["stabilized_yield_move_driver_bucket"] = case_diag[
+                curve_move_driver.stabilized_output_col
+            ]
+            detail["raw_curve_positioning_rule_case"] = baseline_diag[
+                rule_spec.rule_case_output_col
+            ]
+            detail["stabilized_curve_positioning_rule_case"] = case_diag[
+                rule_spec.rule_case_output_col
+            ]
+            detail["raw_curve_positioning_score"] = baseline_diag[
+                rule_spec.score_output_col
+            ]
+            detail["stabilized_curve_positioning_score"] = case_diag[
+                rule_spec.score_output_col
+            ]
+            detail["score_diff"] = (
+                detail["stabilized_curve_positioning_score"]
+                - detail["raw_curve_positioning_score"]
             )
 
             raw_direction, raw_strength = self._stance_labels_for_score(
-                detail[score_columns["raw"]], stance_config
+                detail["raw_curve_positioning_score"],
+                spec.stance_config,
             )
             stabilized_direction, stabilized_strength = self._stance_labels_for_score(
-                detail[score_columns["stabilized"]], stance_config
+                detail["stabilized_curve_positioning_score"],
+                spec.stance_config,
             )
-            direction_columns = detail_columns["direction"]
-            strength_columns = detail_columns["strength"]
-            detail[direction_columns["raw"]] = raw_direction
-            detail[direction_columns["stabilized"]] = stabilized_direction
-            detail[strength_columns["raw"]] = raw_strength
-            detail[strength_columns["stabilized"]] = stabilized_strength
+            detail["raw_curve_positioning"] = raw_direction
+            detail["stabilized_curve_positioning"] = stabilized_direction
+            detail["raw_curve_positioning_strength"] = raw_strength
+            detail["stabilized_curve_positioning_strength"] = stabilized_strength
 
-            change_columns = detail_columns["changed"]
-            detail[change_columns["score"]] = self._series_mismatch_mask(
-                detail[score_columns["raw"]],
-                detail[score_columns["stabilized"]],
+            detail["score_changed"] = self._series_mismatch_mask(
+                detail["raw_curve_positioning_score"],
+                detail["stabilized_curve_positioning_score"],
                 tolerance=1e-10,
             )
-            detail[change_columns["direction"]] = self._series_mismatch_mask(
-                detail[direction_columns["raw"]],
-                detail[direction_columns["stabilized"]],
+            detail["direction_changed"] = self._series_mismatch_mask(
+                detail["raw_curve_positioning"],
+                detail["stabilized_curve_positioning"],
             )
-            detail[change_columns["strength"]] = self._series_mismatch_mask(
-                detail[strength_columns["raw"]],
-                detail[strength_columns["stabilized"]],
+            detail["strength_changed"] = self._series_mismatch_mask(
+                detail["raw_curve_positioning_strength"],
+                detail["stabilized_curve_positioning_strength"],
             )
-
-            score_change_flag_columns = detail_columns["score_change_flags"]
-            detail[score_change_flag_columns["raw"]] = (
-                detail[score_columns["raw"]]
-                .dropna()
-                .ne(detail[score_columns["raw"]].dropna().shift(1))
-                .reindex(detail.index, fill_value=False)
+            detail["raw_score_change_flag"] = self._series_change_mask(
+                detail["raw_curve_positioning_score"]
             )
-            detail[score_change_flag_columns["stabilized"]] = (
-                detail[score_columns["stabilized"]]
-                .dropna()
-                .ne(detail[score_columns["stabilized"]].dropna().shift(1))
-                .reindex(detail.index, fill_value=False)
+            detail["stabilized_score_change_flag"] = self._series_change_mask(
+                detail["stabilized_curve_positioning_score"]
             )
-            if detail[score_change_flag_columns["raw"]].notna().any():
-                first_raw = detail[score_columns["raw"]].first_valid_index()
-                if first_raw is not None:
-                    detail.loc[first_raw, score_change_flag_columns["raw"]] = False
-            if detail[score_change_flag_columns["stabilized"]].notna().any():
-                first_stabilized = detail[score_columns["stabilized"]].first_valid_index()
-                if first_stabilized is not None:
-                    detail.loc[
-                        first_stabilized,
-                        score_change_flag_columns["stabilized"],
-                    ] = False
-
-            one_day_spike_flag_columns = detail_columns["one_day_spike_flags"]
-            detail[one_day_spike_flag_columns["raw"]] = False
-            detail[one_day_spike_flag_columns["stabilized"]] = False
-            for score_col, flag_col in [
-                (score_columns["raw"], one_day_spike_flag_columns["raw"]),
-                (score_columns["stabilized"], one_day_spike_flag_columns["stabilized"]),
-            ]:
-                values = detail[score_col]
-                for pos in range(1, len(values) - 1):
-                    previous_value = values.iloc[pos - 1]
-                    current_value = values.iloc[pos]
-                    next_value = values.iloc[pos + 1]
-                    if (
-                        pd.isna(previous_value)
-                        or pd.isna(current_value)
-                        or pd.isna(next_value)
-                    ):
-                        continue
-                    if current_value != previous_value and current_value != next_value and previous_value == next_value:
-                        detail.iloc[pos, detail.columns.get_loc(flag_col)] = True
+            detail["raw_one_day_spike_flag"] = self._one_day_spike_mask(
+                detail["raw_curve_positioning_score"]
+            )
+            detail["stabilized_one_day_spike_flag"] = self._one_day_spike_mask(
+                detail["stabilized_curve_positioning_score"]
+            )
             return detail
 
-    def _curve_stabilization_case_detail(
+    def _curve_stabilization_metrics(
             self,
-            case_config: dict,
-            stance_config: dict,
-        ) -> pd.DataFrame:
-            return self._rule_mapped_stabilization_case_detail_comparison(
-                "curve_positioning",
-                stance_config,
-                baseline_stabilization_overrides=self._neutral_curve_positioning_stabilization_overrides(),
-                case_stabilization_overrides=case_config,
-                detail_columns={
-                    "score_inputs": {
-                        "curve_change": "curve_change_score",
-                        "curve_state": "curve_state_score",
-                        "curve_move_driver": "curve_move_driver_score",
-                    },
-                    "states": {
-                        "curve_change": {
-                            "raw": "raw_curve_change_bucket",
-                            "stabilized": "stabilized_curve_change_bucket",
-                        },
-                        "curve_state": {
-                            "raw": "raw_curve_state_bucket",
-                            "stabilized": "stabilized_curve_state_bucket",
-                        },
-                        "curve_move_driver": {
-                            "raw": "raw_yield_move_driver_bucket",
-                            "stabilized": "stabilized_yield_move_driver_bucket",
-                        },
-                    },
-                    "rule_case": {
-                        "raw": "raw_curve_positioning_rule_case",
-                        "stabilized": "stabilized_curve_positioning_rule_case",
-                    },
-                    "score": {
-                        "raw": "raw_curve_positioning_score",
-                        "stabilized": "stabilized_curve_positioning_score",
-                    },
-                    "score_diff": "score_diff",
-                    "direction": {
-                        "raw": "raw_curve_positioning",
-                        "stabilized": "stabilized_curve_positioning",
-                    },
-                    "strength": {
-                        "raw": "raw_curve_positioning_strength",
-                        "stabilized": "stabilized_curve_positioning_strength",
-                    },
-                    "changed": {
-                        "score": "score_changed",
-                        "direction": "direction_changed",
-                        "strength": "strength_changed",
-                    },
-                    "score_change_flags": {
-                        "raw": "raw_score_change_flag",
-                        "stabilized": "stabilized_score_change_flag",
-                    },
-                    "one_day_spike_flags": {
-                        "raw": "raw_one_day_spike_flag",
-                        "stabilized": "stabilized_one_day_spike_flag",
-                    },
-                },
-            )
-
-    def _curve_stabilization_summary_row(
-            self,
-            case_id: str,
             detail: pd.DataFrame,
         ) -> dict:
             valid = detail[
@@ -2222,61 +1487,103 @@ class Module1SensitivityDiagnostics:
                 & detail["stabilized_curve_positioning_score"].notna()
             ]
             valid_count = int(len(valid))
-            raw_score_change_count = self._count_series_changes(
-                detail["raw_curve_positioning_score"]
-            )
-            stabilized_score_change_count = self._count_series_changes(
-                detail["stabilized_curve_positioning_score"]
-            )
-            raw_spikes = self._count_one_day_spikes(detail["raw_curve_positioning_score"])
-            stabilized_spikes = self._count_one_day_spikes(
-                detail["stabilized_curve_positioning_score"]
-            )
-            bucket_change_count_raw = sum(
-                self._count_series_changes(detail[col])
-                for col in [
-                    "raw_curve_change_bucket",
-                    "raw_curve_state_bucket",
-                    "raw_yield_move_driver_bucket",
-                ]
-            )
-            bucket_change_count_stabilized = sum(
-                self._count_series_changes(detail[col])
-                for col in [
-                    "stabilized_curve_change_bucket",
-                    "stabilized_curve_state_bucket",
-                    "stabilized_yield_move_driver_bucket",
-                ]
-            )
+            changed_score_count = int(valid["score_changed"].sum())
             return {
-                "case_id": case_id,
-                "total_rows": int(len(detail)),
-                "valid_rows": valid_count,
+                "valid_count": valid_count,
                 "mean_raw_score": valid["raw_curve_positioning_score"].mean(),
                 "mean_stabilized_score": valid[
                     "stabilized_curve_positioning_score"
                 ].mean(),
                 "mean_score_diff": valid["score_diff"].mean(),
                 "mean_abs_score_diff": valid["score_diff"].abs().mean(),
-                "max_abs_score_diff": valid["score_diff"].abs().max() if valid_count else pd.NA,
-                "changed_score_count": int(valid["score_changed"].sum()),
+                "changed_score_count": changed_score_count,
                 "changed_score_ratio": self._ratio_or_na(
-                    int(valid["score_changed"].sum()),
+                    changed_score_count,
                     valid_count,
                 ),
-                "changed_direction_count": int(valid["direction_changed"].sum()),
+                "raw_score_change_count": int(
+                    self._series_change_mask(
+                        detail["raw_curve_positioning_score"]
+                    ).sum()
+                ),
+                "stabilized_score_change_count": int(
+                    self._series_change_mask(
+                        detail["stabilized_curve_positioning_score"]
+                    ).sum()
+                ),
+                "one_day_spike_count_raw": int(
+                    self._one_day_spike_mask(
+                        detail["raw_curve_positioning_score"]
+                    ).sum()
+                ),
+                "one_day_spike_count_stabilized": int(
+                    self._one_day_spike_mask(
+                        detail["stabilized_curve_positioning_score"]
+                    ).sum()
+                ),
+                "dominant_raw_direction": self._curve_dominant_value(
+                    detail["raw_curve_positioning"]
+                ),
+                "dominant_stabilized_direction": self._curve_dominant_value(
+                    detail["stabilized_curve_positioning"]
+                ),
+                "dominant_raw_strength": self._curve_dominant_value(
+                    detail["raw_curve_positioning_strength"]
+                ),
+                "dominant_stabilized_strength": self._curve_dominant_value(
+                    detail["stabilized_curve_positioning_strength"]
+                ),
+            }
+
+    def _curve_stabilization_summary_row(
+            self,
+            case_id: str,
+            detail: pd.DataFrame,
+            metrics: dict,
+            bucket_change_count_raw: int,
+            bucket_change_count_stabilized: int,
+        ) -> dict:
+            valid = detail[
+                detail["raw_curve_positioning_score"].notna()
+                & detail["stabilized_curve_positioning_score"].notna()
+            ]
+            valid_count = metrics["valid_count"]
+            changed_direction_count = int(valid["direction_changed"].sum())
+            changed_strength_count = int(valid["strength_changed"].sum())
+            raw_score_change_count = metrics["raw_score_change_count"]
+            stabilized_score_change_count = metrics[
+                "stabilized_score_change_count"
+            ]
+            raw_spikes = metrics["one_day_spike_count_raw"]
+            stabilized_spikes = metrics["one_day_spike_count_stabilized"]
+            return {
+                "case_id": case_id,
+                "total_rows": int(len(detail)),
+                "valid_rows": valid_count,
+                "mean_raw_score": metrics["mean_raw_score"],
+                "mean_stabilized_score": metrics["mean_stabilized_score"],
+                "mean_score_diff": metrics["mean_score_diff"],
+                "mean_abs_score_diff": metrics["mean_abs_score_diff"],
+                "max_abs_score_diff": (
+                    valid["score_diff"].abs().max() if valid_count else pd.NA
+                ),
+                "changed_score_count": metrics["changed_score_count"],
+                "changed_score_ratio": metrics["changed_score_ratio"],
+                "changed_direction_count": changed_direction_count,
                 "changed_direction_ratio": self._ratio_or_na(
-                    int(valid["direction_changed"].sum()),
+                    changed_direction_count,
                     valid_count,
                 ),
-                "changed_strength_count": int(valid["strength_changed"].sum()),
+                "changed_strength_count": changed_strength_count,
                 "changed_strength_ratio": self._ratio_or_na(
-                    int(valid["strength_changed"].sum()),
+                    changed_strength_count,
                     valid_count,
                 ),
                 "raw_score_change_count": raw_score_change_count,
                 "stabilized_score_change_count": stabilized_score_change_count,
-                "score_change_reduction_count": raw_score_change_count - stabilized_score_change_count,
+                "score_change_reduction_count": (
+                    raw_score_change_count - stabilized_score_change_count
+                ),
                 "score_change_reduction_ratio": self._ratio_or_na(
                     raw_score_change_count - stabilized_score_change_count,
                     raw_score_change_count,
@@ -2290,10 +1597,14 @@ class Module1SensitivityDiagnostics:
                 ),
                 "bucket_change_count_raw": bucket_change_count_raw,
                 "bucket_change_count_stabilized": bucket_change_count_stabilized,
-                "dominant_raw_direction": self._curve_dominant_value(detail["raw_curve_positioning"]),
-                "dominant_stabilized_direction": self._curve_dominant_value(detail["stabilized_curve_positioning"]),
-                "dominant_raw_strength": self._curve_dominant_value(detail["raw_curve_positioning_strength"]),
-                "dominant_stabilized_strength": self._curve_dominant_value(detail["stabilized_curve_positioning_strength"]),
+                "dominant_raw_direction": metrics["dominant_raw_direction"],
+                "dominant_stabilized_direction": metrics[
+                    "dominant_stabilized_direction"
+                ],
+                "dominant_raw_strength": metrics["dominant_raw_strength"],
+                "dominant_stabilized_strength": metrics[
+                    "dominant_stabilized_strength"
+                ],
             }
 
     def _curve_stabilization_window_row(
@@ -2305,36 +1616,41 @@ class Module1SensitivityDiagnostics:
         ) -> dict:
             start, end = window
             window_detail = self._inclusive_window_slice(detail, start, end)
-            valid = window_detail[
-                window_detail["raw_curve_positioning_score"].notna()
-                & window_detail["stabilized_curve_positioning_score"].notna()
-            ]
-            obs_count = int(len(valid))
+            metrics = self._curve_stabilization_metrics(window_detail)
             return {
                 "case_id": case_id,
                 "window_id": window_id,
                 "start": start,
                 "end": end,
-                "obs_count": obs_count,
-                "mean_raw_score": valid["raw_curve_positioning_score"].mean(),
-                "mean_stabilized_score": valid["stabilized_curve_positioning_score"].mean(),
-                "mean_score_diff": valid["score_diff"].mean(),
-                "mean_abs_score_diff": valid["score_diff"].abs().mean(),
-                "changed_score_count": int(valid["score_changed"].sum()),
-                "changed_score_ratio": self._ratio_or_na(
-                    int(valid["score_changed"].sum()),
-                    obs_count,
+                "obs_count": metrics["valid_count"],
+                "mean_raw_score": metrics["mean_raw_score"],
+                "mean_stabilized_score": metrics["mean_stabilized_score"],
+                "mean_score_diff": metrics["mean_score_diff"],
+                "mean_abs_score_diff": metrics["mean_abs_score_diff"],
+                "changed_score_count": metrics["changed_score_count"],
+                "changed_score_ratio": metrics["changed_score_ratio"],
+                "raw_score_change_count": metrics["raw_score_change_count"],
+                "stabilized_score_change_count": metrics[
+                    "stabilized_score_change_count"
+                ],
+                "one_day_spike_count_raw": metrics["one_day_spike_count_raw"],
+                "one_day_spike_count_stabilized": metrics[
+                    "one_day_spike_count_stabilized"
+                ],
+                "dominant_raw_rule_case": self._curve_dominant_value(
+                    window_detail["raw_curve_positioning_rule_case"]
                 ),
-                "raw_score_change_count": self._count_series_changes(window_detail["raw_curve_positioning_score"]),
-                "stabilized_score_change_count": self._count_series_changes(window_detail["stabilized_curve_positioning_score"]),
-                "one_day_spike_count_raw": self._count_one_day_spikes(window_detail["raw_curve_positioning_score"]),
-                "one_day_spike_count_stabilized": self._count_one_day_spikes(window_detail["stabilized_curve_positioning_score"]),
-                "dominant_raw_rule_case": self._curve_dominant_value(window_detail["raw_curve_positioning_rule_case"]),
-                "dominant_stabilized_rule_case": self._curve_dominant_value(window_detail["stabilized_curve_positioning_rule_case"]),
-                "dominant_raw_direction": self._curve_dominant_value(window_detail["raw_curve_positioning"]),
-                "dominant_stabilized_direction": self._curve_dominant_value(window_detail["stabilized_curve_positioning"]),
-                "dominant_raw_strength": self._curve_dominant_value(window_detail["raw_curve_positioning_strength"]),
-                "dominant_stabilized_strength": self._curve_dominant_value(window_detail["stabilized_curve_positioning_strength"]),
+                "dominant_stabilized_rule_case": self._curve_dominant_value(
+                    window_detail["stabilized_curve_positioning_rule_case"]
+                ),
+                "dominant_raw_direction": metrics["dominant_raw_direction"],
+                "dominant_stabilized_direction": metrics[
+                    "dominant_stabilized_direction"
+                ],
+                "dominant_raw_strength": metrics["dominant_raw_strength"],
+                "dominant_stabilized_strength": metrics[
+                    "dominant_stabilized_strength"
+                ],
             }
 
     def compare_curve_positioning_stabilization_cases(
@@ -2343,39 +1659,96 @@ class Module1SensitivityDiagnostics:
             windows: dict | None = None,
             include_diagnostics: bool = True,
         ) -> dict:
-            if self.scores is None or self.exposure_stance is None:
+            if self.scores is None:
                 raise ValueError(
-                    "Run calculate_component_scores() and calculate_exposure_stance() before curve stabilization comparison."
+                    "Module1Result.scores is required for curve stabilization "
+                    "comparison."
+                )
+            if self.exposure_stance is None:
+                raise ValueError(
+                    "Module1Result.exposure_stance is required for curve "
+                    "stabilization comparison."
                 )
             if self.exposure_stance_config is None:
-                raise ValueError("Run load_module1_config() before curve stabilization comparison.")
+                raise ValueError(
+                    "Module1Result.module1_config is required for curve "
+                    "stabilization comparison."
+                )
 
-            stance_config = self._curve_positioning_stance_config()
+            stance_config = self.exposure_stance_config[
+                "exposure_stances"
+            ].get("curve_positioning")
+            if stance_config is None:
+                raise ValueError("Curve positioning stance config is missing.")
+            spec = self._diagnostics.rule_mapped_diagnostic_spec(
+                "curve_positioning"
+            )
+            rule_spec = spec.rule_mapped_schema
             cases = cases or self._default_curve_stabilization_cases()
             windows = windows or self._default_curve_stabilization_windows()
+            baseline_diag = (
+                Module1Calculator.build_rule_mapped_stance_score_breakdown(
+                    self.scores,
+                    self.component_config,
+                    spec.target,
+                    stance_config,
+                    rule_spec,
+                    stabilization_overrides=(
+                        self._neutral_curve_positioning_stabilization_overrides()
+                    ),
+                )
+            )
 
             summary_rows = []
             window_rows = []
             bucket_rows = []
             score_distribution_rows = []
             detail_by_case = {}
-            diagnostics_by_case = {}
 
             for case_id, case_config in cases.items():
-                detail = self._curve_stabilization_case_detail(case_config, stance_config)
-                detail_by_case[case_id] = detail
-                summary_rows.append(self._curve_stabilization_summary_row(case_id, detail))
-                for window_id, window in windows.items():
-                    window_rows.append(
-                        self._curve_stabilization_window_row(case_id, window_id, window, detail)
+                case_diag = (
+                    Module1Calculator.build_rule_mapped_stance_score_breakdown(
+                        self.scores,
+                        self.component_config,
+                        spec.target,
+                        stance_config,
+                        rule_spec,
+                        stabilization_overrides=case_config,
                     )
+                )
+                detail = self._curve_stabilization_case_detail(
+                    baseline_diag,
+                    case_diag,
+                    spec,
+                )
+                detail_by_case[case_id] = detail
+                raw_bucket_change_count = 0
+                stabilized_bucket_change_count = 0
                 for bucket_type, raw_col, stabilized_col in [
-                    ("curve_change", "raw_curve_change_bucket", "stabilized_curve_change_bucket"),
-                    ("curve_state", "raw_curve_state_bucket", "stabilized_curve_state_bucket"),
-                    ("yield_move_driver", "raw_yield_move_driver_bucket", "stabilized_yield_move_driver_bucket"),
+                    (
+                        "curve_change",
+                        "raw_curve_change_bucket",
+                        "stabilized_curve_change_bucket",
+                    ),
+                    (
+                        "curve_state",
+                        "raw_curve_state_bucket",
+                        "stabilized_curve_state_bucket",
+                    ),
+                    (
+                        "yield_move_driver",
+                        "raw_yield_move_driver_bucket",
+                        "stabilized_yield_move_driver_bucket",
+                    ),
                 ]:
-                    raw_count = self._count_series_changes(detail[raw_col])
-                    stabilized_count = self._count_series_changes(detail[stabilized_col])
+                    raw_count = int(
+                        self._series_change_mask(detail[raw_col]).sum()
+                    )
+                    stabilized_count = int(
+                        self._series_change_mask(detail[stabilized_col]).sum()
+                    )
+                    raw_bucket_change_count += raw_count
+                    stabilized_bucket_change_count += stabilized_count
                     bucket_rows.append(
                         {
                             "case_id": case_id,
@@ -2388,6 +1761,25 @@ class Module1SensitivityDiagnostics:
                                 raw_count,
                             ),
                         }
+                    )
+                metrics = self._curve_stabilization_metrics(detail)
+                summary_rows.append(
+                    self._curve_stabilization_summary_row(
+                        case_id,
+                        detail,
+                        metrics,
+                        raw_bucket_change_count,
+                        stabilized_bucket_change_count,
+                    )
+                )
+                for window_id, window in windows.items():
+                    window_rows.append(
+                        self._curve_stabilization_window_row(
+                            case_id,
+                            window_id,
+                            window,
+                            detail,
+                        )
                     )
                 for score_type, score_col in [
                     ("raw", "raw_curve_positioning_score"),
@@ -2405,8 +1797,6 @@ class Module1SensitivityDiagnostics:
                                 "ratio": self._ratio_or_na(count, total),
                             }
                         )
-                if include_diagnostics:
-                    diagnostics_by_case[case_id] = detail
 
             result = {
                 "summary": pd.DataFrame(summary_rows),
@@ -2416,7 +1806,10 @@ class Module1SensitivityDiagnostics:
                 "score_distribution": pd.DataFrame(score_distribution_rows),
             }
             if include_diagnostics:
-                result["diagnostics_by_case"] = diagnostics_by_case
+                result["diagnostics_by_case"] = {
+                    case_id: detail.copy(deep=True)
+                    for case_id, detail in detail_by_case.items()
+                }
             return result
 
     def compare_credit_stance_persistence_cases(
@@ -2427,31 +1820,41 @@ class Module1SensitivityDiagnostics:
             include_diagnostics: bool = True,
         ) -> dict:
             """
-            Compare credit stance behavior across temporary persistence settings.
+            Compare credit stance behavior across case-local persistence settings.
 
-            This diagnostic recalculates exposure stance only. It does not recalculate
-            component scores and restores the original stance config and outputs before
-            returning.
+            This diagnostic recalculates exposure stance only for coherent local
+            Module1Result scenarios. It does not recalculate component scores or
+            mutate the baseline result or Sensitivity state.
             """
             if self.exposure_stance_config is None:
                 raise ValueError(
-                    "Run load_module1_config() before compare_credit_stance_persistence_cases()."
+                    "Module1Result.module1_config is required for "
+                    "compare_credit_stance_persistence_cases()."
                 )
             if self.features is None:
                 raise ValueError(
-                    "Run calculate_features() before compare_credit_stance_persistence_cases()."
+                    "Module1Result.features is required for "
+                    "compare_credit_stance_persistence_cases()."
                 )
             if self.scores is None:
                 raise ValueError(
-                    "Run calculate_component_scores() before compare_credit_stance_persistence_cases()."
+                    "Module1Result.scores is required for "
+                    "compare_credit_stance_persistence_cases()."
                 )
             if self.labels is None:
                 raise ValueError(
-                    "Run calculate_component_labels() before compare_credit_stance_persistence_cases()."
+                    "Module1Result.labels is required for "
+                    "compare_credit_stance_persistence_cases()."
                 )
-            if self.exposure_stance is None or self.stance_scores is None:
+            if self.exposure_stance is None:
                 raise ValueError(
-                    "Run calculate_exposure_stance() before compare_credit_stance_persistence_cases()."
+                    "Module1Result.exposure_stance is required for "
+                    "compare_credit_stance_persistence_cases()."
+                )
+            if self.stance_scores is None:
+                raise ValueError(
+                    "Module1Result.stance_scores is required for "
+                    "compare_credit_stance_persistence_cases()."
                 )
             if "credit" not in self.exposure_stance_config.get("exposure_stances", {}):
                 raise ValueError("Credit exposure stance config is missing.")
@@ -2609,10 +2012,6 @@ class Module1SensitivityDiagnostics:
                 "credit_spread_change_state",
             }
 
-            original_exposure_stance_config = copy.deepcopy(self.exposure_stance_config)
-            original_stance_scores = self.stance_scores.copy(deep=True)
-            original_exposure_stance = self.exposure_stance.copy(deep=True)
-
             diagnostics_by_case = {}
             window_metrics_rows = []
             shock_rows = []
@@ -2620,190 +2019,196 @@ class Module1SensitivityDiagnostics:
             tight_rows = []
             late_rows = []
             full_rows = []
+            case_records = {}
 
-            try:
-                for case_id, settings in cases.items():
-                    case_exposure_stance_config = copy.deepcopy(
-                        original_exposure_stance_config
-                    )
-                    case_exposure_stance_config["exposure_stances"]["credit"][
-                        "state_stabilization"
-                    ] = {
-                        "credit_spread_change": {
-                            "hysteresis_buffer": float(hysteresis_buffer),
-                            "min_state_persistence": settings["credit_spread_change"],
-                        },
-                        "credit_spread_state": {
-                            "hysteresis_buffer": float(hysteresis_buffer),
-                            "min_state_persistence": settings["credit_spread_state"],
-                        },
-                    }
-                    self.exposure_stance_config = case_exposure_stance_config
-                    (
-                        self.stance_scores,
-                        self.exposure_stance,
-                    ) = Module1Calculator.calculate_exposure_stance_outputs(
-                        self.scores,
-                        self.component_config,
-                        self.exposure_stance_config,
-                    )
-                    diag = self.trace_stance_score(
-                        "credit",
-                        include_raw_input=True,
-                        include_labels=False,
-                    )
-
-                    missing_cols = sorted(required_diagnostic_cols.difference(diag.columns))
-                    if missing_cols:
-                        raise ValueError(
-                            "Credit stance diagnostics are missing required columns: "
-                            f"{missing_cols}"
-                        )
-
-                    diagnostics_by_case[case_id] = diag.copy(deep=True)
-
-                    for window_id in windows:
-                        window_metrics_rows.append(
-                            base_window_metrics(case_id, diag, window_id)
-                        )
-
-                    shock = window_slice(diag, "covid_initial_shock")
-                    shock_rows.append(
-                        {
-                            "case_id": case_id,
-                            "first_credit_negative_date": first_negative_date(shock),
-                        }
-                    )
-
-                    recovery = window_slice(diag, "post_shock_recovery")
-                    recovery_score = recovery["credit_stance_score"].dropna()
-                    recovery_pair, recovery_pair_ratio = dominant_pair(recovery)
-                    recovery_rows.append(
-                        {
-                            "case_id": case_id,
-                            "dominant_credit_state_pair": recovery_pair,
-                            "dominant_credit_state_pair_ratio": recovery_pair_ratio,
-                            "credit_stance_score_mean": (
-                                recovery_score.mean()
-                                if not recovery_score.empty
-                                else pd.NA
-                            ),
-                            "negative_score_days": int((recovery_score <= -0.5).sum()),
-                        }
-                    )
-
-                    tight = window_slice(diag, "tight_spread_2021q2")
-                    tight_score = tight["credit_stance_score"].dropna()
-                    tight_obs = int(tight_score.shape[0])
-                    tight_state_count = int(
-                        (tight["credit_spread_state_category"] == "tight").sum()
-                    )
-                    tight_pair_count = int(
-                        tight["credit_state_pair"]
-                        .dropna()
-                        .astype(str)
-                        .str.contains(r"\|tight$")
-                        .sum()
-                    )
-                    tight_rows.append(
-                        {
-                            "case_id": case_id,
-                            "tight_state_count": tight_state_count,
-                            "tight_state_ratio": (
-                                self._ratio_or_na(tight_state_count, tight_obs)
-                            ),
-                            "tight_pair_count": tight_pair_count,
-                            "tight_pair_ratio": (
-                                self._ratio_or_na(tight_pair_count, tight_obs)
-                            ),
-                            "credit_stance_score_mean": (
-                                tight_score.mean() if tight_obs else pd.NA
-                            ),
-                        }
-                    )
-
-                    late = window_slice(diag, "late_2022_volatility")
-                    late_score = late["credit_stance_score"].dropna()
-                    late_moves = late_score.diff().abs().dropna()
-                    late_rows.append(
-                        {
-                            "case_id": case_id,
-                            "max_abs_daily_score_move": (
-                                late_moves.max() if not late_moves.empty else pd.NA
-                            ),
-                            "large_move_gt_0_5_count": int((late_moves > 0.5).sum()),
-                            "large_move_gt_1_0_count": int((late_moves > 1.0).sum()),
-                        }
-                    )
-
-                    full_obs = int(diag["credit_stance_score"].notna().sum())
-                    full_changed_pair_count = int(
-                        diag["state_stabilization_changed_pair"].sum()
-                    )
-                    full_rows.append(
-                        {
-                            "case_id": case_id,
-                            "changed_pair_count": full_changed_pair_count,
-                            "changed_change_state_count": int(
-                                diag["state_stabilization_changed_change_state"].sum()
-                            ),
-                            "changed_spread_state_count": int(
-                                diag["state_stabilization_changed_spread_state"].sum()
-                            ),
-                            "changed_pair_ratio": self._ratio_or_na(
-                                full_changed_pair_count,
-                                full_obs,
-                            ),
-                            "non_missing_obs_count": full_obs,
-                        }
-                    )
-            finally:
-                self.exposure_stance_config = original_exposure_stance_config
-                self.stance_scores = original_stance_scores
-                self.exposure_stance = original_exposure_stance
-
-            shock_detection_df = pd.DataFrame(shock_rows)
-            base_negative_date = shock_detection_df.loc[
-                shock_detection_df["case_id"] == "base_p1_p1",
-                "first_credit_negative_date",
-            ]
-            base_negative_date = (
-                base_negative_date.iloc[0] if not base_negative_date.empty else pd.NaT
-            )
-            shock_detection_df["delay_days_vs_base"] = shock_detection_df[
-                "first_credit_negative_date"
-            ].apply(
-                lambda value: (
-                    pd.NA
-                    if pd.isna(value) or pd.isna(base_negative_date)
-                    else (value - base_negative_date).days
-                )
-            )
-
-            window_metrics_df = pd.DataFrame(window_metrics_rows)
-            recovery_behavior_df = pd.DataFrame(recovery_rows)
-            tight_spread_behavior_df = pd.DataFrame(tight_rows)
-            late_volatility_df = pd.DataFrame(late_rows)
-            full_period_stabilization_df = pd.DataFrame(full_rows)
-
-            summary_rows = []
             for case_id, settings in cases.items():
-                shock_row = shock_detection_df[
-                    shock_detection_df["case_id"] == case_id
-                ].iloc[0]
-                recovery_row = recovery_behavior_df[
-                    recovery_behavior_df["case_id"] == case_id
-                ].iloc[0]
-                tight_row = tight_spread_behavior_df[
-                    tight_spread_behavior_df["case_id"] == case_id
-                ].iloc[0]
-                late_row = late_volatility_df[
-                    late_volatility_df["case_id"] == case_id
-                ].iloc[0]
-                full_row = full_period_stabilization_df[
-                    full_period_stabilization_df["case_id"] == case_id
-                ].iloc[0]
+                case_module1_config = copy.deepcopy(self.result.module1_config)
+                case_credit_config = case_module1_config["exposure_stances"][
+                    "credit"
+                ]
+                case_stabilization_config = {
+                    "credit_spread_change": {
+                        "hysteresis_buffer": float(hysteresis_buffer),
+                        "min_state_persistence": settings["credit_spread_change"],
+                    },
+                    "credit_spread_state": {
+                        "hysteresis_buffer": float(hysteresis_buffer),
+                        "min_state_persistence": settings["credit_spread_state"],
+                    },
+                }
+                case_credit_config["rule_mapped"][
+                    "state_stabilization"
+                ] = case_stabilization_config
+                if "state_stabilization" in case_credit_config:
+                    case_credit_config["state_stabilization"] = copy.deepcopy(
+                        case_stabilization_config
+                    )
 
+                case_exposure_stance_config = {
+                    "stance_label_rules": case_module1_config[
+                        "stance_label_rules"
+                    ],
+                    "exposure_stances": case_module1_config["exposure_stances"],
+                }
+                (
+                    case_stance_scores,
+                    case_exposure_stance,
+                ) = Module1Calculator.calculate_exposure_stance_outputs(
+                    self.scores,
+                    self.component_config,
+                    case_exposure_stance_config,
+                )
+                case_result = replace(
+                    self.result,
+                    stance_scores=case_stance_scores,
+                    exposure_stance=case_exposure_stance,
+                    module1_config=case_module1_config,
+                )
+                diag = Module1Diagnostics(case_result).trace_stance_score(
+                    "credit",
+                    include_raw_input=True,
+                    include_labels=False,
+                )
+                if "baa10y_change" in diag.columns and "baa10y" in diag.columns:
+                    diagnostic_columns = list(diag.columns)
+                    diagnostic_columns.remove("baa10y_change")
+                    diagnostic_columns.insert(
+                        diagnostic_columns.index("baa10y"),
+                        "baa10y_change",
+                    )
+                    diag = diag.loc[:, diagnostic_columns]
+
+                missing_cols = sorted(required_diagnostic_cols.difference(diag.columns))
+                if missing_cols:
+                    raise ValueError(
+                        "Credit stance diagnostics are missing required columns: "
+                        f"{missing_cols}"
+                    )
+
+                diagnostics_by_case[case_id] = diag.copy(deep=True)
+
+                for window_id in windows:
+                    window_metrics_rows.append(
+                        base_window_metrics(case_id, diag, window_id)
+                    )
+
+                shock = window_slice(diag, "covid_initial_shock")
+                shock_row = {
+                    "case_id": case_id,
+                    "first_credit_negative_date": first_negative_date(shock),
+                }
+
+                recovery = window_slice(diag, "post_shock_recovery")
+                recovery_score = recovery["credit_stance_score"].dropna()
+                recovery_pair, recovery_pair_ratio = dominant_pair(recovery)
+                recovery_row = {
+                    "case_id": case_id,
+                    "dominant_credit_state_pair": recovery_pair,
+                    "dominant_credit_state_pair_ratio": recovery_pair_ratio,
+                    "credit_stance_score_mean": (
+                        recovery_score.mean()
+                        if not recovery_score.empty
+                        else pd.NA
+                    ),
+                    "negative_score_days": int((recovery_score <= -0.5).sum()),
+                }
+
+                tight = window_slice(diag, "tight_spread_2021q2")
+                tight_score = tight["credit_stance_score"].dropna()
+                tight_obs = int(tight_score.shape[0])
+                tight_state_count = int(
+                    (tight["credit_spread_state_category"] == "tight").sum()
+                )
+                tight_pair_count = int(
+                    tight["credit_state_pair"]
+                    .dropna()
+                    .astype(str)
+                    .str.contains(r"\|tight$")
+                    .sum()
+                )
+                tight_row = {
+                    "case_id": case_id,
+                    "tight_state_count": tight_state_count,
+                    "tight_state_ratio": self._ratio_or_na(
+                        tight_state_count,
+                        tight_obs,
+                    ),
+                    "tight_pair_count": tight_pair_count,
+                    "tight_pair_ratio": self._ratio_or_na(
+                        tight_pair_count,
+                        tight_obs,
+                    ),
+                    "credit_stance_score_mean": (
+                        tight_score.mean() if tight_obs else pd.NA
+                    ),
+                }
+
+                late = window_slice(diag, "late_2022_volatility")
+                late_score = late["credit_stance_score"].dropna()
+                late_moves = late_score.diff().abs().dropna()
+                late_row = {
+                    "case_id": case_id,
+                    "max_abs_daily_score_move": (
+                        late_moves.max() if not late_moves.empty else pd.NA
+                    ),
+                    "large_move_gt_0_5_count": int((late_moves > 0.5).sum()),
+                    "large_move_gt_1_0_count": int((late_moves > 1.0).sum()),
+                }
+
+                full_obs = int(diag["credit_stance_score"].notna().sum())
+                full_changed_pair_count = int(
+                    diag["state_stabilization_changed_pair"].sum()
+                )
+                full_row = {
+                    "case_id": case_id,
+                    "changed_pair_count": full_changed_pair_count,
+                    "changed_change_state_count": int(
+                        diag["state_stabilization_changed_change_state"].sum()
+                    ),
+                    "changed_spread_state_count": int(
+                        diag["state_stabilization_changed_spread_state"].sum()
+                    ),
+                    "changed_pair_ratio": self._ratio_or_na(
+                        full_changed_pair_count,
+                        full_obs,
+                    ),
+                    "non_missing_obs_count": full_obs,
+                }
+
+                shock_rows.append(shock_row)
+                recovery_rows.append(recovery_row)
+                tight_rows.append(tight_row)
+                late_rows.append(late_row)
+                full_rows.append(full_row)
+                case_records[case_id] = {
+                    "settings": settings,
+                    "shock": shock_row,
+                    "recovery": recovery_row,
+                    "tight": tight_row,
+                    "late": late_row,
+                    "full": full_row,
+                }
+
+            base_record = case_records.get("base_p1_p1")
+            base_negative_date = (
+                pd.NaT
+                if base_record is None
+                else base_record["shock"]["first_credit_negative_date"]
+            )
+            summary_rows = []
+            for case_id, record in case_records.items():
+                settings = record["settings"]
+                shock_row = record["shock"]
+                recovery_row = record["recovery"]
+                tight_row = record["tight"]
+                late_row = record["late"]
+                full_row = record["full"]
+                negative_date = shock_row["first_credit_negative_date"]
+                shock_row["delay_days_vs_base"] = (
+                    pd.NA
+                    if pd.isna(negative_date) or pd.isna(base_negative_date)
+                    else (negative_date - base_negative_date).days
+                )
                 summary_rows.append(
                     {
                         "case_id": case_id,
@@ -2838,6 +2243,13 @@ class Module1SensitivityDiagnostics:
                         "full_changed_pair_ratio": full_row["changed_pair_ratio"],
                     }
                 )
+
+            window_metrics_df = pd.DataFrame(window_metrics_rows)
+            shock_detection_df = pd.DataFrame(shock_rows)
+            recovery_behavior_df = pd.DataFrame(recovery_rows)
+            tight_spread_behavior_df = pd.DataFrame(tight_rows)
+            late_volatility_df = pd.DataFrame(late_rows)
+            full_period_stabilization_df = pd.DataFrame(full_rows)
 
             result = {
                 "summary": pd.DataFrame(summary_rows),

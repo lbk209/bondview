@@ -1080,26 +1080,52 @@ class Module1ConstructedResultTests(unittest.TestCase):
             ),
         ):
             sensitivity = Module1SensitivityDiagnostics(self.result)
-            first = sensitivity.trace_stance_score(
+            diagnostics = sensitivity._diagnostics
+            first = diagnostics.trace_stance_score(
                 "rule",
                 include_raw_input=False,
                 include_labels=False,
             )
-            second = sensitivity.trace_stance_score(
+            second = diagnostics.trace_stance_score(
                 "rule",
+                include_raw_input=False,
+                include_labels=False,
+            )
+            weighted = diagnostics.trace_stance_score(
+                "weighted",
                 include_raw_input=False,
                 include_labels=False,
             )
 
-        self.assertFalse(hasattr(sensitivity, "calculator"))
-        self.assertNotIn("__getattr__", Module1SensitivityDiagnostics.__dict__)
-        for obsolete_name in (
-            "_CALCULATOR_STATE_FIELDS",
-            "_CALCULATOR_HELPERS",
-            "_sync_calculator_state",
-        ):
-            self.assertFalse(hasattr(Module1SensitivityDiagnostics, obsolete_name))
         pd.testing.assert_frame_equal(first, second)
+        self.assertEqual(
+            list(first.columns),
+            [
+                "component_a_score",
+                "rule_state_raw",
+                "rule_state",
+                "rule_state_stabilization_changed",
+                "rule_stabilization_changed",
+                "rule_case",
+                "rule_score",
+                "rule_stance",
+                "rule_strength",
+            ],
+        )
+        self.assertEqual(
+            list(weighted.columns),
+            [
+                "component_a_score",
+                "component_b_score",
+                "component_a_score_weight",
+                "component_a_score_contribution",
+                "component_b_score_weight",
+                "component_b_score_contribution",
+                "weighted_score",
+                "weighted_stance",
+                "weighted_strength",
+            ],
+        )
         pd.testing.assert_frame_equal(self.result.data, original_data)
         pd.testing.assert_frame_equal(self.result.scores, original_scores)
         self.assertEqual(self.result.module1_config, original_config)
@@ -1371,7 +1397,7 @@ class Module1ConstructedResultTests(unittest.TestCase):
             ) as rule_breakdown,
         ):
             diagnostics = Module1Diagnostics(self.result)
-            prepared = diagnostics._prepared_filtered_input_columns("weighted")
+            prepared = diagnostics.prepared_filtered_input_columns("weighted")
             weighted = diagnostics.trace_stance_score(
                 "weighted",
                 include_raw_input=False,
@@ -1531,7 +1557,7 @@ class Module1ConstructedResultTests(unittest.TestCase):
             ValueError,
             r"Module1Result\.features is required for prepared-input diagnostics",
         ):
-            Module1Diagnostics(no_features)._prepared_filtered_input_columns(
+            Module1Diagnostics(no_features).prepared_filtered_input_columns(
                 "weighted"
             )
 

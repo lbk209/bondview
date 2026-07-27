@@ -137,10 +137,11 @@ class Module1Diagnostics:
             if component.get("score", {}).get("output") is not None
         }
 
-    def _diagnostic_component_names_for_target(
+    def diagnostic_component_names(
         self,
         target: str | None,
     ) -> tuple[str, ...] | None:
+        """Return target component names in resolved diagnostic order."""
         if target is None:
             return None
         if self.exposure_stance_config is None:
@@ -181,19 +182,20 @@ class Module1Diagnostics:
             if isinstance(item, dict) and item.get("feature") is not None
         )
 
-    def _diagnostic_input_specs(
+    def diagnostic_input_specs(
         self,
         target: str | None = None,
         *,
         kinds: tuple[str, ...] = ("prepared", "filtered"),
     ) -> tuple[DiagnosticInputSpec, ...]:
+        """Return ordered prepared-input diagnostic specifications."""
         if self.component_config is None:
             raise ValueError(
                 "Module1Result.module1_config is required for prepared-input diagnostics."
             )
 
         components = self.component_config["components"]
-        target_component_names = self._diagnostic_component_names_for_target(target)
+        target_component_names = self.diagnostic_component_names(target)
         component_names = (
             tuple(components)
             if target_component_names is None
@@ -255,7 +257,8 @@ class Module1Diagnostics:
                     )
         return tuple(specs)
 
-    def _prepared_filtered_input_columns(self, target: str) -> pd.DataFrame:
+    def prepared_filtered_input_columns(self, target: str) -> pd.DataFrame:
+        """Build ordered prepared and threshold-filtered diagnostic inputs."""
         if self.features is None:
             raise ValueError(
                 "Module1Result.features is required for prepared-input diagnostics."
@@ -266,7 +269,7 @@ class Module1Diagnostics:
             )
 
         components = self.component_config["components"]
-        specs = self._diagnostic_input_specs(
+        specs = self.diagnostic_input_specs(
             target,
             kinds=("prepared", "filtered"),
         )
@@ -423,11 +426,15 @@ class Module1Diagnostics:
 
         return diagnostics
 
-    def _resolve_rule_mapped_diagnostic_spec(
+    def rule_mapped_diagnostic_spec(
         self,
         target: str,
-        target_info,
     ) -> RuleMappedDiagnosticSpec:
+        """Resolve completed-result rule-mapped diagnostic metadata."""
+        if target is None or str(target).strip() == "":
+            raise ValueError("target must be a non-empty stance identifier.")
+
+        target_info = self._resolve_target(target, level="stance")
         stance_name = target_info.canonical_target
         stance_config = target_info.config
         function = stance_config.get("function") if stance_config else None
@@ -635,7 +642,7 @@ class Module1Diagnostics:
         inputs. Sources follow the resolved rule-mapped declaration order in
         ``spec.score_input_cols``.
         """
-        declared_prepared_specs = self._diagnostic_input_specs(
+        declared_prepared_specs = self.diagnostic_input_specs(
             spec.target,
             kinds=("prepared",),
         )
@@ -697,7 +704,7 @@ class Module1Diagnostics:
             context_groups = {
                 "raw_inputs": ctx.data[raw_input_cols].reindex(index),
                 "features": ctx.data[feature_cols].reindex(index),
-                "prepared_filtered_inputs": self._prepared_filtered_input_columns(
+                "prepared_filtered_inputs": self.prepared_filtered_input_columns(
                     spec.target
                 ).reindex(index),
             }
@@ -806,8 +813,7 @@ class Module1Diagnostics:
                 f"Allowed values are: {allowed}."
             )
 
-        target_info = self._resolve_target(target, level="stance")
-        spec = self._resolve_rule_mapped_diagnostic_spec(target, target_info)
+        spec = self.rule_mapped_diagnostic_spec(target)
         if view != "state":
             include_scores = False
             include_raw_states = True
@@ -1053,7 +1059,7 @@ class Module1Diagnostics:
             )
 
         if "rule_mapped" in stance_config:
-            spec = self._resolve_rule_mapped_diagnostic_spec(target, target_info)
+            spec = self.rule_mapped_diagnostic_spec(target)
             return self._trace_rule_mapped_stance_score(
                 spec,
                 start=start,
