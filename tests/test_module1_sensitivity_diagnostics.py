@@ -1360,6 +1360,213 @@ class SensitivityPublicOutputTests(unittest.TestCase):
         )
         self.assert_result_unchanged(original_result)
 
+    def test_curve_stabilization_uses_one_neutral_and_one_case_breakdown(self):
+        neutral = {
+            "curve_change": {
+                "hysteresis_buffer": 0.0,
+                "min_state_persistence": 1,
+            },
+            "curve_state": {
+                "hysteresis_buffer": 0.0,
+                "min_state_persistence": 1,
+            },
+            "curve_move_driver": {
+                "hysteresis_buffer": 0.0,
+                "min_state_persistence": 1,
+            },
+        }
+        cases = {
+            "neutral": copy.deepcopy(neutral),
+            "modified": {
+                "curve_change": {
+                    "hysteresis_buffer": 0.0,
+                    "min_state_persistence": 3,
+                },
+                "curve_state": {
+                    "hysteresis_buffer": 0.0,
+                    "min_state_persistence": 3,
+                },
+                "curve_move_driver": {
+                    "hysteresis_buffer": 0.0,
+                    "min_state_persistence": 2,
+                },
+            },
+        }
+        windows = {"focus": ("2020-03-02", "2020-03-06")}
+        original_cases = copy.deepcopy(cases)
+        original_windows = copy.deepcopy(windows)
+        original_result = self.snapshot_result()
+
+        with (
+            patch.object(
+                Module1Calculator,
+                "build_rule_mapped_stance_score_breakdown",
+                wraps=Module1Calculator.build_rule_mapped_stance_score_breakdown,
+            ) as breakdown,
+            patch.object(
+                self.sensitivity._diagnostics,
+                "rule_mapped_diagnostic_spec",
+                wraps=(
+                    self.sensitivity._diagnostics.rule_mapped_diagnostic_spec
+                ),
+            ) as rule_spec,
+        ):
+            result = (
+                self.sensitivity.compare_curve_positioning_stabilization_cases(
+                    cases=cases,
+                    windows=windows,
+                    include_diagnostics=False,
+                )
+            )
+
+        self.assertEqual(rule_spec.call_count, 1)
+        self.assertEqual(breakdown.call_count, 1 + len(cases))
+        self.assertEqual(
+            [
+                call.kwargs["stabilization_overrides"]
+                for call in breakdown.call_args_list
+            ],
+            [neutral, *cases.values()],
+        )
+        raw_columns = [
+            column
+            for column in CURVE_DETAIL_COLUMNS
+            if column.startswith("raw_")
+        ]
+        pd.testing.assert_frame_equal(
+            result["detail_by_case"]["neutral"][raw_columns],
+            result["detail_by_case"]["modified"][raw_columns],
+        )
+        self.assertEqual(cases, original_cases)
+        self.assertEqual(windows, original_windows)
+        self.assert_result_unchanged(original_result)
+
+    def test_transition_and_spike_masks_preserve_missing_value_semantics(self):
+        index = pd.date_range("2024-01-01", periods=7, freq="D")
+        transitions = pd.Series(
+            [float("nan"), 1.0, float("nan"), 2.0, 2.0, float("nan"), 1.0],
+            index=index,
+        )
+        expected_transitions = pd.Series(
+            [False, False, False, True, False, False, True],
+            index=index,
+        )
+        pd.testing.assert_series_equal(
+            self.sensitivity._series_change_mask(transitions),
+            expected_transitions,
+        )
+        self.assertEqual(
+            self.sensitivity._count_series_changes(transitions),
+            int(expected_transitions.sum()),
+        )
+        self.assertFalse(
+            self.sensitivity._series_change_mask(
+                pd.Series([float("nan")] * 7, index=index)
+            ).any()
+        )
+        self.assertFalse(
+            self.sensitivity._series_change_mask(
+                pd.Series(
+                    [float("nan"), 1.0, *([float("nan")] * 5)],
+                    index=index,
+                )
+            ).any()
+        )
+
+        spikes = pd.Series(
+            [1.0, 2.0, 1.0, float("nan"), 1.0, 2.0, 1.0],
+            index=index,
+        )
+        expected_spikes = pd.Series(
+            [False, True, False, False, False, True, False],
+            index=index,
+        )
+        pd.testing.assert_series_equal(
+            self.sensitivity._one_day_spike_mask(spikes),
+            expected_spikes,
+        )
+        self.assertEqual(
+            self.sensitivity._count_one_day_spikes(spikes),
+            int(expected_spikes.sum()),
+        )
+
+    def test_curve_stabilization_windows_recalculate_local_event_masks(self):
+        index = pd.date_range("2024-01-01", periods=5, freq="D")
+        scores = pd.Series([0.0, 1.0, 0.0, 0.0, 0.0], index=index)
+        detail = pd.DataFrame(
+            {
+                "raw_curve_positioning_score": scores,
+                "stabilized_curve_positioning_score": scores,
+                "score_diff": 0.0,
+                "score_changed": False,
+                "raw_curve_positioning_rule_case": "case",
+                "stabilized_curve_positioning_rule_case": "case",
+                "raw_curve_positioning": "neutral",
+                "stabilized_curve_positioning": "neutral",
+                "raw_curve_positioning_strength": "weak",
+                "stabilized_curve_positioning_strength": "weak",
+            },
+            index=index,
+        )
+        detail["raw_score_change_flag"] = (
+            self.sensitivity._series_change_mask(
+                detail["raw_curve_positioning_score"]
+            )
+        )
+        detail["raw_one_day_spike_flag"] = (
+            self.sensitivity._one_day_spike_mask(
+                detail["raw_curve_positioning_score"]
+            )
+        )
+        window = (index[1], index[3])
+        sliced = self.sensitivity._inclusive_window_slice(detail, *window)
+        self.assertEqual(int(sliced["raw_score_change_flag"].sum()), 2)
+        self.assertEqual(int(sliced["raw_one_day_spike_flag"].sum()), 1)
+
+        row = self.sensitivity._curve_stabilization_window_row(
+            "case",
+            "inside",
+            window,
+            detail,
+        )
+        self.assertEqual(row["raw_score_change_count"], 1)
+        self.assertEqual(row["stabilized_score_change_count"], 1)
+        self.assertEqual(row["one_day_spike_count_raw"], 0)
+        self.assertEqual(row["one_day_spike_count_stabilized"], 0)
+
+        outside_variant = detail.copy(deep=True)
+        outside_variant.loc[index[0], "raw_curve_positioning_score"] = 1.0
+        outside_variant.loc[
+            index[0],
+            "stabilized_curve_positioning_score",
+        ] = 1.0
+        variant_row = self.sensitivity._curve_stabilization_window_row(
+            "case",
+            "inside",
+            window,
+            outside_variant,
+        )
+        self.assertEqual(
+            {
+                key: row[key]
+                for key in (
+                    "raw_score_change_count",
+                    "stabilized_score_change_count",
+                    "one_day_spike_count_raw",
+                    "one_day_spike_count_stabilized",
+                )
+            },
+            {
+                key: variant_row[key]
+                for key in (
+                    "raw_score_change_count",
+                    "stabilized_score_change_count",
+                    "one_day_spike_count_raw",
+                    "one_day_spike_count_stabilized",
+                )
+            },
+        )
+
     def test_curve_stabilization_custom_cases_public_contract(self):
         neutral = {
             "curve_change": {
@@ -1484,6 +1691,11 @@ class SensitivityPublicOutputTests(unittest.TestCase):
                 [str(dtype) for dtype in detail.dtypes[-7:]],
                 ["bool"] * 7,
             )
+        for case_id, detail in with_diagnostics["detail_by_case"].items():
+            pd.testing.assert_frame_equal(
+                detail,
+                with_diagnostics["diagnostics_by_case"][case_id],
+            )
         pd.testing.assert_frame_equal(
             with_diagnostics["detail_by_case"]["neutral_a"],
             with_diagnostics["detail_by_case"]["neutral_b"],
@@ -1501,6 +1713,38 @@ class SensitivityPublicOutputTests(unittest.TestCase):
         )
         self.assertEqual(summary.loc["neutral_a", "changed_score_count"], 0)
         self.assertGreater(summary.loc["modified", "changed_score_count"], 0)
+        for case_id, detail in with_diagnostics["detail_by_case"].items():
+            self.assertEqual(
+                summary.loc[case_id, "raw_score_change_count"],
+                int(detail["raw_score_change_flag"].sum()),
+            )
+            self.assertEqual(
+                summary.loc[case_id, "stabilized_score_change_count"],
+                int(detail["stabilized_score_change_flag"].sum()),
+            )
+            self.assertEqual(
+                summary.loc[case_id, "one_day_spike_count_raw"],
+                int(detail["raw_one_day_spike_flag"].sum()),
+            )
+            self.assertEqual(
+                summary.loc[case_id, "one_day_spike_count_stabilized"],
+                int(detail["stabilized_one_day_spike_flag"].sum()),
+            )
+            bucket_rows = with_diagnostics["bucket_transition_summary"].query(
+                "case_id == @case_id"
+            )
+            self.assertEqual(
+                bucket_rows["bucket_type"].tolist(),
+                ["curve_change", "curve_state", "yield_move_driver"],
+            )
+            self.assertEqual(
+                summary.loc[case_id, "bucket_change_count_raw"],
+                bucket_rows["raw_change_count"].sum(),
+            )
+            self.assertEqual(
+                summary.loc[case_id, "bucket_change_count_stabilized"],
+                bucket_rows["stabilized_change_count"].sum(),
+            )
         self.assertEqual(
             with_diagnostics["window_summary"][
                 ["case_id", "window_id"]
