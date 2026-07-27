@@ -8,7 +8,11 @@ from unittest.mock import Mock, patch
 import pandas as pd
 
 from module1_calculator import Module1Calculator, Module1Result
-from module1_diagnostics import DiagnosticInputSpec, Module1Diagnostics
+from module1_diagnostics import (
+    DiagnosticInputSpec,
+    Module1Diagnostics,
+    RuleMappedDiagnosticSpec,
+)
 from module1_historical_analysis import Module1HistoricalAnalysis
 from module1_sensitivity_diagnostics import Module1SensitivityDiagnostics
 
@@ -710,6 +714,162 @@ class SensitivityPublicOutputTests(unittest.TestCase):
         pd.testing.assert_frame_equal(missing_result.features, missing_features)
         self.assert_result_unchanged(original_result)
 
+    def test_diagnostics_owns_completed_context_rule_specs_and_traces(self):
+        original_result = self.snapshot_result()
+        diagnostics = self.sensitivity._diagnostics
+
+        with patch.object(
+            diagnostics,
+            "get_target_context",
+            wraps=diagnostics.get_target_context,
+        ) as get_target_context:
+            first_context = diagnostics.get_target_context(
+                "credit",
+                "stance",
+                dependency_level="full",
+            )
+            second_context = diagnostics.get_target_context(
+                "credit",
+                "stance",
+                dependency_level="full",
+            )
+            credit_trace = diagnostics.trace_stance_score(
+                "credit",
+                include_raw_input=True,
+                include_labels=False,
+            )
+            curve_trace = diagnostics.trace_stance_score(
+                "curve_positioning",
+                include_raw_input=True,
+                include_labels=False,
+            )
+
+        pd.testing.assert_frame_equal(first_context.data, second_context.data)
+        self.assertEqual(first_context.resolution, second_context.resolution)
+        self.assertEqual(
+            first_context.returned_columns,
+            second_context.returned_columns,
+        )
+        self.assertGreaterEqual(get_target_context.call_count, 4)
+
+        credit_spec = diagnostics.rule_mapped_diagnostic_spec("credit")
+        curve_spec = diagnostics.rule_mapped_diagnostic_spec(
+            "curve_positioning"
+        )
+        self.assertIsInstance(credit_spec, RuleMappedDiagnosticSpec)
+        self.assertIsInstance(curve_spec, RuleMappedDiagnosticSpec)
+        self.assertEqual(
+            credit_spec.score_input_cols,
+            ("credit_spread_change_score", "credit_spread_state_score"),
+        )
+        self.assertEqual(
+            curve_spec.component_names,
+            ("curve_change", "curve_state", "yield_move_driver"),
+        )
+        self.assertEqual(
+            credit_spec.rule_mapped_schema.rule_case_output_col,
+            credit_spec.rule_case_col,
+        )
+        self.assertEqual(
+            curve_spec.rule_mapped_schema.rule_case_output_col,
+            curve_spec.rule_case_col,
+        )
+        with patch.object(
+            diagnostics,
+            "rule_mapped_diagnostic_spec",
+            wraps=diagnostics.rule_mapped_diagnostic_spec,
+        ) as rule_spec:
+            smoothing = self.sensitivity.compare_smoothing_effect(
+                "credit",
+                windows={"focus": ("2020-03-02", "2020-03-06")},
+                include_detail=False,
+            )
+        self.assertEqual(list(smoothing), ["summary", "window_summary"])
+        self.assertGreaterEqual(rule_spec.call_count, 1)
+
+        expected_credit_columns = (
+            CREDIT_DIAGNOSTIC_COLUMNS[:17]
+            + ["baa10y", "baa10y_change"]
+            + CREDIT_DIAGNOSTIC_COLUMNS[19:]
+        )
+        self.assertEqual(list(credit_trace.columns), expected_credit_columns)
+        self.assertEqual(
+            list(curve_trace.columns),
+            [
+                "curve_change_score",
+                "curve_state_score",
+                "curve_move_driver_score",
+                "curve_change_bucket_raw",
+                "curve_change_bucket",
+                "curve_state_bucket_raw",
+                "curve_state_bucket",
+                "yield_move_driver_bucket_raw",
+                "yield_move_driver_bucket",
+                "state_stabilization_changed_curve_change",
+                "state_stabilization_changed_curve_state",
+                "state_stabilization_changed_curve_move_driver",
+                "state_stabilization_changed_any",
+                "curve_positioning_rule_case",
+                "curve_positioning_score",
+                "curve_positioning",
+                "curve_positioning_strength",
+                "dgs10",
+                "dgs2",
+                "curve_10y2y_level",
+                "curve_10y2y_change",
+                "dgs2_change",
+                "dgs10_change",
+                "curve_10y2y_change_prepared_for_curve_change",
+                "curve_10y2y_level_prepared_for_curve_state",
+                "dgs2_change_prepared_for_curve_move_driver",
+                "dgs10_change_prepared_for_curve_move_driver",
+                "dgs2_change_filtered_for_curve_move_driver",
+                "dgs10_change_filtered_for_curve_move_driver",
+            ],
+        )
+        self.assertEqual(
+            frame_fingerprint(credit_trace),
+            "7c0a6901c3e8f15b439e32adf583902bdd23fad4d961df27cff843098a0b2378",
+        )
+        self.assertEqual(
+            frame_fingerprint(curve_trace),
+            "bcdfb4202caa5dfdce0c5b005597342cf4708d51ebcffa3a808c08fe4982a9bd",
+        )
+        pd.testing.assert_frame_equal(
+            credit_trace,
+            diagnostics.trace_stance_score(
+                "credit",
+                include_raw_input=True,
+                include_labels=False,
+            ),
+        )
+        pd.testing.assert_frame_equal(
+            curve_trace,
+            diagnostics.trace_stance_score(
+                "curve_positioning",
+                include_raw_input=True,
+                include_labels=False,
+            ),
+        )
+
+        removed_names = (
+            "_resolve_target",
+            "get_target_context",
+            "trace_stance_score",
+            "_resolve_rule_mapped_diagnostic_config",
+            "_derive_rule_mapped_diagnostic_spec_from_context",
+            "_trace_rule_mapped_stance_score",
+            "_rule_mapped_trace_context_parts",
+        )
+        for name in removed_names:
+            self.assertNotIn(name, Module1SensitivityDiagnostics.__dict__)
+        self.assertFalse(hasattr(self.sensitivity, "analysis"))
+        self.assertEqual(
+            RuleMappedDiagnosticSpec.__module__,
+            "module1_diagnostics",
+        )
+        self.assert_result_unchanged(original_result)
+
     def test_sensitivity_consumes_diagnostics_owned_prepared_inputs(self):
         removed_names = (
             "_diagnostic_input_column_name",
@@ -736,6 +896,13 @@ class SensitivityPublicOutputTests(unittest.TestCase):
                     self.sensitivity._diagnostics.prepared_filtered_input_columns
                 ),
             ) as prepared_columns,
+            patch.object(
+                self.sensitivity._diagnostics,
+                "rule_mapped_diagnostic_spec",
+                wraps=(
+                    self.sensitivity._diagnostics.rule_mapped_diagnostic_spec
+                ),
+            ) as rule_spec,
         ):
             result = (
                 self.sensitivity.compare_curve_move_driver_threshold_effect(
@@ -749,6 +916,7 @@ class SensitivityPublicOutputTests(unittest.TestCase):
         )
         self.assertGreaterEqual(input_specs.call_count, 1)
         prepared_columns.assert_called_once_with("curve_positioning")
+        self.assertGreaterEqual(rule_spec.call_count, 1)
 
     def test_compare_smoothing_effect_public_contract_and_missing_behavior(self):
         windows = {
@@ -1237,11 +1405,6 @@ class SensitivityPublicOutputTests(unittest.TestCase):
                 "module1_sensitivity_diagnostics.Module1Diagnostics",
                 side_effect=build_case_diagnostics,
             ) as diagnostics_class,
-            patch.object(
-                self.sensitivity,
-                "trace_stance_score",
-                side_effect=AssertionError("baseline Sensitivity trace used"),
-            ) as baseline_trace,
         ):
             with_diagnostics = (
                 self.sensitivity.compare_credit_stance_persistence_cases(
@@ -1267,7 +1430,10 @@ class SensitivityPublicOutputTests(unittest.TestCase):
 
         expected_settings = list(cases.values()) * 3
         self.assertEqual(diagnostics_class.call_count, len(expected_settings))
-        baseline_trace.assert_not_called()
+        self.assertNotIn(
+            "trace_stance_score",
+            Module1SensitivityDiagnostics.__dict__,
+        )
         self.assertEqual(
             calculate_exposure_stance_outputs.call_count,
             len(expected_settings),
