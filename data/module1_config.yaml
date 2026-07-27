@@ -778,13 +778,6 @@ exposure_stances:
         positive: wide
         neutral: normal
         negative: tight
-    state_stabilization: &credit_rule_state_stabilization
-      credit_spread_change:
-        hysteresis_buffer: 0.0
-        min_state_persistence: 1
-      credit_spread_state:
-        hysteresis_buffer: 0.0
-        min_state_persistence: 1
     rule_scores: &credit_rule_scores
       positive|wide: 1.2
       positive|normal: 1.0
@@ -856,7 +849,13 @@ exposure_stances:
             positive: wide
             neutral: normal
             negative: tight
-      state_stabilization: *credit_rule_state_stabilization
+      state_stabilization: &credit_rule_state_stabilization
+        credit_spread_change:
+          hysteresis_buffer: 0.0
+          min_state_persistence: 1
+        credit_spread_state:
+          hysteresis_buffer: 0.0
+          min_state_persistence: 1
       rule_case_output: credit_state_pair
       stabilization_changed_any_output: state_stabilization_changed_pair
       rule_scores: *credit_rule_scores

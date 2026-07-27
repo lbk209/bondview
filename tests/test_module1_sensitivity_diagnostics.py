@@ -2359,10 +2359,7 @@ class SensitivityPublicOutputTests(unittest.TestCase):
             nested_stabilization = scenario_config["rule_mapped"][
                 "state_stabilization"
             ]
-            self.assertEqual(
-                nested_stabilization,
-                scenario_config["state_stabilization"],
-            )
+            self.assertNotIn("state_stabilization", scenario_config)
             self.assertEqual(
                 nested_stabilization,
                 {
