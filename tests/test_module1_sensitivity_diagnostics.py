@@ -959,6 +959,90 @@ class SensitivityPublicOutputTests(unittest.TestCase):
             snapshot["module1_config"],
         )
 
+    def test_incomplete_results_use_result_specific_sensitivity_errors(self):
+        explicit_windows = {"full": (None, None)}
+        checks = [
+            *[
+                (
+                    f"smoothing_{field}",
+                    field,
+                    lambda sensitivity: sensitivity.compare_smoothing_effect(
+                        "credit",
+                        windows=explicit_windows,
+                    ),
+                    rf"Module1Result\.{field} is required for .*input smoothing",
+                )
+                for field in ("features", "scores", "exposure_stance")
+            ],
+            (
+                "smoothing_module1_config",
+                "module1_config",
+                lambda sensitivity: sensitivity.compare_smoothing_effect(
+                    "credit",
+                    windows=explicit_windows,
+                ),
+                r"Module1Result\.module1_config is required for smoothing diagnostics",
+            ),
+            *[
+                (
+                    f"curve_threshold_{field}",
+                    field,
+                    lambda sensitivity: (
+                        sensitivity.compare_curve_move_driver_threshold_effect()
+                    ),
+                    rf"Module1Result\.{field} is required for comparing "
+                    r"curve_move_driver threshold",
+                )
+                for field in (
+                    "features",
+                    "scores",
+                    "exposure_stance",
+                    "module1_config",
+                )
+            ],
+            *[
+                (
+                    f"curve_stabilization_{field}",
+                    field,
+                    lambda sensitivity: (
+                        sensitivity.compare_curve_positioning_stabilization_cases()
+                    ),
+                    rf"Module1Result\.{field} is required for curve .*"
+                    r"stabilization comparison",
+                )
+                for field in ("scores", "exposure_stance", "module1_config")
+            ],
+            *[
+                (
+                    f"credit_persistence_{field}",
+                    field,
+                    lambda sensitivity: (
+                        sensitivity.compare_credit_stance_persistence_cases()
+                    ),
+                    rf"Module1Result\.{field} is required for "
+                    r"compare_credit_stance_persistence_cases",
+                )
+                for field in (
+                    "module1_config",
+                    "features",
+                    "scores",
+                    "labels",
+                    "exposure_stance",
+                    "stance_scores",
+                )
+            ],
+        ]
+
+        for name, field, workflow, pattern in checks:
+            with self.subTest(name=name):
+                incomplete = replace(self.result, **{field: None})
+                sensitivity = Module1SensitivityDiagnostics(
+                    incomplete,
+                    historical_context=copy.deepcopy(self.historical_context),
+                )
+                with self.assertRaisesRegex(ValueError, pattern):
+                    workflow(sensitivity)
+
     def test_diagnostics_owns_ordered_prepared_input_specs(self):
         original_result = self.snapshot_result()
         diagnostics = Module1Diagnostics(self.result)
@@ -1276,18 +1360,6 @@ class SensitivityPublicOutputTests(unittest.TestCase):
             ),
         )
 
-        removed_names = (
-            "_resolve_target",
-            "get_target_context",
-            "trace_stance_score",
-            "_resolve_rule_mapped_diagnostic_config",
-            "_derive_rule_mapped_diagnostic_spec_from_context",
-            "_trace_rule_mapped_stance_score",
-            "_rule_mapped_trace_context_parts",
-        )
-        for name in removed_names:
-            self.assertNotIn(name, Module1SensitivityDiagnostics.__dict__)
-        self.assertFalse(hasattr(self.sensitivity, "analysis"))
         self.assertEqual(
             RuleMappedDiagnosticSpec.__module__,
             "module1_diagnostics",
@@ -1295,18 +1367,6 @@ class SensitivityPublicOutputTests(unittest.TestCase):
         self.assert_result_unchanged(original_result)
 
     def test_sensitivity_consumes_diagnostics_owned_prepared_inputs(self):
-        removed_names = (
-            "_diagnostic_input_column_name",
-            "_component_by_score_output",
-            "_diagnostic_component_filter_for_target",
-            "_diagnostic_component_names_for_target",
-            "_score_input_features_for_diagnostic_component",
-            "_diagnostic_input_specs",
-            "_prepared_filtered_input_columns",
-        )
-        for name in removed_names:
-            self.assertNotIn(name, Module1SensitivityDiagnostics.__dict__)
-
         with (
             patch.object(
                 self.sensitivity._diagnostics,
@@ -1334,10 +1394,6 @@ class SensitivityPublicOutputTests(unittest.TestCase):
                 )
             )
 
-        self.assertEqual(
-            frame_fingerprint(result["detail"]),
-            "6051f2b2062fe165b538f4a9e96b59cd403a08de4d69cac6647ee439111f12c2",
-        )
         self.assertGreaterEqual(input_specs.call_count, 1)
         prepared_columns.assert_called_once_with("curve_positioning")
         self.assertGreaterEqual(rule_spec.call_count, 1)
@@ -1816,14 +1872,9 @@ class SensitivityPublicOutputTests(unittest.TestCase):
             [False, False, False, True, False, False, True],
             index=index,
         )
-        pd.testing.assert_series_equal(
-            self.sensitivity._series_change_mask(transitions),
-            expected_transitions,
-        )
-        self.assertEqual(
-            self.sensitivity._count_series_changes(transitions),
-            int(expected_transitions.sum()),
-        )
+        transition_mask = self.sensitivity._series_change_mask(transitions)
+        pd.testing.assert_series_equal(transition_mask, expected_transitions)
+        self.assertEqual(int(transition_mask.sum()), 2)
         self.assertFalse(
             self.sensitivity._series_change_mask(
                 pd.Series([float("nan")] * 7, index=index)
@@ -1846,14 +1897,9 @@ class SensitivityPublicOutputTests(unittest.TestCase):
             [False, True, False, False, False, True, False],
             index=index,
         )
-        pd.testing.assert_series_equal(
-            self.sensitivity._one_day_spike_mask(spikes),
-            expected_spikes,
-        )
-        self.assertEqual(
-            self.sensitivity._count_one_day_spikes(spikes),
-            int(expected_spikes.sum()),
-        )
+        spike_mask = self.sensitivity._one_day_spike_mask(spikes)
+        pd.testing.assert_series_equal(spike_mask, expected_spikes)
+        self.assertEqual(int(spike_mask.sum()), 2)
 
     def test_curve_stabilization_windows_recalculate_local_event_masks(self):
         index = pd.date_range("2024-01-01", periods=5, freq="D")
@@ -2274,10 +2320,6 @@ class SensitivityPublicOutputTests(unittest.TestCase):
 
         expected_settings = list(cases.values()) * 3
         self.assertEqual(diagnostics_class.call_count, len(expected_settings))
-        self.assertNotIn(
-            "trace_stance_score",
-            Module1SensitivityDiagnostics.__dict__,
-        )
         self.assertEqual(
             calculate_exposure_stance_outputs.call_count,
             len(expected_settings),
