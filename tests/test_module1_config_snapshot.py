@@ -1371,7 +1371,7 @@ class Module1ConstructedResultTests(unittest.TestCase):
             ) as rule_breakdown,
         ):
             diagnostics = Module1Diagnostics(self.result)
-            prepared = diagnostics._prepared_filtered_input_columns("weighted")
+            prepared = diagnostics.prepared_filtered_input_columns("weighted")
             weighted = diagnostics.trace_stance_score(
                 "weighted",
                 include_raw_input=False,
@@ -1531,7 +1531,7 @@ class Module1ConstructedResultTests(unittest.TestCase):
             ValueError,
             r"Module1Result\.features is required for prepared-input diagnostics",
         ):
-            Module1Diagnostics(no_features)._prepared_filtered_input_columns(
+            Module1Diagnostics(no_features).prepared_filtered_input_columns(
                 "weighted"
             )
 
