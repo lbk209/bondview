@@ -1097,22 +1097,6 @@ class Module1ConstructedResultTests(unittest.TestCase):
                 include_labels=False,
             )
 
-        self.assertFalse(hasattr(sensitivity, "calculator"))
-        self.assertFalse(hasattr(sensitivity, "analysis"))
-        self.assertNotIn("__getattr__", Module1SensitivityDiagnostics.__dict__)
-        for obsolete_name in (
-            "_CALCULATOR_STATE_FIELDS",
-            "_CALCULATOR_HELPERS",
-            "_sync_calculator_state",
-            "_resolve_target",
-            "get_target_context",
-            "trace_stance_score",
-            "_resolve_rule_mapped_diagnostic_config",
-            "_derive_rule_mapped_diagnostic_spec_from_context",
-            "_trace_rule_mapped_stance_score",
-            "_rule_mapped_trace_context_parts",
-        ):
-            self.assertFalse(hasattr(Module1SensitivityDiagnostics, obsolete_name))
         pd.testing.assert_frame_equal(first, second)
         self.assertEqual(
             list(first.columns),

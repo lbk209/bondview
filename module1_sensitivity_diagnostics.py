@@ -60,8 +60,6 @@ class Module1SensitivityDiagnostics:
         )
         self.horizons = self._copy_result_value(result.horizons)
         self.historical_context = historical_context
-        self.historical_cases = historical_cases
-        self.historical_expected_label_validation = historical_expected_label_validation
 
     @staticmethod
     def _copy_result_value(value):
@@ -338,11 +336,13 @@ class Module1SensitivityDiagnostics:
         ) -> pd.DataFrame:
             if self.features is None:
                 raise ValueError(
-                    "Run calculate_features() before recalculating diagnostic component scores."
+                    "Module1Result.features is required for recalculating "
+                    "diagnostic component scores."
                 )
             if self.component_config is None or self.exposure_stance_config is None:
                 raise ValueError(
-                    "Run load_module1_config() before recalculating diagnostic component scores."
+                    "Module1Result.module1_config is required for recalculating "
+                    "diagnostic component scores."
                 )
 
             component_names = self._diagnostics.diagnostic_component_names(target)
@@ -384,11 +384,13 @@ class Module1SensitivityDiagnostics:
         ) -> dict[str, pd.Series]:
             if self.scores is None:
                 raise ValueError(
-                    "Run calculate_component_scores() before reconstructing diagnostic stances."
+                    "Module1Result.scores is required for reconstructing "
+                    "diagnostic stances."
                 )
             if self.exposure_stance_config is None:
                 raise ValueError(
-                    "Run load_module1_config() before reconstructing diagnostic stances."
+                    "Module1Result.module1_config is required for reconstructing "
+                    "diagnostic stances."
                 )
 
             spec = self._diagnostics.rule_mapped_diagnostic_spec(target)
@@ -436,7 +438,7 @@ class Module1SensitivityDiagnostics:
         ) -> pd.DataFrame:
             if self.scores is None:
                 raise ValueError(
-                    "Run calculate_component_scores() before comparing parameter effects."
+                    "Module1Result.scores is required for comparing parameter effects."
                 )
 
             spec = self._diagnostics.rule_mapped_diagnostic_spec(target)
@@ -507,32 +509,6 @@ class Module1SensitivityDiagnostics:
                     seen.add(spec.source)
             return tuple(features)
 
-    def _diagnostic_input_spec(
-            self,
-            target: str,
-            component: str,
-            source: str,
-            kind: str,
-            role: str | None = None,
-        ) -> DiagnosticInputSpec:
-            matches = [
-                spec
-                for spec in self._diagnostics.diagnostic_input_specs(
-                    target,
-                    kinds=("prepared", "filtered"),
-                )
-                if spec.component == component
-                and spec.source == source
-                and spec.kind == kind
-                and (role is None or spec.role == role)
-            ]
-            if len(matches) != 1:
-                raise ValueError(
-                    "Expected exactly one prepared/filtered diagnostic input spec for "
-                    f"{target} {component} {source} {kind}, found {len(matches)}."
-                )
-            return matches[0]
-
     def _diagnostic_input_spec_by_role(
             self,
             target: str,
@@ -556,18 +532,6 @@ class Module1SensitivityDiagnostics:
                     f"{target} {component} {kind} role={role}, found {len(matches)}."
                 )
             return matches[0]
-
-    def _curve_positioning_stance_config(self) -> dict:
-            if self.exposure_stance_config is None:
-                raise ValueError("Run load_module1_config() before curve diagnostics.")
-
-            stance_config = self.exposure_stance_config["exposure_stances"].get(
-                "curve_positioning"
-            )
-            if stance_config is None:
-                raise ValueError("Curve positioning stance config is missing.")
-
-            return stance_config
 
     def _smoothing_diagnostic_windows(self, windows: dict | None) -> dict:
             if windows is not None:
@@ -623,7 +587,9 @@ class Module1SensitivityDiagnostics:
 
     def _target_smoothing_layers(self, target: str) -> set[str]:
             if self.module1_config is None:
-                raise ValueError("Run load_module1_config() before smoothing diagnostics.")
+                raise ValueError(
+                    "Module1Result.module1_config is required for smoothing diagnostics."
+                )
 
             target_group = "curve" if target == "curve_positioning" else target
             groups = self.module1_config.get("model_metadata", {}).get("target_groups", {})
@@ -677,21 +643,22 @@ class Module1SensitivityDiagnostics:
     def _validate_input_smoothing_detail_prerequisites(self, target: str) -> None:
             if self.features is None:
                 raise ValueError(
-                    f"Run calculate_features() before comparing {target} input smoothing."
+                    f"Module1Result.features is required for comparing "
+                    f"{target} input smoothing."
                 )
             if self.scores is None:
                 raise ValueError(
-                    "Run calculate_component_scores() before comparing "
+                    "Module1Result.scores is required for comparing "
                     f"{target} input smoothing."
                 )
             if self.exposure_stance is None:
                 raise ValueError(
-                    "Run calculate_exposure_stance() before comparing "
+                    "Module1Result.exposure_stance is required for comparing "
                     f"{target} input smoothing."
                 )
             if self.component_config is None or self.exposure_stance_config is None:
                 raise ValueError(
-                    "Run load_module1_config() before comparing "
+                    "Module1Result.module1_config is required for comparing "
                     f"{target} input smoothing."
                 )
 
@@ -926,14 +893,6 @@ class Module1SensitivityDiagnostics:
                 ),
             )
 
-    def _credit_stance_config(self) -> dict:
-            if self.exposure_stance_config is None:
-                raise ValueError("Run load_module1_config() before credit diagnostics.")
-            stance_config = self.exposure_stance_config["exposure_stances"].get("credit")
-            if stance_config is None:
-                raise ValueError("Credit exposure stance config is missing.")
-            return stance_config
-
     def _ratio_or_na(self, numerator, denominator):
             return numerator / denominator if denominator else pd.NA
 
@@ -984,23 +943,6 @@ class Module1SensitivityDiagnostics:
                 "mean_abs_diff": mean_abs_diff,
             }
 
-    def _prefixed_smoothing_pair_metrics(
-            self,
-            prefix: str,
-            raw: pd.Series,
-            smoothed: pd.Series,
-            *,
-            tolerance: float = 1e-10,
-        ) -> dict:
-            return {
-                f"{prefix}_{metric}": value
-                for metric, value in self._smoothing_pair_comparison_metrics(
-                    raw,
-                    smoothed,
-                    tolerance=tolerance,
-                ).items()
-            }
-
     def _rule_mapped_input_smoothing_summary_row(
             self,
             detail: pd.DataFrame,
@@ -1022,12 +964,14 @@ class Module1SensitivityDiagnostics:
             }
             for score_col in spec.score_input_cols:
                 row.update(
-                    self._prefixed_smoothing_pair_metrics(
-                        score_col,
-                        detail[f"raw_{score_col}"],
-                        detail[f"smoothed_{score_col}"],
-                        tolerance=tolerance,
-                    )
+                    {
+                        f"{score_col}_{metric}": value
+                        for metric, value in self._smoothing_pair_comparison_metrics(
+                            detail[f"raw_{score_col}"],
+                            detail[f"smoothed_{score_col}"],
+                            tolerance=tolerance,
+                        ).items()
+                    }
                 )
             row.update(
                 {
@@ -1037,20 +981,20 @@ class Module1SensitivityDiagnostics:
             )
 
             change_prefix = profile.score_change_metric_prefix
-            raw_score_change_count = self._count_series_changes(
-                detail[raw_final_score_col]
+            raw_score_change_count = int(
+                self._series_change_mask(detail[raw_final_score_col]).sum()
             )
-            smoothed_score_change_count = self._count_series_changes(
-                detail[smoothed_final_score_col]
+            smoothed_score_change_count = int(
+                self._series_change_mask(detail[smoothed_final_score_col]).sum()
             )
             score_change_reduction_count = (
                 raw_score_change_count - smoothed_score_change_count
             )
-            raw_one_day_spike_count = self._count_one_day_spikes(
-                detail[raw_final_score_col]
+            raw_one_day_spike_count = int(
+                self._one_day_spike_mask(detail[raw_final_score_col]).sum()
             )
-            smoothed_one_day_spike_count = self._count_one_day_spikes(
-                detail[smoothed_final_score_col]
+            smoothed_one_day_spike_count = int(
+                self._one_day_spike_mask(detail[smoothed_final_score_col]).sum()
             )
             one_day_spike_reduction_count = (
                 raw_one_day_spike_count - smoothed_one_day_spike_count
@@ -1134,9 +1078,6 @@ class Module1SensitivityDiagnostics:
             mask.loc[valid.index] = valid_changes
             return mask
 
-    def _count_series_changes(self, series: pd.Series) -> int:
-            return int(self._series_change_mask(series).sum())
-
     def _one_day_spike_mask(self, series: pd.Series) -> pd.Series:
             previous = series.shift(1)
             following = series.shift(-1)
@@ -1148,9 +1089,6 @@ class Module1SensitivityDiagnostics:
                 & series.ne(following)
                 & previous.eq(following)
             )
-
-    def _count_one_day_spikes(self, series: pd.Series) -> int:
-            return int(self._one_day_spike_mask(series).sum())
 
     def _default_curve_stabilization_cases(self) -> dict:
             neutral_case = self._neutral_curve_positioning_stabilization_overrides()
@@ -1206,19 +1144,23 @@ class Module1SensitivityDiagnostics:
             """
             if self.features is None:
                 raise ValueError(
-                    "Run calculate_features() before comparing curve_move_driver threshold."
+                    "Module1Result.features is required for comparing "
+                    "curve_move_driver threshold."
                 )
             if self.scores is None:
                 raise ValueError(
-                    "Run calculate_component_scores() before comparing curve_move_driver threshold."
+                    "Module1Result.scores is required for comparing "
+                    "curve_move_driver threshold."
                 )
             if self.exposure_stance is None:
                 raise ValueError(
-                    "Run calculate_exposure_stance() before comparing curve_move_driver threshold."
+                    "Module1Result.exposure_stance is required for comparing "
+                    "curve_move_driver threshold."
                 )
             if self.component_config is None or self.exposure_stance_config is None:
                 raise ValueError(
-                    "Run load_module1_config() before comparing curve_move_driver threshold."
+                    "Module1Result.module1_config is required for comparing "
+                    "curve_move_driver threshold."
                 )
 
             target = "curve_positioning"
@@ -1717,14 +1659,27 @@ class Module1SensitivityDiagnostics:
             windows: dict | None = None,
             include_diagnostics: bool = True,
         ) -> dict:
-            if self.scores is None or self.exposure_stance is None:
+            if self.scores is None:
                 raise ValueError(
-                    "Run calculate_component_scores() and calculate_exposure_stance() before curve stabilization comparison."
+                    "Module1Result.scores is required for curve stabilization "
+                    "comparison."
+                )
+            if self.exposure_stance is None:
+                raise ValueError(
+                    "Module1Result.exposure_stance is required for curve "
+                    "stabilization comparison."
                 )
             if self.exposure_stance_config is None:
-                raise ValueError("Run load_module1_config() before curve stabilization comparison.")
+                raise ValueError(
+                    "Module1Result.module1_config is required for curve "
+                    "stabilization comparison."
+                )
 
-            stance_config = self._curve_positioning_stance_config()
+            stance_config = self.exposure_stance_config[
+                "exposure_stances"
+            ].get("curve_positioning")
+            if stance_config is None:
+                raise ValueError("Curve positioning stance config is missing.")
             spec = self._diagnostics.rule_mapped_diagnostic_spec(
                 "curve_positioning"
             )
@@ -1873,23 +1828,33 @@ class Module1SensitivityDiagnostics:
             """
             if self.exposure_stance_config is None:
                 raise ValueError(
-                    "Run load_module1_config() before compare_credit_stance_persistence_cases()."
+                    "Module1Result.module1_config is required for "
+                    "compare_credit_stance_persistence_cases()."
                 )
             if self.features is None:
                 raise ValueError(
-                    "Run calculate_features() before compare_credit_stance_persistence_cases()."
+                    "Module1Result.features is required for "
+                    "compare_credit_stance_persistence_cases()."
                 )
             if self.scores is None:
                 raise ValueError(
-                    "Run calculate_component_scores() before compare_credit_stance_persistence_cases()."
+                    "Module1Result.scores is required for "
+                    "compare_credit_stance_persistence_cases()."
                 )
             if self.labels is None:
                 raise ValueError(
-                    "Run calculate_component_labels() before compare_credit_stance_persistence_cases()."
+                    "Module1Result.labels is required for "
+                    "compare_credit_stance_persistence_cases()."
                 )
-            if self.exposure_stance is None or self.stance_scores is None:
+            if self.exposure_stance is None:
                 raise ValueError(
-                    "Run calculate_exposure_stance() before compare_credit_stance_persistence_cases()."
+                    "Module1Result.exposure_stance is required for "
+                    "compare_credit_stance_persistence_cases()."
+                )
+            if self.stance_scores is None:
+                raise ValueError(
+                    "Module1Result.stance_scores is required for "
+                    "compare_credit_stance_persistence_cases()."
                 )
             if "credit" not in self.exposure_stance_config.get("exposure_stances", {}):
                 raise ValueError("Credit exposure stance config is missing.")
