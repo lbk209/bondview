@@ -14,35 +14,10 @@ from module1_historical_analysis import Module1HistoricalAnalysis
 
 
 @dataclass(frozen=True)
-class SmoothingDiagnosticComponentScorePair:
-    source_score_col: str
-    raw_col: str
-    smoothed_col: str
-    metric_prefix: str
-
-
-@dataclass(frozen=True)
-class SmoothingDiagnosticContextColumn:
-    output_col: str
-    feature_col: str | None = None
-    data_col: str | None = None
-
-
-@dataclass(frozen=True)
 class SmoothingDiagnosticTargetProfile:
-    target: str
-    display_target: str
     spec: RuleMappedDiagnosticSpec
-    component_score_pairs: tuple[SmoothingDiagnosticComponentScorePair, ...]
-    context_columns: tuple[SmoothingDiagnosticContextColumn, ...]
-    raw_final_score_col: str
-    smoothed_final_score_col: str
-    raw_stance_label_col: str
-    smoothed_stance_label_col: str
-    raw_strength_label_col: str
-    smoothed_strength_label_col: str
+    display_target: str
     score_diff_col: str
-    final_score_metric_prefix: str
     score_change_metric_prefix: str
 
 
@@ -668,89 +643,32 @@ class Module1SensitivityDiagnostics:
     def _resolve_smoothing_layer(self, target: str, smoothing_layer: str) -> str:
             if smoothing_layer != "auto":
                 return smoothing_layer
-            if target in {"credit", "curve_positioning"}:
-                return "input_preparation"
-            if target == "duration":
-                return "score"
+            configured_layers = self._target_smoothing_layers(target)
+            if len(configured_layers) == 1:
+                return next(iter(configured_layers))
+            if len(configured_layers) > 1:
+                raise ValueError(
+                    "Automatic smoothing-layer resolution is ambiguous for "
+                    f"target {target!r}: configured layers are "
+                    f"{sorted(configured_layers)}. Pass smoothing_layer explicitly."
+                )
             return smoothing_layer
-
-    def _smoothing_context_columns(
-            self,
-            target: str,
-            spec: RuleMappedDiagnosticSpec,
-        ) -> tuple[SmoothingDiagnosticContextColumn, ...]:
-            if target == "credit":
-                context_columns = []
-                for component_name in spec.component_names:
-                    features = self._prepared_input_sources_for_diagnostic_components(
-                        target,
-                        (component_name,),
-                    )
-                    for feature in features:
-                        feature_config = self.feature_config["features"].get(feature, {})
-                        data_col = (
-                            feature_config.get("input")
-                            if feature_config.get("method") == "level"
-                            else None
-                        )
-                        output_col = data_col if data_col is not None else feature
-                        context_columns.append(
-                            SmoothingDiagnosticContextColumn(
-                                output_col=output_col,
-                                feature_col=feature,
-                                data_col=data_col,
-                            )
-                        )
-                return tuple(
-                    column
-                    for idx, column in enumerate(context_columns)
-                    if column.output_col
-                    not in {prior.output_col for prior in context_columns[:idx]}
-                )
-
-            return tuple(
-                SmoothingDiagnosticContextColumn(
-                    output_col=feature,
-                    feature_col=feature,
-                )
-                for feature in self._prepared_input_sources_for_diagnostic_components(
-                    target,
-                    spec.component_names,
-                )
-            )
 
     def _smoothing_diagnostic_target_profile(
             self,
             target: str,
         ) -> SmoothingDiagnosticTargetProfile:
             spec = self._diagnostics.rule_mapped_diagnostic_spec(target)
-            component_score_pairs = tuple(
-                SmoothingDiagnosticComponentScorePair(
-                    source_score_col=score_col,
-                    raw_col=f"raw_{score_col}",
-                    smoothed_col=f"smoothed_{score_col}",
-                    metric_prefix=score_col,
-                )
-                for score_col in spec.score_input_cols
-            )
             return SmoothingDiagnosticTargetProfile(
-                target=spec.target,
-                display_target="curve" if spec.target == "curve_positioning" else spec.target,
                 spec=spec,
-                component_score_pairs=component_score_pairs,
-                context_columns=self._smoothing_context_columns(spec.target, spec),
-                raw_final_score_col=f"raw_{spec.final_score_col}",
-                smoothed_final_score_col=f"smoothed_{spec.final_score_col}",
-                raw_stance_label_col=f"raw_{spec.stance_label_col}",
-                smoothed_stance_label_col=f"smoothed_{spec.stance_label_col}",
-                raw_strength_label_col=f"raw_{spec.strength_label_col}",
-                smoothed_strength_label_col=f"smoothed_{spec.strength_label_col}",
+                display_target=(
+                    "curve" if spec.target == "curve_positioning" else spec.target
+                ),
                 score_diff_col=(
                     "score_diff"
                     if spec.target == "curve_positioning"
                     else f"{spec.final_score_col}_diff"
                 ),
-                final_score_metric_prefix=spec.final_score_col,
                 score_change_metric_prefix=(
                     "curve" if spec.target == "curve_positioning" else spec.target
                 ),
@@ -780,20 +698,41 @@ class Module1SensitivityDiagnostics:
     def _add_smoothing_context_columns(
             self,
             detail: pd.DataFrame,
-            profile: SmoothingDiagnosticTargetProfile,
+            spec: RuleMappedDiagnosticSpec,
         ) -> None:
-            for column in profile.context_columns:
-                if column.data_col is not None and self.data is not None:
-                    if column.data_col in self.data.columns:
-                        detail[column.output_col] = (
-                            self.data[column.data_col].reindex(detail.index).ffill()
-                        )
-                        continue
+            features = self._prepared_input_sources_for_diagnostic_components(
+                spec.target,
+                spec.component_names,
+            )
+            if spec.target != "credit":
+                for feature in features:
+                    if feature in self.features.columns:
+                        detail[feature] = self.features[feature]
+                return
+
+            seen_outputs = set()
+            for feature in features:
+                feature_config = self.feature_config["features"].get(feature, {})
+                data_col = (
+                    feature_config.get("input")
+                    if feature_config.get("method") == "level"
+                    else None
+                )
+                output_col = data_col if data_col is not None else feature
+                if output_col in seen_outputs:
+                    continue
+                seen_outputs.add(output_col)
                 if (
-                    column.feature_col is not None
-                    and column.feature_col in self.features.columns
+                    data_col is not None
+                    and self.data is not None
+                    and data_col in self.data.columns
                 ):
-                    detail[column.output_col] = self.features[column.feature_col]
+                    detail[output_col] = (
+                        self.data[data_col].reindex(detail.index).ffill()
+                    )
+                    continue
+                if feature in self.features.columns:
+                    detail[output_col] = self.features[feature]
 
     def _rule_mapped_input_smoothing_effect_detail(
             self,
@@ -801,12 +740,13 @@ class Module1SensitivityDiagnostics:
             profile: SmoothingDiagnosticTargetProfile | None = None,
         ) -> pd.DataFrame:
             profile = profile or self._smoothing_diagnostic_target_profile(target)
+            spec = profile.spec
             self._validate_input_smoothing_detail_prerequisites(profile.display_target)
 
             required_stance_cols = [
-                profile.spec.final_score_col,
-                profile.spec.stance_label_col,
-                profile.spec.strength_label_col,
+                spec.final_score_col,
+                spec.stance_label_col,
+                spec.strength_label_col,
             ]
             missing_stance_cols = [
                 col
@@ -815,51 +755,53 @@ class Module1SensitivityDiagnostics:
             ]
             if missing_stance_cols:
                 raise ValueError(
-                    f"{profile.target} exposure stance outputs are missing: "
+                    f"{spec.target} exposure stance outputs are missing: "
                     f"{missing_stance_cols}"
                 )
 
             raw_scores = self._recalculate_component_scores_for_input_preparation_diagnostic(
-                profile.target,
+                spec.target,
                 apply_input_preparation=False,
                 output_prefix="raw_",
             )
             detail = pd.DataFrame(index=self.features.index)
-            self._add_smoothing_context_columns(detail, profile)
+            self._add_smoothing_context_columns(detail, spec)
             detail = pd.concat(
                 [
                     detail,
                     self._diagnostics.prepared_filtered_input_columns(
-                        profile.target
+                        spec.target
                     ).reindex(detail.index),
                 ],
                 axis=1,
             )
             detail = pd.concat([detail, raw_scores], axis=1)
-            for pair in profile.component_score_pairs:
-                detail[pair.smoothed_col] = self.scores[pair.source_score_col]
+            for score_col in spec.score_input_cols:
+                detail[f"smoothed_{score_col}"] = self.scores[score_col]
 
             raw_stance = (
                 self._reconstruct_rule_mapped_stance_for_input_preparation_diagnostic(
-                    profile.target,
+                    spec.target,
                     raw_scores,
                 )
             )
-            detail[profile.raw_final_score_col] = raw_stance["score"]
-            detail[profile.smoothed_final_score_col] = self.exposure_stance[
-                profile.spec.final_score_col
+            raw_final_score_col = f"raw_{spec.final_score_col}"
+            smoothed_final_score_col = f"smoothed_{spec.final_score_col}"
+            detail[raw_final_score_col] = raw_stance["score"]
+            detail[smoothed_final_score_col] = self.exposure_stance[
+                spec.final_score_col
             ]
             detail[profile.score_diff_col] = (
-                detail[profile.smoothed_final_score_col]
-                - detail[profile.raw_final_score_col]
+                detail[smoothed_final_score_col]
+                - detail[raw_final_score_col]
             )
-            detail[profile.raw_stance_label_col] = raw_stance["direction"]
-            detail[profile.raw_strength_label_col] = raw_stance["strength"]
-            detail[profile.smoothed_stance_label_col] = self.exposure_stance[
-                profile.spec.stance_label_col
+            detail[f"raw_{spec.stance_label_col}"] = raw_stance["direction"]
+            detail[f"raw_{spec.strength_label_col}"] = raw_stance["strength"]
+            detail[f"smoothed_{spec.stance_label_col}"] = self.exposure_stance[
+                spec.stance_label_col
             ]
-            detail[profile.smoothed_strength_label_col] = self.exposure_stance[
-                profile.spec.strength_label_col
+            detail[f"smoothed_{spec.strength_label_col}"] = self.exposure_stance[
+                spec.strength_label_col
             ]
             return detail
 
@@ -877,7 +819,12 @@ class Module1SensitivityDiagnostics:
                 window_detail = self._inclusive_window_slice(detail, start, end)
                 row = summary_row_builder(window_detail)
                 window_rows.append(
-                    self._window_summary_row(window_id, start, end, row)
+                    {
+                        **row,
+                        "window_id": window_id,
+                        "start": start,
+                        "end": end,
+                    }
                 )
 
             result = {
@@ -1037,28 +984,22 @@ class Module1SensitivityDiagnostics:
                 "mean_abs_diff": mean_abs_diff,
             }
 
-    def _smoothing_pair_comparison_metrics_for_columns(
+    def _prefixed_smoothing_pair_metrics(
             self,
-            frame: pd.DataFrame,
-            raw_col: str,
-            smoothed_col: str,
+            prefix: str,
+            raw: pd.Series,
+            smoothed: pd.Series,
             *,
             tolerance: float = 1e-10,
         ) -> dict:
-            return self._smoothing_pair_comparison_metrics(
-                frame[raw_col],
-                frame[smoothed_col],
-                tolerance=tolerance,
-            )
-
-    def _add_prefixed_smoothing_pair_metrics(
-            self,
-            row: dict,
-            prefix: str,
-            metrics: dict,
-        ) -> None:
-            for metric, value in metrics.items():
-                row[f"{prefix}_{metric}"] = value
+            return {
+                f"{prefix}_{metric}": value
+                for metric, value in self._smoothing_pair_comparison_metrics(
+                    raw,
+                    smoothed,
+                    tolerance=tolerance,
+                ).items()
+            }
 
     def _rule_mapped_input_smoothing_summary_row(
             self,
@@ -1066,10 +1007,12 @@ class Module1SensitivityDiagnostics:
             profile: SmoothingDiagnosticTargetProfile,
         ):
             tolerance = 1e-10
-            final_metrics = self._smoothing_pair_comparison_metrics_for_columns(
-                detail,
-                profile.raw_final_score_col,
-                profile.smoothed_final_score_col,
+            spec = profile.spec
+            raw_final_score_col = f"raw_{spec.final_score_col}"
+            smoothed_final_score_col = f"smoothed_{spec.final_score_col}"
+            final_metrics = self._smoothing_pair_comparison_metrics(
+                detail[raw_final_score_col],
+                detail[smoothed_final_score_col],
                 tolerance=tolerance,
             )
 
@@ -1077,39 +1020,37 @@ class Module1SensitivityDiagnostics:
                 "total_rows": int(len(detail)),
                 "valid_rows": final_metrics["both_valid_count"],
             }
-            for pair in profile.component_score_pairs:
-                metrics = self._smoothing_pair_comparison_metrics_for_columns(
-                    detail,
-                    pair.raw_col,
-                    pair.smoothed_col,
-                    tolerance=tolerance,
+            for score_col in spec.score_input_cols:
+                row.update(
+                    self._prefixed_smoothing_pair_metrics(
+                        score_col,
+                        detail[f"raw_{score_col}"],
+                        detail[f"smoothed_{score_col}"],
+                        tolerance=tolerance,
+                    )
                 )
-                self._add_prefixed_smoothing_pair_metrics(
-                    row,
-                    pair.metric_prefix,
-                    metrics,
-                )
-            self._add_prefixed_smoothing_pair_metrics(
-                row,
-                profile.final_score_metric_prefix,
-                final_metrics,
+            row.update(
+                {
+                    f"{spec.final_score_col}_{metric}": value
+                    for metric, value in final_metrics.items()
+                }
             )
 
             change_prefix = profile.score_change_metric_prefix
             raw_score_change_count = self._count_series_changes(
-                detail[profile.raw_final_score_col]
+                detail[raw_final_score_col]
             )
             smoothed_score_change_count = self._count_series_changes(
-                detail[profile.smoothed_final_score_col]
+                detail[smoothed_final_score_col]
             )
             score_change_reduction_count = (
                 raw_score_change_count - smoothed_score_change_count
             )
             raw_one_day_spike_count = self._count_one_day_spikes(
-                detail[profile.raw_final_score_col]
+                detail[raw_final_score_col]
             )
             smoothed_one_day_spike_count = self._count_one_day_spikes(
-                detail[profile.smoothed_final_score_col]
+                detail[smoothed_final_score_col]
             )
             one_day_spike_reduction_count = (
                 raw_one_day_spike_count - smoothed_one_day_spike_count
@@ -1154,17 +1095,6 @@ class Module1SensitivityDiagnostics:
             if end is not None:
                 window = window.loc[window.index <= pd.to_datetime(end)]
             return window
-
-    def _window_summary_row(
-            self,
-            window_id: str,
-            start,
-            end,
-            summary_row: dict,
-        ) -> dict:
-            row = summary_row.copy()
-            row.update({"window_id": window_id, "start": start, "end": end})
-            return row
 
     def _series_mismatch_mask(
             self,
