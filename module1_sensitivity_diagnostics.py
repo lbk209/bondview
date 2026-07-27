@@ -1,5 +1,5 @@
 import copy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from collections.abc import Mapping
 
 import pandas as pd
@@ -7,6 +7,7 @@ from tqdm.notebook import tqdm
 
 from module1_analysis import Module1Analysis, TargetContextResult
 from module1_calculator import Module1Calculator, Module1Result
+from module1_diagnostics import Module1Diagnostics
 from module1_historical_analysis import Module1HistoricalAnalysis
 
 
@@ -2427,11 +2428,11 @@ class Module1SensitivityDiagnostics:
             include_diagnostics: bool = True,
         ) -> dict:
             """
-            Compare credit stance behavior across temporary persistence settings.
+            Compare credit stance behavior across case-local persistence settings.
 
-            This diagnostic recalculates exposure stance only. It does not recalculate
-            component scores and restores the original stance config and outputs before
-            returning.
+            This diagnostic recalculates exposure stance only for coherent local
+            Module1Result scenarios. It does not recalculate component scores or
+            mutate the baseline result or Sensitivity state.
             """
             if self.exposure_stance_config is None:
                 raise ValueError(
@@ -2609,10 +2610,6 @@ class Module1SensitivityDiagnostics:
                 "credit_spread_change_state",
             }
 
-            original_exposure_stance_config = copy.deepcopy(self.exposure_stance_config)
-            original_stance_scores = self.stance_scores.copy(deep=True)
-            original_exposure_stance = self.exposure_stance.copy(deep=True)
-
             diagnostics_by_case = {}
             window_metrics_rows = []
             shock_rows = []
@@ -2620,217 +2617,196 @@ class Module1SensitivityDiagnostics:
             tight_rows = []
             late_rows = []
             full_rows = []
+            case_records = {}
 
-            try:
-                for case_id, settings in cases.items():
-                    case_exposure_stance_config = copy.deepcopy(
-                        original_exposure_stance_config
-                    )
-                    case_credit_config = case_exposure_stance_config[
-                        "exposure_stances"
-                    ]["credit"]
-                    case_stabilization_config = {
-                        "credit_spread_change": {
-                            "hysteresis_buffer": float(hysteresis_buffer),
-                            "min_state_persistence": settings["credit_spread_change"],
-                        },
-                        "credit_spread_state": {
-                            "hysteresis_buffer": float(hysteresis_buffer),
-                            "min_state_persistence": settings["credit_spread_state"],
-                        },
-                    }
-                    case_credit_config["rule_mapped"][
-                        "state_stabilization"
-                    ] = case_stabilization_config
-                    if "state_stabilization" in case_credit_config:
-                        case_credit_config[
-                            "state_stabilization"
-                        ] = case_stabilization_config
-                    self.exposure_stance_config = case_exposure_stance_config
-                    (
-                        self.stance_scores,
-                        self.exposure_stance,
-                    ) = Module1Calculator.calculate_exposure_stance_outputs(
-                        self.scores,
-                        self.component_config,
-                        self.exposure_stance_config,
-                    )
-                    diag = self.trace_stance_score(
-                        "credit",
-                        include_raw_input=True,
-                        include_labels=False,
-                    )
-                    case_rule_mapped_spec = (
-                        Module1Calculator.resolve_rule_mapped_stance_spec(
-                            "credit",
-                            case_credit_config,
-                            self.component_config,
-                        )
-                    )
-                    case_breakdown = (
-                        Module1Calculator.build_rule_mapped_stance_score_breakdown(
-                            self.scores,
-                            self.component_config,
-                            "credit",
-                            case_credit_config,
-                            case_rule_mapped_spec,
-                        )
-                    )
-                    diag[case_breakdown.columns] = case_breakdown
-                    for column in ["credit_stance", "credit_stance_strength"]:
-                        diag[column] = self.exposure_stance[column]
-
-                    missing_cols = sorted(required_diagnostic_cols.difference(diag.columns))
-                    if missing_cols:
-                        raise ValueError(
-                            "Credit stance diagnostics are missing required columns: "
-                            f"{missing_cols}"
-                        )
-
-                    diagnostics_by_case[case_id] = diag.copy(deep=True)
-
-                    for window_id in windows:
-                        window_metrics_rows.append(
-                            base_window_metrics(case_id, diag, window_id)
-                        )
-
-                    shock = window_slice(diag, "covid_initial_shock")
-                    shock_rows.append(
-                        {
-                            "case_id": case_id,
-                            "first_credit_negative_date": first_negative_date(shock),
-                        }
-                    )
-
-                    recovery = window_slice(diag, "post_shock_recovery")
-                    recovery_score = recovery["credit_stance_score"].dropna()
-                    recovery_pair, recovery_pair_ratio = dominant_pair(recovery)
-                    recovery_rows.append(
-                        {
-                            "case_id": case_id,
-                            "dominant_credit_state_pair": recovery_pair,
-                            "dominant_credit_state_pair_ratio": recovery_pair_ratio,
-                            "credit_stance_score_mean": (
-                                recovery_score.mean()
-                                if not recovery_score.empty
-                                else pd.NA
-                            ),
-                            "negative_score_days": int((recovery_score <= -0.5).sum()),
-                        }
-                    )
-
-                    tight = window_slice(diag, "tight_spread_2021q2")
-                    tight_score = tight["credit_stance_score"].dropna()
-                    tight_obs = int(tight_score.shape[0])
-                    tight_state_count = int(
-                        (tight["credit_spread_state_category"] == "tight").sum()
-                    )
-                    tight_pair_count = int(
-                        tight["credit_state_pair"]
-                        .dropna()
-                        .astype(str)
-                        .str.contains(r"\|tight$")
-                        .sum()
-                    )
-                    tight_rows.append(
-                        {
-                            "case_id": case_id,
-                            "tight_state_count": tight_state_count,
-                            "tight_state_ratio": (
-                                self._ratio_or_na(tight_state_count, tight_obs)
-                            ),
-                            "tight_pair_count": tight_pair_count,
-                            "tight_pair_ratio": (
-                                self._ratio_or_na(tight_pair_count, tight_obs)
-                            ),
-                            "credit_stance_score_mean": (
-                                tight_score.mean() if tight_obs else pd.NA
-                            ),
-                        }
-                    )
-
-                    late = window_slice(diag, "late_2022_volatility")
-                    late_score = late["credit_stance_score"].dropna()
-                    late_moves = late_score.diff().abs().dropna()
-                    late_rows.append(
-                        {
-                            "case_id": case_id,
-                            "max_abs_daily_score_move": (
-                                late_moves.max() if not late_moves.empty else pd.NA
-                            ),
-                            "large_move_gt_0_5_count": int((late_moves > 0.5).sum()),
-                            "large_move_gt_1_0_count": int((late_moves > 1.0).sum()),
-                        }
-                    )
-
-                    full_obs = int(diag["credit_stance_score"].notna().sum())
-                    full_changed_pair_count = int(
-                        diag["state_stabilization_changed_pair"].sum()
-                    )
-                    full_rows.append(
-                        {
-                            "case_id": case_id,
-                            "changed_pair_count": full_changed_pair_count,
-                            "changed_change_state_count": int(
-                                diag["state_stabilization_changed_change_state"].sum()
-                            ),
-                            "changed_spread_state_count": int(
-                                diag["state_stabilization_changed_spread_state"].sum()
-                            ),
-                            "changed_pair_ratio": self._ratio_or_na(
-                                full_changed_pair_count,
-                                full_obs,
-                            ),
-                            "non_missing_obs_count": full_obs,
-                        }
-                    )
-            finally:
-                self.exposure_stance_config = original_exposure_stance_config
-                self.stance_scores = original_stance_scores
-                self.exposure_stance = original_exposure_stance
-
-            shock_detection_df = pd.DataFrame(shock_rows)
-            base_negative_date = shock_detection_df.loc[
-                shock_detection_df["case_id"] == "base_p1_p1",
-                "first_credit_negative_date",
-            ]
-            base_negative_date = (
-                base_negative_date.iloc[0] if not base_negative_date.empty else pd.NaT
-            )
-            shock_detection_df["delay_days_vs_base"] = shock_detection_df[
-                "first_credit_negative_date"
-            ].apply(
-                lambda value: (
-                    pd.NA
-                    if pd.isna(value) or pd.isna(base_negative_date)
-                    else (value - base_negative_date).days
-                )
-            )
-
-            window_metrics_df = pd.DataFrame(window_metrics_rows)
-            recovery_behavior_df = pd.DataFrame(recovery_rows)
-            tight_spread_behavior_df = pd.DataFrame(tight_rows)
-            late_volatility_df = pd.DataFrame(late_rows)
-            full_period_stabilization_df = pd.DataFrame(full_rows)
-
-            summary_rows = []
             for case_id, settings in cases.items():
-                shock_row = shock_detection_df[
-                    shock_detection_df["case_id"] == case_id
-                ].iloc[0]
-                recovery_row = recovery_behavior_df[
-                    recovery_behavior_df["case_id"] == case_id
-                ].iloc[0]
-                tight_row = tight_spread_behavior_df[
-                    tight_spread_behavior_df["case_id"] == case_id
-                ].iloc[0]
-                late_row = late_volatility_df[
-                    late_volatility_df["case_id"] == case_id
-                ].iloc[0]
-                full_row = full_period_stabilization_df[
-                    full_period_stabilization_df["case_id"] == case_id
-                ].iloc[0]
+                case_module1_config = copy.deepcopy(self.result.module1_config)
+                case_credit_config = case_module1_config["exposure_stances"][
+                    "credit"
+                ]
+                case_stabilization_config = {
+                    "credit_spread_change": {
+                        "hysteresis_buffer": float(hysteresis_buffer),
+                        "min_state_persistence": settings["credit_spread_change"],
+                    },
+                    "credit_spread_state": {
+                        "hysteresis_buffer": float(hysteresis_buffer),
+                        "min_state_persistence": settings["credit_spread_state"],
+                    },
+                }
+                case_credit_config["rule_mapped"][
+                    "state_stabilization"
+                ] = case_stabilization_config
+                if "state_stabilization" in case_credit_config:
+                    case_credit_config["state_stabilization"] = copy.deepcopy(
+                        case_stabilization_config
+                    )
 
+                case_exposure_stance_config = {
+                    "stance_label_rules": case_module1_config[
+                        "stance_label_rules"
+                    ],
+                    "exposure_stances": case_module1_config["exposure_stances"],
+                }
+                (
+                    case_stance_scores,
+                    case_exposure_stance,
+                ) = Module1Calculator.calculate_exposure_stance_outputs(
+                    self.scores,
+                    self.component_config,
+                    case_exposure_stance_config,
+                )
+                case_result = replace(
+                    self.result,
+                    stance_scores=case_stance_scores,
+                    exposure_stance=case_exposure_stance,
+                    module1_config=case_module1_config,
+                )
+                diag = Module1Diagnostics(case_result).trace_stance_score(
+                    "credit",
+                    include_raw_input=True,
+                    include_labels=False,
+                )
+                if "baa10y_change" in diag.columns and "baa10y" in diag.columns:
+                    diagnostic_columns = list(diag.columns)
+                    diagnostic_columns.remove("baa10y_change")
+                    diagnostic_columns.insert(
+                        diagnostic_columns.index("baa10y"),
+                        "baa10y_change",
+                    )
+                    diag = diag.loc[:, diagnostic_columns]
+
+                missing_cols = sorted(required_diagnostic_cols.difference(diag.columns))
+                if missing_cols:
+                    raise ValueError(
+                        "Credit stance diagnostics are missing required columns: "
+                        f"{missing_cols}"
+                    )
+
+                diagnostics_by_case[case_id] = diag.copy(deep=True)
+
+                for window_id in windows:
+                    window_metrics_rows.append(
+                        base_window_metrics(case_id, diag, window_id)
+                    )
+
+                shock = window_slice(diag, "covid_initial_shock")
+                shock_row = {
+                    "case_id": case_id,
+                    "first_credit_negative_date": first_negative_date(shock),
+                }
+
+                recovery = window_slice(diag, "post_shock_recovery")
+                recovery_score = recovery["credit_stance_score"].dropna()
+                recovery_pair, recovery_pair_ratio = dominant_pair(recovery)
+                recovery_row = {
+                    "case_id": case_id,
+                    "dominant_credit_state_pair": recovery_pair,
+                    "dominant_credit_state_pair_ratio": recovery_pair_ratio,
+                    "credit_stance_score_mean": (
+                        recovery_score.mean()
+                        if not recovery_score.empty
+                        else pd.NA
+                    ),
+                    "negative_score_days": int((recovery_score <= -0.5).sum()),
+                }
+
+                tight = window_slice(diag, "tight_spread_2021q2")
+                tight_score = tight["credit_stance_score"].dropna()
+                tight_obs = int(tight_score.shape[0])
+                tight_state_count = int(
+                    (tight["credit_spread_state_category"] == "tight").sum()
+                )
+                tight_pair_count = int(
+                    tight["credit_state_pair"]
+                    .dropna()
+                    .astype(str)
+                    .str.contains(r"\|tight$")
+                    .sum()
+                )
+                tight_row = {
+                    "case_id": case_id,
+                    "tight_state_count": tight_state_count,
+                    "tight_state_ratio": self._ratio_or_na(
+                        tight_state_count,
+                        tight_obs,
+                    ),
+                    "tight_pair_count": tight_pair_count,
+                    "tight_pair_ratio": self._ratio_or_na(
+                        tight_pair_count,
+                        tight_obs,
+                    ),
+                    "credit_stance_score_mean": (
+                        tight_score.mean() if tight_obs else pd.NA
+                    ),
+                }
+
+                late = window_slice(diag, "late_2022_volatility")
+                late_score = late["credit_stance_score"].dropna()
+                late_moves = late_score.diff().abs().dropna()
+                late_row = {
+                    "case_id": case_id,
+                    "max_abs_daily_score_move": (
+                        late_moves.max() if not late_moves.empty else pd.NA
+                    ),
+                    "large_move_gt_0_5_count": int((late_moves > 0.5).sum()),
+                    "large_move_gt_1_0_count": int((late_moves > 1.0).sum()),
+                }
+
+                full_obs = int(diag["credit_stance_score"].notna().sum())
+                full_changed_pair_count = int(
+                    diag["state_stabilization_changed_pair"].sum()
+                )
+                full_row = {
+                    "case_id": case_id,
+                    "changed_pair_count": full_changed_pair_count,
+                    "changed_change_state_count": int(
+                        diag["state_stabilization_changed_change_state"].sum()
+                    ),
+                    "changed_spread_state_count": int(
+                        diag["state_stabilization_changed_spread_state"].sum()
+                    ),
+                    "changed_pair_ratio": self._ratio_or_na(
+                        full_changed_pair_count,
+                        full_obs,
+                    ),
+                    "non_missing_obs_count": full_obs,
+                }
+
+                shock_rows.append(shock_row)
+                recovery_rows.append(recovery_row)
+                tight_rows.append(tight_row)
+                late_rows.append(late_row)
+                full_rows.append(full_row)
+                case_records[case_id] = {
+                    "settings": settings,
+                    "shock": shock_row,
+                    "recovery": recovery_row,
+                    "tight": tight_row,
+                    "late": late_row,
+                    "full": full_row,
+                }
+
+            base_record = case_records.get("base_p1_p1")
+            base_negative_date = (
+                pd.NaT
+                if base_record is None
+                else base_record["shock"]["first_credit_negative_date"]
+            )
+            summary_rows = []
+            for case_id, record in case_records.items():
+                settings = record["settings"]
+                shock_row = record["shock"]
+                recovery_row = record["recovery"]
+                tight_row = record["tight"]
+                late_row = record["late"]
+                full_row = record["full"]
+                negative_date = shock_row["first_credit_negative_date"]
+                shock_row["delay_days_vs_base"] = (
+                    pd.NA
+                    if pd.isna(negative_date) or pd.isna(base_negative_date)
+                    else (negative_date - base_negative_date).days
+                )
                 summary_rows.append(
                     {
                         "case_id": case_id,
@@ -2865,6 +2841,13 @@ class Module1SensitivityDiagnostics:
                         "full_changed_pair_ratio": full_row["changed_pair_ratio"],
                     }
                 )
+
+            window_metrics_df = pd.DataFrame(window_metrics_rows)
+            shock_detection_df = pd.DataFrame(shock_rows)
+            recovery_behavior_df = pd.DataFrame(recovery_rows)
+            tight_spread_behavior_df = pd.DataFrame(tight_rows)
+            late_volatility_df = pd.DataFrame(late_rows)
+            full_period_stabilization_df = pd.DataFrame(full_rows)
 
             result = {
                 "summary": pd.DataFrame(summary_rows),
