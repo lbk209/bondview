@@ -426,11 +426,15 @@ class Module1Diagnostics:
 
         return diagnostics
 
-    def _resolve_rule_mapped_diagnostic_spec(
+    def rule_mapped_diagnostic_spec(
         self,
         target: str,
-        target_info,
     ) -> RuleMappedDiagnosticSpec:
+        """Resolve completed-result rule-mapped diagnostic metadata."""
+        if target is None or str(target).strip() == "":
+            raise ValueError("target must be a non-empty stance identifier.")
+
+        target_info = self._resolve_target(target, level="stance")
         stance_name = target_info.canonical_target
         stance_config = target_info.config
         function = stance_config.get("function") if stance_config else None
@@ -809,8 +813,7 @@ class Module1Diagnostics:
                 f"Allowed values are: {allowed}."
             )
 
-        target_info = self._resolve_target(target, level="stance")
-        spec = self._resolve_rule_mapped_diagnostic_spec(target, target_info)
+        spec = self.rule_mapped_diagnostic_spec(target)
         if view != "state":
             include_scores = False
             include_raw_states = True
@@ -1056,7 +1059,7 @@ class Module1Diagnostics:
             )
 
         if "rule_mapped" in stance_config:
-            spec = self._resolve_rule_mapped_diagnostic_spec(target, target_info)
+            spec = self.rule_mapped_diagnostic_spec(target)
             return self._trace_rule_mapped_stance_score(
                 spec,
                 start=start,

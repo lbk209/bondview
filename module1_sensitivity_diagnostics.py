@@ -1,34 +1,16 @@
 import copy
 from dataclasses import dataclass, replace
-from collections.abc import Mapping
 
 import pandas as pd
 from tqdm.notebook import tqdm
 
-from module1_analysis import Module1Analysis, TargetContextResult
 from module1_calculator import Module1Calculator, Module1Result
-from module1_diagnostics import DiagnosticInputSpec, Module1Diagnostics
+from module1_diagnostics import (
+    DiagnosticInputSpec,
+    Module1Diagnostics,
+    RuleMappedDiagnosticSpec,
+)
 from module1_historical_analysis import Module1HistoricalAnalysis
-
-
-@dataclass(frozen=True)
-class RuleMappedDiagnosticSpec:
-    target: str
-    function: str
-    score_input_cols: tuple[str, ...]
-    raw_state_cols: tuple[str, ...]
-    stabilized_state_cols: tuple[str, ...]
-    rule_case_col: str
-    final_score_col: str
-    stance_label_col: str
-    strength_label_col: str
-    component_names: tuple[str, ...] = ()
-    stabilization_change_cols: tuple[str, ...] = ()
-    stabilization_change_any_col: str | None = None
-    base_rule_score_col: str | None = None
-    adjustment_col: str | None = None
-    adjusted_score_col: str | None = None
-    rule_metadata_cols: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -75,7 +57,6 @@ class Module1SensitivityDiagnostics:
         historical_expected_label_validation: dict | None = None,
     ):
         self.result = result
-        self.analysis = Module1Analysis(result)
         self._diagnostics = Module1Diagnostics(result)
         self.data = self._copy_result_value(result.data)
         self.features = self._copy_result_value(result.features)
@@ -116,44 +97,6 @@ class Module1SensitivityDiagnostics:
         if isinstance(value, pd.Series):
             return value.copy(deep=True)
         return copy.deepcopy(value)
-
-    def _resolve_target(self, target: str, level: str | None, allow_group: bool = False):
-        return self.analysis.resolve_target(target, level, allow_group=allow_group)
-
-    def get_target_context(
-        self, target, level, dependency_level="auto", include_labels=True,
-        include_strength=True, start=None, end=None,
-        ffill_inputs=True,
-    ) -> TargetContextResult:
-        return self.analysis.get_target_context(
-            target=target, level=level, dependency_level=dependency_level,
-            include_labels=include_labels, include_strength=include_strength,
-            start=start, end=end, ffill_inputs=ffill_inputs,
-        )
-
-    def trace_stance_score(
-        self, target: str, start=None, end=None,
-        include_raw_input: bool = True, include_labels: bool = True,
-    ) -> pd.DataFrame:
-        if target is None or str(target).strip() == "":
-            raise ValueError("target must be a non-empty stance identifier.")
-        target_info = self._resolve_target(target, level="stance")
-        stance_name = target_info.canonical_target
-        stance_config = target_info.config
-        function = stance_config.get("function")
-        if (
-            function != "weighted_sum"
-            and isinstance(function, str)
-            and function.strip() != ""
-        ):
-            return self._trace_rule_mapped_stance_score(
-                stance_name, start=start, end=end,
-                include_raw_input=include_raw_input, include_labels=include_labels,
-            )
-        raise ValueError(
-            f"Unsupported stance trace function for sensitivity diagnostics: "
-            f"{stance_name}: {function}"
-        )
 
     @classmethod
     def compare_horizon_cases(
@@ -473,9 +416,8 @@ class Module1SensitivityDiagnostics:
                     "Run load_module1_config() before reconstructing diagnostic stances."
                 )
 
-            context = self._resolve_rule_mapped_diagnostic_config(target)
-            spec = self._derive_rule_mapped_diagnostic_spec_from_context(context)
-            stance_config = context["stance_config"]
+            spec = self._diagnostics.rule_mapped_diagnostic_spec(target)
+            stance_config = spec.stance_config
             temporary_scores = self.scores.copy()
             for score_col in spec.score_input_cols:
                 alternate_col = f"raw_{score_col}"
@@ -491,7 +433,7 @@ class Module1SensitivityDiagnostics:
                 self.component_config,
                 spec.target,
                 stance_config,
-                context["rule_mapped_spec"],
+                spec.rule_mapped_schema,
             )
 
             score = reconstruction[spec.final_score_col]
@@ -522,8 +464,7 @@ class Module1SensitivityDiagnostics:
                     "Run calculate_component_scores() before comparing parameter effects."
                 )
 
-            context = self._resolve_rule_mapped_diagnostic_config(target)
-            spec = self._derive_rule_mapped_diagnostic_spec_from_context(context)
+            spec = self._diagnostics.rule_mapped_diagnostic_spec(target)
             if component_score_col not in spec.score_input_cols:
                 raise ValueError(
                     f"{component_score_col} is not an input to rule-mapped stance {target}."
@@ -640,253 +581,6 @@ class Module1SensitivityDiagnostics:
                     f"{target} {component} {kind} role={role}, found {len(matches)}."
                 )
             return matches[0]
-
-    def _resolve_rule_mapped_diagnostic_config(self, target: str) -> dict:
-            if target is None or str(target).strip() == "":
-                raise ValueError("target must be a non-empty stance identifier.")
-
-            target_info = self._resolve_target(target, level="stance")
-            stance_name = target_info.canonical_target
-            stance_config = target_info.config
-            function = stance_config.get("function") if stance_config else None
-            if not isinstance(stance_config, Mapping) or "rule_mapped" not in stance_config:
-                raise ValueError(
-                    f"Unsupported rule-mapped stance diagnostic target {target}: "
-                    f"{function}. Schema-backed rule_mapped config is required."
-                )
-            rule_mapped_spec = Module1Calculator.resolve_rule_mapped_stance_spec(
-                stance_name,
-                stance_config,
-                self.component_config,
-            )
-            score_input_cols = tuple(
-                state_input.source_score_col
-                for state_input in rule_mapped_spec.state_inputs
-            )
-            return {
-                "target_info": target_info,
-                "stance_name": stance_name,
-                "stance_config": stance_config,
-                "function": function,
-                "score_input_cols": score_input_cols,
-                "final_score_col": target_info.score_col or stance_config["score_output"],
-                "stance_label_col": target_info.label_col or stance_config["stance_output"],
-                "strength_label_col": (
-                    target_info.strength_col or stance_config["strength_output"]
-                ),
-                "rule_mapped_spec": rule_mapped_spec,
-            }
-
-    def _derive_rule_mapped_diagnostic_spec_from_context(
-            self,
-            context: dict,
-        ) -> RuleMappedDiagnosticSpec:
-            stance_name = context["stance_name"]
-            function = context["function"]
-            rule_mapped_spec = context.get("rule_mapped_spec")
-            adjustment = rule_mapped_spec.adjustment
-
-            return RuleMappedDiagnosticSpec(
-                target=stance_name,
-                function=function,
-                score_input_cols=tuple(
-                    state_input.source_score_col
-                    for state_input in rule_mapped_spec.state_inputs
-                ),
-                raw_state_cols=tuple(
-                    state_input.raw_output_col
-                    for state_input in rule_mapped_spec.state_inputs
-                ),
-                stabilized_state_cols=tuple(
-                    state_input.stabilized_output_col
-                    for state_input in rule_mapped_spec.state_inputs
-                ),
-                rule_case_col=rule_mapped_spec.rule_case_output_col,
-                final_score_col=context["final_score_col"],
-                stance_label_col=context["stance_label_col"],
-                strength_label_col=context["strength_label_col"],
-                component_names=tuple(
-                    state_input.diagnostic_component or state_input.component_name
-                    for state_input in rule_mapped_spec.state_inputs
-                ),
-                stabilization_change_cols=tuple(
-                    state_input.stabilization_changed_output_col
-                    for state_input in rule_mapped_spec.state_inputs
-                ),
-                stabilization_change_any_col=(
-                    rule_mapped_spec.stabilization_changed_any_output_col
-                ),
-                base_rule_score_col=rule_mapped_spec.base_rule_score_output_col,
-                adjustment_col=(
-                    adjustment.adjustment_output_col
-                    if adjustment is not None
-                    else None
-                ),
-                adjusted_score_col=rule_mapped_spec.adjusted_score_output_col,
-                rule_metadata_cols=(
-                    adjustment.metadata_output_cols
-                    if adjustment is not None
-                    else ()
-                ),
-            )
-
-    def _trace_rule_mapped_stance_score(
-            self,
-            target: str,
-            start=None,
-            end=None,
-            include_raw_input: bool = True,
-            include_labels: bool = True,
-        ) -> pd.DataFrame:
-            if self.scores is None:
-                raise ValueError(
-                    "Run calculate_component_scores() before rule-mapped stance diagnostics."
-                )
-            if self.exposure_stance is None:
-                raise ValueError(
-                    "Run calculate_exposure_stance() before rule-mapped stance diagnostics."
-                )
-            if self.exposure_stance_config is None:
-                raise ValueError(
-                    "Run load_module1_config() before rule-mapped stance diagnostics."
-                )
-            if include_labels and self.labels is None:
-                raise ValueError(
-                    "Run calculate_component_labels() before rule-mapped stance "
-                    "diagnostics with include_labels=True."
-                )
-
-            context = self._resolve_rule_mapped_diagnostic_config(target)
-            spec = self._derive_rule_mapped_diagnostic_spec_from_context(context)
-            target_info = self._resolve_target(spec.target, level="stance")
-            stance_config = target_info.config
-            ctx = self.get_target_context(
-                target=spec.target,
-                level="stance",
-                dependency_level="full" if include_raw_input else "components",
-                include_labels=True,
-                include_strength=True,
-            )
-            required_stance_cols = [
-                spec.final_score_col,
-                spec.stance_label_col,
-                spec.strength_label_col,
-            ]
-            missing_stance_cols = [
-                col
-                for col in required_stance_cols
-                if col is None or col not in ctx.data.columns
-            ]
-            if missing_stance_cols:
-                raise ValueError(
-                    f"Rule-mapped stance outputs are missing for {spec.target}: "
-                    f"{missing_stance_cols}"
-                )
-
-            diagnostics = Module1Calculator.build_rule_mapped_stance_score_breakdown(
-                self.scores,
-                self.component_config,
-                spec.target,
-                stance_config,
-                context["rule_mapped_spec"],
-            )
-            diagnostics = pd.concat(
-                [
-                    diagnostics,
-                    ctx.data[[spec.stance_label_col, spec.strength_label_col]].reindex(
-                        diagnostics.index
-                    ),
-                ],
-                axis=1,
-            )
-
-            if include_labels:
-                label_cols = list(ctx.returned_columns["component_labels"])
-                missing_label_cols = [
-                    col for col in label_cols if col not in ctx.data.columns
-                ]
-                if missing_label_cols:
-                    raise ValueError(
-                        f"Component labels are missing for {spec.target}: "
-                        f"{missing_label_cols}"
-                    )
-                diagnostics = pd.concat(
-                    [diagnostics, ctx.data[label_cols].reindex(diagnostics.index)],
-                    axis=1,
-                )
-
-            if include_raw_input:
-                context_parts = self._rule_mapped_trace_context_parts(
-                    spec,
-                    ctx,
-                    diagnostics.index,
-                )
-                if context_parts:
-                    diagnostics = pd.concat([diagnostics, *context_parts], axis=1)
-
-            if start is not None:
-                diagnostics = diagnostics.loc[diagnostics.index >= pd.to_datetime(start)]
-            if end is not None:
-                diagnostics = diagnostics.loc[diagnostics.index <= pd.to_datetime(end)]
-
-            return diagnostics
-
-    def _rule_mapped_trace_context_parts(
-            self,
-            spec: RuleMappedDiagnosticSpec,
-            ctx: TargetContextResult,
-            index: pd.Index,
-        ) -> list[pd.DataFrame]:
-            if spec.target == "credit":
-                context_parts = []
-                feature_cols = list(ctx.returned_columns["features"])
-                raw_input_cols = list(ctx.returned_columns["raw_inputs"])
-                if "baa10y_change" in feature_cols:
-                    context_parts.append(ctx.data[["baa10y_change"]].reindex(index))
-                if "baa10y" in raw_input_cols:
-                    context_parts.append(ctx.data[["baa10y"]].reindex(index))
-                context_parts.append(
-                    self._diagnostics.prepared_filtered_input_columns(
-                        spec.target
-                    ).reindex(index)
-                )
-                return context_parts
-
-            if spec.target == "curve_positioning":
-                context_cols = [
-                    col
-                    for col in ["dgs2", "dgs10"]
-                    if col in ctx.returned_columns["raw_inputs"]
-                ]
-                feature_cols = self._prepared_input_sources_for_diagnostic_components(
-                    spec.target,
-                    tuple(reversed(spec.component_names)),
-                )
-                context_cols.extend(
-                    col
-                    for col in feature_cols
-                    if col in ctx.returned_columns["features"]
-                )
-                context_parts = []
-                if context_cols:
-                    context_parts.append(ctx.data[context_cols].reindex(index))
-                context_parts.append(
-                    self._diagnostics.prepared_filtered_input_columns(
-                        spec.target
-                    ).reindex(index)
-                )
-                return context_parts
-
-            raw_inputs = list(ctx.returned_columns["raw_inputs"])
-            missing_raw_inputs = [col for col in raw_inputs if col not in ctx.data.columns]
-            if missing_raw_inputs:
-                raise ValueError(
-                    f"Raw input columns are unavailable for {spec.target}: "
-                    f"{missing_raw_inputs}"
-                )
-            if raw_inputs:
-                return [ctx.data[raw_inputs].reindex(index)]
-            return []
 
     def _curve_positioning_stance_config(self) -> dict:
             if self.exposure_stance_config is None:
@@ -1029,8 +723,7 @@ class Module1SensitivityDiagnostics:
             self,
             target: str,
         ) -> SmoothingDiagnosticTargetProfile:
-            context = self._resolve_rule_mapped_diagnostic_config(target)
-            spec = self._derive_rule_mapped_diagnostic_spec_from_context(context)
+            spec = self._diagnostics.rule_mapped_diagnostic_spec(target)
             component_score_pairs = tuple(
                 SmoothingDiagnosticComponentScorePair(
                     source_score_col=score_col,

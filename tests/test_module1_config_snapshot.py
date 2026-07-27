@@ -1080,26 +1080,68 @@ class Module1ConstructedResultTests(unittest.TestCase):
             ),
         ):
             sensitivity = Module1SensitivityDiagnostics(self.result)
-            first = sensitivity.trace_stance_score(
+            diagnostics = sensitivity._diagnostics
+            first = diagnostics.trace_stance_score(
                 "rule",
                 include_raw_input=False,
                 include_labels=False,
             )
-            second = sensitivity.trace_stance_score(
+            second = diagnostics.trace_stance_score(
                 "rule",
+                include_raw_input=False,
+                include_labels=False,
+            )
+            weighted = diagnostics.trace_stance_score(
+                "weighted",
                 include_raw_input=False,
                 include_labels=False,
             )
 
         self.assertFalse(hasattr(sensitivity, "calculator"))
+        self.assertFalse(hasattr(sensitivity, "analysis"))
         self.assertNotIn("__getattr__", Module1SensitivityDiagnostics.__dict__)
         for obsolete_name in (
             "_CALCULATOR_STATE_FIELDS",
             "_CALCULATOR_HELPERS",
             "_sync_calculator_state",
+            "_resolve_target",
+            "get_target_context",
+            "trace_stance_score",
+            "_resolve_rule_mapped_diagnostic_config",
+            "_derive_rule_mapped_diagnostic_spec_from_context",
+            "_trace_rule_mapped_stance_score",
+            "_rule_mapped_trace_context_parts",
         ):
             self.assertFalse(hasattr(Module1SensitivityDiagnostics, obsolete_name))
         pd.testing.assert_frame_equal(first, second)
+        self.assertEqual(
+            list(first.columns),
+            [
+                "component_a_score",
+                "rule_state_raw",
+                "rule_state",
+                "rule_state_stabilization_changed",
+                "rule_stabilization_changed",
+                "rule_case",
+                "rule_score",
+                "rule_stance",
+                "rule_strength",
+            ],
+        )
+        self.assertEqual(
+            list(weighted.columns),
+            [
+                "component_a_score",
+                "component_b_score",
+                "component_a_score_weight",
+                "component_a_score_contribution",
+                "component_b_score_weight",
+                "component_b_score_contribution",
+                "weighted_score",
+                "weighted_stance",
+                "weighted_strength",
+            ],
+        )
         pd.testing.assert_frame_equal(self.result.data, original_data)
         pd.testing.assert_frame_equal(self.result.scores, original_scores)
         self.assertEqual(self.result.module1_config, original_config)
