@@ -7,7 +7,7 @@ from tqdm.notebook import tqdm
 
 from module1_analysis import Module1Analysis, TargetContextResult
 from module1_calculator import Module1Calculator, Module1Result
-from module1_diagnostics import Module1Diagnostics
+from module1_diagnostics import DiagnosticInputSpec, Module1Diagnostics
 from module1_historical_analysis import Module1HistoricalAnalysis
 
 
@@ -64,15 +64,6 @@ class SmoothingDiagnosticTargetProfile:
     score_change_metric_prefix: str
 
 
-@dataclass(frozen=True)
-class DiagnosticInputSpec:
-    component: str
-    source: str
-    kind: str
-    output: str
-    role: str | None = None
-
-
 class Module1SensitivityDiagnostics:
     """Sensitivity and comparison diagnostics for completed Module 1 results."""
 
@@ -85,6 +76,7 @@ class Module1SensitivityDiagnostics:
     ):
         self.result = result
         self.analysis = Module1Analysis(result)
+        self._diagnostics = Module1Diagnostics(result)
         self.data = self._copy_result_value(result.data)
         self.features = self._copy_result_value(result.features)
         self.scores = self._copy_result_value(result.scores)
@@ -435,7 +427,7 @@ class Module1SensitivityDiagnostics:
                     "Run load_module1_config() before recalculating diagnostic component scores."
                 )
 
-            component_names = self._diagnostic_component_names_for_target(target)
+            component_names = self._diagnostics.diagnostic_component_names(target)
             if component_names is None:
                 raise ValueError(f"Unable to resolve diagnostic components for target: {target}")
 
@@ -580,173 +572,24 @@ class Module1SensitivityDiagnostics:
             )
             return detail
 
-    def _diagnostic_input_column_name(
+    def _prepared_input_sources_for_diagnostic_components(
             self,
-            source: str,
-            kind: str,
-            component: str,
-        ) -> str:
-            if kind not in {"prepared", "filtered"}:
-                raise ValueError(f"Unsupported diagnostic input kind: {kind}")
-            return f"{source}_{kind}_for_{component}"
-
-    def _component_by_score_output(self) -> dict[str, str]:
-            if self.component_config is None:
-                raise ValueError("Run load_module1_config() before resolving component outputs.")
-
-            return {
-                component.get("score", {}).get("output"): component_name
-                for component_name, component in self.component_config["components"].items()
-                if component.get("score", {}).get("output") is not None
-            }
-
-    def _diagnostic_component_filter_for_target(
-            self,
-            target: str | None,
-        ) -> set[str] | None:
-            component_names = self._diagnostic_component_names_for_target(target)
-            return None if component_names is None else set(component_names)
-
-    def _diagnostic_component_names_for_target(
-            self,
-            target: str | None,
-        ) -> tuple[str, ...] | None:
-            if target is None:
-                return None
-            if self.exposure_stance_config is None:
-                raise ValueError("Run load_module1_config() before prepared-input diagnostics.")
-
-            stance_config = self.exposure_stance_config["exposure_stances"].get(target)
-            if stance_config is None:
-                raise ValueError(f"Unknown prepared-input diagnostic target: {target}")
-
-            component_by_score_output = self._component_by_score_output()
-            component_names = set()
-            for item in stance_config.get("inputs", []):
-                if not isinstance(item, dict):
-                    continue
-                score_output = item.get("component")
-                component_name = component_by_score_output.get(score_output)
-                if component_name is not None:
-                    component_names.add(component_name)
-            return tuple(
-                component_name
-                for component_name in component_by_score_output.values()
-                if component_name in component_names
-            )
-
-    def _score_input_features_for_diagnostic_component(
-            self,
-            component_name: str,
-            score_config: dict,
-        ) -> tuple[str, ...]:
-            input_name = score_config.get("input")
-            if input_name is not None:
-                return (input_name,)
-
-            inputs = score_config.get("inputs")
-            if not isinstance(inputs, list):
-                return ()
-
-            return tuple(
-                item.get("feature")
-                for item in inputs
-                if isinstance(item, dict) and item.get("feature") is not None
-            )
-
-    def _score_input_features_for_diagnostic_components(
-            self,
+            target: str,
             component_names: tuple[str, ...],
         ) -> tuple[str, ...]:
-            if self.component_config is None:
-                raise ValueError("Run load_module1_config() before prepared-input diagnostics.")
-
+            specs = self._diagnostics.diagnostic_input_specs(
+                target,
+                kinds=("prepared",),
+            )
             features = []
             seen = set()
-            components = self.component_config["components"]
             for component_name in component_names:
-                score_config = components[component_name].get("score", {})
-                for feature in self._score_input_features_for_diagnostic_component(
-                    component_name,
-                    score_config,
-                ):
-                    if feature not in seen:
-                        features.append(feature)
-                        seen.add(feature)
+                for spec in specs:
+                    if spec.component != component_name or spec.source in seen:
+                        continue
+                    features.append(spec.source)
+                    seen.add(spec.source)
             return tuple(features)
-
-    def _diagnostic_input_specs(
-            self,
-            target: str | None = None,
-            *,
-            kinds: tuple[str, ...] = ("prepared", "filtered"),
-        ) -> tuple[DiagnosticInputSpec, ...]:
-            if self.component_config is None:
-                raise ValueError("Run load_module1_config() before prepared-input diagnostics.")
-
-            components = self.component_config["components"]
-            target_component_filter = self._diagnostic_component_filter_for_target(target)
-            specs = []
-            requested_kinds = set(kinds)
-            for component_name, component in components.items():
-                if (
-                    target_component_filter is not None
-                    and component_name not in target_component_filter
-                ):
-                    continue
-
-                diagnostics = component.get("diagnostics") or {}
-                prepared_inputs = diagnostics.get("prepared_inputs") or {}
-                if prepared_inputs.get("enabled") is not True:
-                    continue
-
-                score_config = component.get("score", {})
-                sources = self._score_input_features_for_diagnostic_component(
-                    component_name,
-                    score_config,
-                )
-                if not sources:
-                    raise ValueError(
-                        "Prepared-input diagnostics are enabled but no score input "
-                        f"feature is configured for component: {component_name}"
-                    )
-
-                input_roles = prepared_inputs.get("input_roles") or {}
-                for source in sources:
-                    role = input_roles.get(source)
-                    if "prepared" in requested_kinds:
-                        specs.append(
-                            DiagnosticInputSpec(
-                                component=component_name,
-                                source=source,
-                                kind="prepared",
-                                role=role,
-                                output=self._diagnostic_input_column_name(
-                                    source,
-                                    "prepared",
-                                    component_name,
-                                ),
-                            )
-                        )
-                    input_preparation = score_config.get("input_preparation") or {}
-                    if (
-                        "filtered" in requested_kinds
-                        and input_preparation.get("min_abs_value") is not None
-                    ):
-                        specs.append(
-                            DiagnosticInputSpec(
-                                component=component_name,
-                                source=source,
-                                kind="filtered",
-                                role=role,
-                                output=self._diagnostic_input_column_name(
-                                    source,
-                                    "filtered",
-                                    component_name,
-                                ),
-                            )
-                        )
-            return tuple(specs)
 
     def _diagnostic_input_spec(
             self,
@@ -758,7 +601,7 @@ class Module1SensitivityDiagnostics:
         ) -> DiagnosticInputSpec:
             matches = [
                 spec
-                for spec in self._diagnostic_input_specs(
+                for spec in self._diagnostics.diagnostic_input_specs(
                     target,
                     kinds=("prepared", "filtered"),
                 )
@@ -783,7 +626,7 @@ class Module1SensitivityDiagnostics:
         ) -> DiagnosticInputSpec:
             matches = [
                 spec
-                for spec in self._diagnostic_input_specs(
+                for spec in self._diagnostics.diagnostic_input_specs(
                     target,
                     kinds=("prepared", "filtered"),
                 )
@@ -797,52 +640,6 @@ class Module1SensitivityDiagnostics:
                     f"{target} {component} {kind} role={role}, found {len(matches)}."
                 )
             return matches[0]
-
-    def _prepared_filtered_input_columns(self, target: str) -> pd.DataFrame:
-            if self.features is None:
-                raise ValueError("Run calculate_features() before prepared-input diagnostics.")
-            if self.component_config is None:
-                raise ValueError("Run load_module1_config() before prepared-input diagnostics.")
-
-            components = self.component_config["components"]
-            specs = self._diagnostic_input_specs(
-                target,
-                kinds=("prepared", "filtered"),
-            )
-            prepared = pd.DataFrame(index=self.features.index)
-
-            prepared_specs = [spec for spec in specs if spec.kind == "prepared"]
-            for spec in prepared_specs:
-                if spec.source not in self.features.columns:
-                    continue
-                score_config = components.get(spec.component, {}).get("score", {})
-                prepared[spec.output] = Module1Calculator.prepare_component_input_series(
-                    self.features[spec.source],
-                    score_config.get("input_preparation"),
-                    self.horizons,
-                )
-
-            for spec in (spec for spec in specs if spec.kind == "filtered"):
-                source_spec = self._diagnostic_input_spec(
-                    target,
-                    spec.component,
-                    spec.source,
-                    "prepared",
-                    role=spec.role,
-                )
-                if source_spec.output not in prepared.columns:
-                    continue
-                score_config = components.get(spec.component, {}).get("score", {})
-                input_preparation = score_config.get("input_preparation") or {}
-                min_abs_value = input_preparation.get("min_abs_value")
-                if min_abs_value is None:
-                    continue
-                prepared[spec.output] = prepared[source_spec.output].mask(
-                    prepared[source_spec.output].abs() < min_abs_value,
-                    0.0,
-                )
-
-            return prepared
 
     def _resolve_rule_mapped_diagnostic_config(self, target: str) -> dict:
             if target is None or str(target).strip() == "":
@@ -1049,7 +846,9 @@ class Module1SensitivityDiagnostics:
                 if "baa10y" in raw_input_cols:
                     context_parts.append(ctx.data[["baa10y"]].reindex(index))
                 context_parts.append(
-                    self._prepared_filtered_input_columns(spec.target).reindex(index)
+                    self._diagnostics.prepared_filtered_input_columns(
+                        spec.target
+                    ).reindex(index)
                 )
                 return context_parts
 
@@ -1059,13 +858,9 @@ class Module1SensitivityDiagnostics:
                     for col in ["dgs2", "dgs10"]
                     if col in ctx.returned_columns["raw_inputs"]
                 ]
-                component_names = self._diagnostic_component_names_for_target(spec.target)
-                feature_cols = (
-                    self._score_input_features_for_diagnostic_components(
-                        tuple(reversed(component_names))
-                    )
-                    if component_names is not None
-                    else ()
+                feature_cols = self._prepared_input_sources_for_diagnostic_components(
+                    spec.target,
+                    tuple(reversed(spec.component_names)),
                 )
                 context_cols.extend(
                     col
@@ -1076,7 +871,9 @@ class Module1SensitivityDiagnostics:
                 if context_cols:
                     context_parts.append(ctx.data[context_cols].reindex(index))
                 context_parts.append(
-                    self._prepared_filtered_input_columns(spec.target).reindex(index)
+                    self._diagnostics.prepared_filtered_input_columns(
+                        spec.target
+                    ).reindex(index)
                 )
                 return context_parts
 
@@ -1189,17 +986,11 @@ class Module1SensitivityDiagnostics:
             spec: RuleMappedDiagnosticSpec,
         ) -> tuple[SmoothingDiagnosticContextColumn, ...]:
             if target == "credit":
-                component_by_score_output = self._component_by_score_output()
-                components = self.component_config["components"]
                 context_columns = []
-                for score_col in spec.score_input_cols:
-                    component_name = component_by_score_output.get(score_col)
-                    if component_name is None:
-                        continue
-                    score_config = components[component_name].get("score", {})
-                    features = self._score_input_features_for_diagnostic_component(
-                        component_name,
-                        score_config,
+                for component_name in spec.component_names:
+                    features = self._prepared_input_sources_for_diagnostic_components(
+                        target,
+                        (component_name,),
                     )
                     for feature in features:
                         feature_config = self.feature_config["features"].get(feature, {})
@@ -1223,14 +1014,14 @@ class Module1SensitivityDiagnostics:
                     not in {prior.output_col for prior in context_columns[:idx]}
                 )
 
-            component_names = self._diagnostic_component_names_for_target(target)
             return tuple(
                 SmoothingDiagnosticContextColumn(
                     output_col=feature,
                     feature_col=feature,
                 )
-                for feature in self._score_input_features_for_diagnostic_components(
-                    component_names or (),
+                for feature in self._prepared_input_sources_for_diagnostic_components(
+                    target,
+                    spec.component_names,
                 )
             )
 
@@ -1345,9 +1136,9 @@ class Module1SensitivityDiagnostics:
             detail = pd.concat(
                 [
                     detail,
-                    self._prepared_filtered_input_columns(profile.target).reindex(
-                        detail.index
-                    ),
+                    self._diagnostics.prepared_filtered_input_columns(
+                        profile.target
+                    ).reindex(detail.index),
                 ],
                 axis=1,
             )
@@ -1809,7 +1600,9 @@ class Module1SensitivityDiagnostics:
             input_preparation = curve_move_driver_config.get("input_preparation") or {}
             min_abs_value = input_preparation.get("min_abs_value")
 
-            prepared_inputs = self._prepared_filtered_input_columns(target)
+            prepared_inputs = self._diagnostics.prepared_filtered_input_columns(
+                target
+            )
             front_end_prepared_spec = self._diagnostic_input_spec_by_role(
                 target,
                 "curve_move_driver",
@@ -1898,20 +1691,20 @@ class Module1SensitivityDiagnostics:
             detail[long_end_prepared_spec.output] = long_end_prepared
             if front_end_filtered_spec is None:
                 detail[
-                    self._diagnostic_input_column_name(
-                        front_end_prepared_spec.source,
-                        "filtered",
-                        "curve_move_driver",
+                    front_end_prepared_spec.output.replace(
+                        "_prepared_for_",
+                        "_filtered_for_",
+                        1,
                     )
                 ] = front_end_filtered
             else:
                 detail[front_end_filtered_spec.output] = front_end_filtered
             if long_end_filtered_spec is None:
                 detail[
-                    self._diagnostic_input_column_name(
-                        long_end_prepared_spec.source,
-                        "filtered",
-                        "curve_move_driver",
+                    long_end_prepared_spec.output.replace(
+                        "_prepared_for_",
+                        "_filtered_for_",
+                        1,
                     )
                 ] = long_end_filtered
             else:

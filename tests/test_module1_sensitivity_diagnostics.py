@@ -8,7 +8,7 @@ from unittest.mock import Mock, patch
 import pandas as pd
 
 from module1_calculator import Module1Calculator, Module1Result
-from module1_diagnostics import Module1Diagnostics
+from module1_diagnostics import DiagnosticInputSpec, Module1Diagnostics
 from module1_historical_analysis import Module1HistoricalAnalysis
 from module1_sensitivity_diagnostics import Module1SensitivityDiagnostics
 
@@ -530,6 +530,225 @@ class SensitivityPublicOutputTests(unittest.TestCase):
             self.result.module1_config,
             snapshot["module1_config"],
         )
+
+    def test_diagnostics_owns_ordered_prepared_input_specs(self):
+        original_result = self.snapshot_result()
+        diagnostics = Module1Diagnostics(self.result)
+
+        expected_credit = [
+            (
+                "credit_spread_change",
+                "baa10y_change",
+                "prepared",
+                "baa10y_change_prepared_for_credit_spread_change",
+                None,
+            ),
+            (
+                "credit_spread_state",
+                "baa10y_level",
+                "prepared",
+                "baa10y_level_prepared_for_credit_spread_state",
+                None,
+            ),
+        ]
+        expected_curve = [
+            (
+                "curve_change",
+                "curve_10y2y_change",
+                "prepared",
+                "curve_10y2y_change_prepared_for_curve_change",
+                None,
+            ),
+            (
+                "curve_state",
+                "curve_10y2y_level",
+                "prepared",
+                "curve_10y2y_level_prepared_for_curve_state",
+                None,
+            ),
+            (
+                "curve_move_driver",
+                "dgs2_change",
+                "prepared",
+                "dgs2_change_prepared_for_curve_move_driver",
+                "front_end",
+            ),
+            (
+                "curve_move_driver",
+                "dgs2_change",
+                "filtered",
+                "dgs2_change_filtered_for_curve_move_driver",
+                "front_end",
+            ),
+            (
+                "curve_move_driver",
+                "dgs10_change",
+                "prepared",
+                "dgs10_change_prepared_for_curve_move_driver",
+                "long_end",
+            ),
+            (
+                "curve_move_driver",
+                "dgs10_change",
+                "filtered",
+                "dgs10_change_filtered_for_curve_move_driver",
+                "long_end",
+            ),
+        ]
+
+        def values(specs):
+            self.assertTrue(
+                all(isinstance(spec, DiagnosticInputSpec) for spec in specs)
+            )
+            return [
+                (
+                    spec.component,
+                    spec.source,
+                    spec.kind,
+                    spec.output,
+                    spec.role,
+                )
+                for spec in specs
+            ]
+
+        first_credit = diagnostics.diagnostic_input_specs("credit")
+        first_curve = diagnostics.diagnostic_input_specs("curve_positioning")
+        self.assertEqual(
+            diagnostics.diagnostic_component_names("credit"),
+            ("credit_spread_change", "credit_spread_state"),
+        )
+        self.assertEqual(
+            diagnostics.diagnostic_component_names("curve_positioning"),
+            ("curve_change", "curve_state", "curve_move_driver"),
+        )
+        self.assertEqual(values(first_credit), expected_credit)
+        self.assertEqual(values(first_curve), expected_curve)
+        self.assertEqual(
+            values(
+                diagnostics.diagnostic_input_specs(
+                    "curve_positioning",
+                    kinds=("filtered",),
+                )
+            ),
+            [expected_curve[3], expected_curve[5]],
+        )
+        self.assertEqual(
+            first_credit,
+            diagnostics.diagnostic_input_specs("credit"),
+        )
+        self.assertEqual(
+            first_curve,
+            diagnostics.diagnostic_input_specs("curve_positioning"),
+        )
+        self.assert_result_unchanged(original_result)
+
+    def test_diagnostics_owns_prepared_filtered_columns_and_missing_sources(self):
+        original_result = self.snapshot_result()
+        diagnostics = Module1Diagnostics(self.result)
+
+        credit = diagnostics.prepared_filtered_input_columns("credit")
+        curve = diagnostics.prepared_filtered_input_columns("curve_positioning")
+        self.assertEqual(
+            list(credit.columns),
+            [
+                "baa10y_change_prepared_for_credit_spread_change",
+                "baa10y_level_prepared_for_credit_spread_state",
+            ],
+        )
+        self.assertEqual(
+            list(curve.columns),
+            [
+                "curve_10y2y_change_prepared_for_curve_change",
+                "curve_10y2y_level_prepared_for_curve_state",
+                "dgs2_change_prepared_for_curve_move_driver",
+                "dgs10_change_prepared_for_curve_move_driver",
+                "dgs2_change_filtered_for_curve_move_driver",
+                "dgs10_change_filtered_for_curve_move_driver",
+            ],
+        )
+        self.assertEqual([str(dtype) for dtype in credit.dtypes], ["float64"] * 2)
+        self.assertEqual([str(dtype) for dtype in curve.dtypes], ["float64"] * 6)
+        self.assertTrue(credit.index.equals(self.result.features.index))
+        self.assertTrue(curve.index.equals(self.result.features.index))
+        self.assertTrue(credit.iloc[0].isna().all())
+        self.assertTrue(curve.iloc[0].isna().all())
+        self.assertEqual(
+            frame_fingerprint(credit),
+            "a156caf6adfc9114cfdb60a0902547cabaeac54f78b1cef0b7eb706281c83f39",
+        )
+        self.assertEqual(
+            frame_fingerprint(curve),
+            "e393de6b5b5766708e290cb74d0ab31acb2140f09f4847a431e00f35c75c9e28",
+        )
+        pd.testing.assert_frame_equal(
+            credit,
+            diagnostics.prepared_filtered_input_columns("credit"),
+        )
+        pd.testing.assert_frame_equal(
+            curve,
+            diagnostics.prepared_filtered_input_columns("curve_positioning"),
+        )
+
+        missing_features = self.result.features.drop(columns=["dgs2_change"])
+        missing_result = replace(self.result, features=missing_features)
+        missing = Module1Diagnostics(
+            missing_result
+        ).prepared_filtered_input_columns("curve_positioning")
+        self.assertEqual(
+            list(missing.columns),
+            [
+                "curve_10y2y_change_prepared_for_curve_change",
+                "curve_10y2y_level_prepared_for_curve_state",
+                "dgs10_change_prepared_for_curve_move_driver",
+                "dgs10_change_filtered_for_curve_move_driver",
+            ],
+        )
+        self.assertEqual(
+            frame_fingerprint(missing),
+            "ae6a2a1dc076f1665e6f32b88c75557d24fe95f5069a567dcf075e84ba08d294",
+        )
+        pd.testing.assert_frame_equal(missing_result.features, missing_features)
+        self.assert_result_unchanged(original_result)
+
+    def test_sensitivity_consumes_diagnostics_owned_prepared_inputs(self):
+        removed_names = (
+            "_diagnostic_input_column_name",
+            "_component_by_score_output",
+            "_diagnostic_component_filter_for_target",
+            "_diagnostic_component_names_for_target",
+            "_score_input_features_for_diagnostic_component",
+            "_diagnostic_input_specs",
+            "_prepared_filtered_input_columns",
+        )
+        for name in removed_names:
+            self.assertNotIn(name, Module1SensitivityDiagnostics.__dict__)
+
+        with (
+            patch.object(
+                self.sensitivity._diagnostics,
+                "diagnostic_input_specs",
+                wraps=self.sensitivity._diagnostics.diagnostic_input_specs,
+            ) as input_specs,
+            patch.object(
+                self.sensitivity._diagnostics,
+                "prepared_filtered_input_columns",
+                wraps=(
+                    self.sensitivity._diagnostics.prepared_filtered_input_columns
+                ),
+            ) as prepared_columns,
+        ):
+            result = (
+                self.sensitivity.compare_curve_move_driver_threshold_effect(
+                    include_detail=True
+                )
+            )
+
+        self.assertEqual(
+            frame_fingerprint(result["detail"]),
+            "6051f2b2062fe165b538f4a9e96b59cd403a08de4d69cac6647ee439111f12c2",
+        )
+        self.assertGreaterEqual(input_specs.call_count, 1)
+        prepared_columns.assert_called_once_with("curve_positioning")
 
     def test_compare_smoothing_effect_public_contract_and_missing_behavior(self):
         windows = {
