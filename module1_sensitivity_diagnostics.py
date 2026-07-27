@@ -175,8 +175,8 @@ class Module1SensitivityDiagnostics:
                 series_config_path=series_config_path,
                 module1_config_path=module1_config_path,
                 data_path=data_path,
+                horizons=case_horizons,
             )
-            calc.horizons = case_horizons
             calc.run_module1_pipeline()
 
             historical = Module1HistoricalAnalysis(calc.to_module1_result())
