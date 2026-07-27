@@ -3,11 +3,12 @@ import hashlib
 import os
 import unittest
 from dataclasses import replace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pandas as pd
 
-from module1_calculator import Module1Calculator
+from module1_calculator import Module1Calculator, Module1Result
+from module1_diagnostics import Module1Diagnostics
 from module1_historical_analysis import Module1HistoricalAnalysis
 from module1_sensitivity_diagnostics import Module1SensitivityDiagnostics
 
@@ -997,12 +998,32 @@ class SensitivityPublicOutputTests(unittest.TestCase):
             )
         }
         original_local_horizons = copy.deepcopy(self.sensitivity.horizons)
+        case_diagnostic_runs = []
 
-        with patch.object(
-            Module1Calculator,
-            "calculate_exposure_stance_outputs",
-            wraps=Module1Calculator.calculate_exposure_stance_outputs,
-        ) as calculate_exposure_stance_outputs:
+        def build_case_diagnostics(case_result):
+            diagnostics = Module1Diagnostics(case_result)
+            diagnostics.trace_stance_score = Mock(
+                wraps=diagnostics.trace_stance_score
+            )
+            case_diagnostic_runs.append((case_result, diagnostics))
+            return diagnostics
+
+        with (
+            patch.object(
+                Module1Calculator,
+                "calculate_exposure_stance_outputs",
+                wraps=Module1Calculator.calculate_exposure_stance_outputs,
+            ) as calculate_exposure_stance_outputs,
+            patch(
+                "module1_sensitivity_diagnostics.Module1Diagnostics",
+                side_effect=build_case_diagnostics,
+            ) as diagnostics_class,
+            patch.object(
+                self.sensitivity,
+                "trace_stance_score",
+                side_effect=AssertionError("baseline Sensitivity trace used"),
+            ) as baseline_trace,
+        ):
             with_diagnostics = (
                 self.sensitivity.compare_credit_stance_persistence_cases(
                     cases=cases,
@@ -1026,19 +1047,48 @@ class SensitivityPublicOutputTests(unittest.TestCase):
             )
 
         expected_settings = list(cases.values()) * 3
+        self.assertEqual(diagnostics_class.call_count, len(expected_settings))
+        baseline_trace.assert_not_called()
         self.assertEqual(
             calculate_exposure_stance_outputs.call_count,
             len(expected_settings),
         )
-        for call, settings in zip(
+        self.assertEqual(len(case_diagnostic_runs), len(expected_settings))
+        for call, settings, diagnostic_run in zip(
             calculate_exposure_stance_outputs.call_args_list,
             expected_settings,
+            case_diagnostic_runs,
         ):
+            case_result, diagnostics = diagnostic_run
+            self.assertIsInstance(case_result, Module1Result)
+            diagnostics.trace_stance_score.assert_called_once_with(
+                "credit",
+                include_raw_input=True,
+                include_labels=False,
+            )
+            for field_name in (
+                "data",
+                "features",
+                "scores",
+                "labels",
+                "horizons",
+                "default_horizons",
+                "horizon_overrides",
+                "module1_config_validation",
+            ):
+                self.assertIs(
+                    getattr(case_result, field_name),
+                    getattr(self.result, field_name),
+                )
+            self.assertIsNot(
+                case_result.module1_config,
+                self.result.module1_config,
+            )
             scenario_config = call.args[2]["exposure_stances"]["credit"]
             nested_stabilization = scenario_config["rule_mapped"][
                 "state_stabilization"
             ]
-            self.assertIs(
+            self.assertEqual(
                 nested_stabilization,
                 scenario_config["state_stabilization"],
             )
@@ -1059,6 +1109,12 @@ class SensitivityPublicOutputTests(unittest.TestCase):
                     },
                 },
             )
+            self.assertIs(
+                call.args[2]["exposure_stances"],
+                case_result.module1_config["exposure_stances"],
+            )
+            self.assertIs(call.args[0], self.sensitivity.scores)
+            self.assertIs(call.args[1], self.sensitivity.component_config)
 
         self.assertEqual(
             list(with_diagnostics),
