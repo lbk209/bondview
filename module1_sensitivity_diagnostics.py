@@ -2626,9 +2626,10 @@ class Module1SensitivityDiagnostics:
                     case_exposure_stance_config = copy.deepcopy(
                         original_exposure_stance_config
                     )
-                    case_exposure_stance_config["exposure_stances"]["credit"][
-                        "state_stabilization"
-                    ] = {
+                    case_credit_config = case_exposure_stance_config[
+                        "exposure_stances"
+                    ]["credit"]
+                    case_stabilization_config = {
                         "credit_spread_change": {
                             "hysteresis_buffer": float(hysteresis_buffer),
                             "min_state_persistence": settings["credit_spread_change"],
@@ -2638,6 +2639,13 @@ class Module1SensitivityDiagnostics:
                             "min_state_persistence": settings["credit_spread_state"],
                         },
                     }
+                    case_credit_config["rule_mapped"][
+                        "state_stabilization"
+                    ] = case_stabilization_config
+                    if "state_stabilization" in case_credit_config:
+                        case_credit_config[
+                            "state_stabilization"
+                        ] = case_stabilization_config
                     self.exposure_stance_config = case_exposure_stance_config
                     (
                         self.stance_scores,
@@ -2652,6 +2660,25 @@ class Module1SensitivityDiagnostics:
                         include_raw_input=True,
                         include_labels=False,
                     )
+                    case_rule_mapped_spec = (
+                        Module1Calculator.resolve_rule_mapped_stance_spec(
+                            "credit",
+                            case_credit_config,
+                            self.component_config,
+                        )
+                    )
+                    case_breakdown = (
+                        Module1Calculator.build_rule_mapped_stance_score_breakdown(
+                            self.scores,
+                            self.component_config,
+                            "credit",
+                            case_credit_config,
+                            case_rule_mapped_spec,
+                        )
+                    )
+                    diag[case_breakdown.columns] = case_breakdown
+                    for column in ["credit_stance", "credit_stance_strength"]:
+                        diag[column] = self.exposure_stance[column]
 
                     missing_cols = sorted(required_diagnostic_cols.difference(diag.columns))
                     if missing_cols:
