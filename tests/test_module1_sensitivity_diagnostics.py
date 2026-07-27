@@ -982,21 +982,83 @@ class SensitivityPublicOutputTests(unittest.TestCase):
         original_windows = copy.deepcopy(windows)
         original_result = self.snapshot_result()
         original_local_config = copy.deepcopy(self.sensitivity.module1_config)
+        original_local_exposure_config = copy.deepcopy(
+            self.sensitivity.exposure_stance_config
+        )
+        original_local_frames = {
+            name: getattr(self.sensitivity, name).copy(deep=True)
+            for name in (
+                "data",
+                "features",
+                "scores",
+                "labels",
+                "stance_scores",
+                "exposure_stance",
+            )
+        }
+        original_local_horizons = copy.deepcopy(self.sensitivity.horizons)
 
-        with_diagnostics = (
-            self.sensitivity.compare_credit_stance_persistence_cases(
-                cases=cases,
-                windows=windows,
-                include_diagnostics=True,
+        with patch.object(
+            Module1Calculator,
+            "calculate_exposure_stance_outputs",
+            wraps=Module1Calculator.calculate_exposure_stance_outputs,
+        ) as calculate_exposure_stance_outputs:
+            with_diagnostics = (
+                self.sensitivity.compare_credit_stance_persistence_cases(
+                    cases=cases,
+                    windows=windows,
+                    include_diagnostics=True,
+                )
             )
-        )
-        without_diagnostics = (
-            self.sensitivity.compare_credit_stance_persistence_cases(
-                cases=cases,
-                windows=windows,
-                include_diagnostics=False,
+            without_diagnostics = (
+                self.sensitivity.compare_credit_stance_persistence_cases(
+                    cases=cases,
+                    windows=windows,
+                    include_diagnostics=False,
+                )
             )
+            repeated_with_diagnostics = (
+                self.sensitivity.compare_credit_stance_persistence_cases(
+                    cases=cases,
+                    windows=windows,
+                    include_diagnostics=True,
+                )
+            )
+
+        expected_settings = list(cases.values()) * 3
+        self.assertEqual(
+            calculate_exposure_stance_outputs.call_count,
+            len(expected_settings),
         )
+        for call, settings in zip(
+            calculate_exposure_stance_outputs.call_args_list,
+            expected_settings,
+        ):
+            scenario_config = call.args[2]["exposure_stances"]["credit"]
+            nested_stabilization = scenario_config["rule_mapped"][
+                "state_stabilization"
+            ]
+            self.assertIs(
+                nested_stabilization,
+                scenario_config["state_stabilization"],
+            )
+            self.assertEqual(
+                nested_stabilization,
+                {
+                    "credit_spread_change": {
+                        "hysteresis_buffer": 0.05,
+                        "min_state_persistence": settings[
+                            "credit_spread_change"
+                        ],
+                    },
+                    "credit_spread_state": {
+                        "hysteresis_buffer": 0.05,
+                        "min_state_persistence": settings[
+                            "credit_spread_state"
+                        ],
+                    },
+                },
+            )
 
         self.assertEqual(
             list(with_diagnostics),
@@ -1031,6 +1093,11 @@ class SensitivityPublicOutputTests(unittest.TestCase):
                 for key in without_diagnostics
             },
         )
+        assert_nested_outputs_equal(
+            self,
+            with_diagnostics,
+            repeated_with_diagnostics,
+        )
         for output_name, columns in CREDIT_OUTPUT_COLUMNS.items():
             self.assertEqual(
                 list(with_diagnostics[output_name].columns),
@@ -1061,19 +1128,67 @@ class SensitivityPublicOutputTests(unittest.TestCase):
             with_diagnostics["diagnostics"]["base_p1_p1"],
             with_diagnostics["diagnostics"]["same"],
         )
-        # Current behavior: modified persistence settings are accepted and
-        # reported, but do not change the runtime diagnostic table.
-        pd.testing.assert_frame_equal(
-            with_diagnostics["diagnostics"]["base_p1_p1"],
-            with_diagnostics["diagnostics"]["modified"],
+        base_diagnostic = with_diagnostics["diagnostics"]["base_p1_p1"]
+        modified_diagnostic = with_diagnostics["diagnostics"]["modified"]
+        mismatch_counts = {}
+        for column in (
+            "credit_spread_change_state",
+            "credit_spread_state_category",
+            "credit_state_pair",
+            "credit_stance_score",
+        ):
+            matching = base_diagnostic[column].eq(
+                modified_diagnostic[column]
+            ) | (
+                base_diagnostic[column].isna()
+                & modified_diagnostic[column].isna()
+            )
+            mismatch_counts[column] = int((~matching).sum())
+        self.assertEqual(
+            mismatch_counts,
+            {
+                "credit_spread_change_state": 23,
+                "credit_spread_state_category": 9,
+                "credit_state_pair": 32,
+                "credit_stance_score": 32,
+            },
+        )
+        self.assertEqual(
+            with_diagnostics["summary"]["case_id"].tolist(),
+            ["base_p1_p1", "same", "modified"],
         )
         summary = with_diagnostics["summary"].set_index("case_id")
+        pd.testing.assert_series_equal(
+            summary.loc["base_p1_p1"],
+            summary.loc["same"],
+            check_names=False,
+        )
         self.assertEqual(
             summary.loc[
                 ["base_p1_p1", "same", "modified"],
                 ["change_persistence", "state_persistence"],
             ].values.tolist(),
             [[1, 1], [1, 1], [2, 2]],
+        )
+        self.assertEqual(
+            summary.loc[
+                ["base_p1_p1", "modified"],
+                [
+                    "covid_delay_days_vs_base",
+                    "full_changed_pair_count",
+                ],
+            ].values.tolist(),
+            [[0, 128], [1, 158]],
+        )
+        self.assertEqual(
+            with_diagnostics["window_metrics"][
+                ["case_id", "window_id"]
+            ].values.tolist(),
+            [
+                [case_id, window_id]
+                for case_id in cases
+                for window_id in windows
+            ],
         )
         empty_metrics = with_diagnostics["window_metrics"].query(
             "window_id == 'late_2022_volatility'"
@@ -1094,17 +1209,29 @@ class SensitivityPublicOutputTests(unittest.TestCase):
             )
         )
         expected_fingerprints = {
-            "summary": "14064011983e3f7774598cea923ee30a2b3d699f28a43dae6f258dca276eb5b2",
-            "window_metrics": "c441f7c5b901ee9cf8df8ccd55709470376259da39e7fe1a5d06fb5daf579523",
-            "shock_detection": "dcc9dcb75a58b673121fb1c7056736c361cb5b4b2e1ab8f879be520755145c87",
-            "recovery_behavior": "8aed0042dd06ea17fb0577d630f7f86a0336ba577b819f54db5ae8e2925ec632",
-            "tight_spread_behavior": "cffd5dfd26521a648c22f0b6515f76aa90a1d729d749d9e0deca972055e790e7",
+            "summary": "1081ec24710571774725aa35fcf53416e77631e7b8012bb245af15cbf82abaaa",
+            "window_metrics": "4d77b2392ad5573d9a31f6009f11d232c3596cd93e63346f2316545b3ff54dc6",
+            "shock_detection": "727ee1031ba3d477ccd778d90280dcfb12e793d10992cc27c8306b6111973b70",
+            "recovery_behavior": "a2ba7f1dbaeb57f2776b16049af31a6bdeb66a82c3e432bb95fa6ece2e7487b5",
+            "tight_spread_behavior": "e5625570c53b5325a70c1a342b7efba1fa8cdabc06be6721d33976feec565cb4",
             "late_volatility": "682e91629da18f5b6acf1a2a984fce320fb283a1dfaf24089bebcef722c3b38f",
-            "full_period_stabilization": "31accbf458f1811cf9f63acd83f336e27757bf34270b0c1d2b4d3d082e3c676a",
+            "full_period_stabilization": "1871ce51ddae34e766171c0dcf5ef1b0bfeb33a6d42a2e7df6423ecf280325bf",
         }
         for output_name, expected_fingerprint in expected_fingerprints.items():
             self.assertEqual(
                 frame_fingerprint(with_diagnostics[output_name]),
+                expected_fingerprint,
+            )
+        expected_diagnostic_fingerprints = {
+            "base_p1_p1": "23a26f1d66d02b228f4d1f140f30c0d98cdbc01bb5bcde961334da34077a4b10",
+            "same": "23a26f1d66d02b228f4d1f140f30c0d98cdbc01bb5bcde961334da34077a4b10",
+            "modified": "d60682f6b8f8b672b23aaf49fc98629ddd31534231a2a5fbd1c952ee3c77c000",
+        }
+        for case_id, expected_fingerprint in (
+            expected_diagnostic_fingerprints.items()
+        ):
+            self.assertEqual(
+                frame_fingerprint(with_diagnostics["diagnostics"][case_id]),
                 expected_fingerprint,
             )
         self.assertEqual(cases, original_cases)
@@ -1113,6 +1240,16 @@ class SensitivityPublicOutputTests(unittest.TestCase):
             self.sensitivity.module1_config,
             original_local_config,
         )
+        self.assertEqual(
+            self.sensitivity.exposure_stance_config,
+            original_local_exposure_config,
+        )
+        for name, original_frame in original_local_frames.items():
+            pd.testing.assert_frame_equal(
+                getattr(self.sensitivity, name),
+                original_frame,
+            )
+        self.assertEqual(self.sensitivity.horizons, original_local_horizons)
         self.assert_result_unchanged(original_result)
 
     def test_credit_persistence_default_cases_and_windows(self):
@@ -1145,11 +1282,11 @@ class SensitivityPublicOutputTests(unittest.TestCase):
             )
         self.assertEqual(
             frame_fingerprint(result["summary"]),
-            "fee85ec98d265c6b2782e6bdc1d79807a432ce370d71614d2bfb6a42a1fad260",
+            "d12343dbe7302b3b3b7824fed9e2770eb7b1acec3f9d19eba0d81f76c58f985f",
         )
         self.assertEqual(
             frame_fingerprint(result["window_metrics"]),
-            "b4cd306d09d8e81e7f66f79b0c56dce8febd6e5bdbecb90f1711ed67a2c10fe4",
+            "e5034e9a15c36d3ffaba28f0d567e9e570d08ae665ffc329bed71a48fd81b8f9",
         )
 
 
