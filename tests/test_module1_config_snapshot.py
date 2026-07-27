@@ -341,6 +341,52 @@ class Module1ConfigSnapshotTests(unittest.TestCase):
         self.assertEqual(self.result.module1_config, self.operational_config)
         self.assertTrue(self.result.module1_config_validation["issues"].empty)
 
+    def test_credit_stabilization_has_one_authoritative_nested_mapping(self):
+        credit_config = self.operational_config["exposure_stances"]["credit"]
+        rule_mapped = credit_config["rule_mapped"]
+        expected_stabilization = {
+            "credit_spread_change": {
+                "hysteresis_buffer": 0.0,
+                "min_state_persistence": 1,
+            },
+            "credit_spread_state": {
+                "hysteresis_buffer": 0.0,
+                "min_state_persistence": 1,
+            },
+        }
+
+        self.assertNotIn("state_stabilization", credit_config)
+        self.assertEqual(
+            list(rule_mapped["state_stabilization"]),
+            ["credit_spread_change", "credit_spread_state"],
+        )
+        self.assertEqual(
+            rule_mapped["state_stabilization"],
+            expected_stabilization,
+        )
+
+        spec = Module1Calculator.resolve_rule_mapped_stance_spec(
+            "credit",
+            credit_config,
+            {"components": self.operational_config["components"]},
+        )
+        self.assertEqual(spec.stabilization_config, expected_stabilization)
+        self.assertTrue(self.result.module1_config_validation["issues"].empty)
+
+        self.assertEqual(
+            rule_mapped["rule_scores"],
+            credit_config["rule_scores"],
+        )
+        self.assertEqual(
+            rule_mapped["adjustment"]["config"],
+            credit_config["rule_adjustments"],
+        )
+        for state_input in rule_mapped["state_inputs"]:
+            self.assertEqual(
+                state_input["state_buckets"],
+                credit_config["state_buckets"][state_input["name"]],
+            )
+
     def test_result_has_no_independently_stored_config_subsection_fields(self):
         result_field_names = {field.name for field in fields(type(self.result))}
 

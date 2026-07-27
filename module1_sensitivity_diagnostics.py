@@ -2039,10 +2039,6 @@ class Module1SensitivityDiagnostics:
                 case_credit_config["rule_mapped"][
                     "state_stabilization"
                 ] = case_stabilization_config
-                if "state_stabilization" in case_credit_config:
-                    case_credit_config["state_stabilization"] = copy.deepcopy(
-                        case_stabilization_config
-                    )
 
                 case_exposure_stance_config = {
                     "stance_label_rules": case_module1_config[
