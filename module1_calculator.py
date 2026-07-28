@@ -94,18 +94,30 @@ class Module1Calculator:
     ):
         """
         Initialize Module 1 setup state and load the core input files.
-
+    
         The constructor loads series config, module1 config, and input data,
         then resolves horizons from YAML defaults plus optional constructor
         overrides.
+    
+        A FRED API key is optional when input data is loaded from a local file.
+        Remote downloads require the configured API-key environment variable.
         """
         load_dotenv()
-
-        api_key = os.getenv(api_key_env)
+    
+        self.api_key_env = api_key_env
+        api_key = os.getenv(self.api_key_env)
+    
         if api_key is None:
-            raise ValueError(f"{api_key_env} is not set.")
-
-        self.fred = Fred(api_key=api_key)
+            warnings.warn(
+                f"{self.api_key_env} is not set. Local data loading remains "
+                "available, but FRED downloads will fail until the key is configured.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            self.fred = None
+        else:
+            self.fred = Fred(api_key=api_key)
+    
         self.series_config_path = series_config_path
         self.module1_config_path = module1_config_path
         self.data_path = data_path
@@ -124,7 +136,7 @@ class Module1Calculator:
         self.labels = None
         self.stance_scores = None
         self.exposure_stance = None
-
+    
         self.load_core_files()
 
     def load_core_files(
@@ -259,8 +271,22 @@ class Module1Calculator:
         return self.series_config
 
     def download_series(self, key: str, start=None, end=None) -> pd.Series | None:
+        if self.series_config is None:
+            raise ValueError("Run load_series_config() before download_series().")
+    
         cfg = self.series_config[key]
-
+    
+        if self.fred is None:
+            api_key = os.getenv(self.api_key_env)
+            if api_key is None:
+                raise ValueError(
+                    f"{self.api_key_env} is required to download FRED data. "
+                    "Configure the environment variable or load data from a local file."
+                )
+    
+            # Supports configuring the environment after Calculator construction.
+            self.fred = Fred(api_key=api_key)
+    
         try:
             sr = self.fred.get_series(
                 cfg.fred_id,
@@ -270,17 +296,17 @@ class Module1Calculator:
         except Exception as e:
             print(f"[ERROR] Failed to download {key} ({cfg.fred_id}): {e}")
             return None
-
+    
         if sr is None or len(sr) == 0:
             print(f"[WARN] No data for {key} ({cfg.fred_id})")
             return None
-
+    
         sr.name = key
         print(
             f"[OK] {key:<10} | {cfg.fred_id} | "
             f"{sr.index.min().date()} ~ {sr.index.max().date()}"
         )
-
+    
         return sr
 
     def check_frequency_sanity(self, key: str, sr: pd.Series) -> None:
