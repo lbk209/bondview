@@ -13,14 +13,25 @@ The contract focuses on three primary layers:
 The intended conceptual hierarchy is:
 
 ```text
-raw input → feature → component → stance → Module1Result
+raw input
+    ↓
+shared feature calculation
+    ├── macro features
+    └── bond-market features
+    ↓
+component calculation
+    ↓
+duration / curve / credit stance calculation
+    ↓
+Module1Result
 ```
 
 The purpose of this contract is to ensure that:
 
 - model structure is defined explicitly;
 - reusable mechanics are implemented once;
-- Curve, Credit, Duration, and later model areas use common execution capabilities wherever their behavior is structurally equivalent;
+- Curve, Credit, and Duration use common execution capabilities wherever their behavior is structurally equivalent;
+- shared macro conditions are calculated once and interpreted separately by each stance;
 - configuration changes do not require hidden or duplicated Python changes;
 - calculation stages remain understandable and testable;
 - completed results form a stable boundary for downstream consumers.
@@ -62,7 +73,8 @@ Where configuration is intended to define the model, YAML SHOULD contain items s
 - rule tables;
 - labels;
 - output names;
-- relationships between components and stances.
+- relationships between features, components, and stances;
+- shared macro-feature definitions and stance-specific use of those features.
 
 Python MUST NOT duplicate configurable model structure merely for implementation convenience.
 
@@ -124,6 +136,36 @@ elif stance_name == "duration":
 ```
 
 unless those stances genuinely require distinct named operators that are explicitly declared in configuration.
+
+### 3.6 Raw-data reuse is permitted
+
+A raw series is not exclusively owned by one feature group or calculation path.
+
+The same aligned source observation MAY be used by:
+
+- shared macro-feature calculations;
+- bond-market feature calculations;
+- more than one component where each use has a distinct declared meaning.
+
+For example, the policy rate MAY contribute to both a policy-restrictiveness feature and a Treasury-policy spread feature. This is not duplication by itself.
+
+The prohibited duplication is competing ownership of the same derived meaning. Two calculations MUST NOT independently claim to produce the authoritative policy-restrictiveness state, inflation trend, or another equivalent derived concept unless their distinction is explicit in the model contract.
+
+Shared raw inputs SHOULD come from one scenario-consistent data snapshot so that observation dates, revisions, frequency alignment, and preparation choices remain coherent.
+
+### 3.7 Macro interpretation is internal to Module 1 unless independently justified
+
+Growth, inflation, policy, real-rate, and related macro conditions SHOULD initially be represented as shared Module 1 features or an internal model-ready context.
+
+A separate public `MacroResult` contract SHOULD NOT be introduced solely because multiple Module 1 stances use macro information. It becomes justified only if it has a stable standalone meaning and genuine consumers outside Module 1.
+
+Module 1 owns the translation from shared macro conditions into bond-exposure implications:
+
+- Duration interprets them for interest-rate exposure;
+- Curve interprets them for maturity-segment and curve-shape positioning;
+- Credit interprets them for spread and default-risk exposure.
+
+The same macro condition MAY have different or opposite effects across those stances. The architecture therefore SHOULD NOT require one universal macro score.
 
 ---
 
@@ -219,6 +261,47 @@ Calculator MUST:
 
 Calculator MAY provide named operators for specialized domain logic, but each operator MUST have an explicit input/output/configuration contract.
 
+Calculator SHOULD calculate shared macro features once per scenario and reuse the resulting values across Duration, Curve, and Credit. A stance calculator SHOULD NOT independently reconstruct a shared macro feature when an authoritative feature already exists.
+
+### 4.4 Shared macro-feature responsibility
+
+The shared macro-feature layer owns model-ready descriptions of broad economic conditions, not final bond-exposure decisions.
+
+Examples MAY include:
+
+- growth momentum or state;
+- inflation level, direction, or pressure;
+- realized policy direction;
+- policy restrictiveness;
+- real-rate condition;
+- liquidity or fiscal conditions when later included in the model.
+
+These features SHOULD be produced through existing generic feature and scoring capabilities wherever possible.
+
+Examples include:
+
+- `change`, `pct_change`, `spread`, or `difference` feature operators;
+- one-input or multi-input weighted scoring;
+- normalization, smoothing, clipping, thresholds, and buckets.
+
+A new operator MAY be introduced for a genuinely new relationship, such as a formally defined real-rate or policy-restrictiveness calculation. The operator MUST remain reusable and MUST NOT create a parallel macro-specific scoring framework.
+
+### 4.5 Stance responsibility for macro features
+
+Duration, Curve, and Credit own the stance-specific interpretation of shared macro features.
+
+They MUST NOT assume that a shared feature has one universal directional meaning. For example, weakening growth may support longer Duration while reducing Credit attractiveness.
+
+Each stance SHOULD consume only the macro features relevant to its declared model. Stance composition MAY use:
+
+- weighted score composition;
+- bucket or state classification;
+- rule-table composition;
+- a configured gate or override for exceptional states.
+
+The selected mechanism MUST be explicit in configuration and MUST use the same reusable Calculator capabilities available to non-macro features.
+
+
 ---
 
 ## 5. Configuration Resolution
@@ -262,15 +345,16 @@ A recommended canonical sequence is:
 
 ```text
 1. Resolve source inputs
-2. Prepare each input
-3. Transform each input
-4. Aggregate inputs
-5. Post-process the aggregate score
-6. Classify the score or input state
-7. Stabilize the classified state
-8. Apply rule or stance composition
-9. Produce labels and outputs
-10. Construct Module1Result
+2. Calculate derived features
+3. Prepare each feature or direct input
+4. Transform each feature or input
+5. Aggregate inputs into component scores
+6. Post-process the aggregate score
+7. Classify the score or input state
+8. Stabilize the classified state
+9. Apply rule or stance composition
+10. Produce labels and outputs
+11. Construct Module1Result
 ```
 
 Not every calculation uses every stage. An unused stage MUST behave as an explicit no-op or be omitted through a clearly defined optional block.
@@ -284,11 +368,34 @@ It MUST:
 - preserve configured input order;
 - fail clearly on missing required inputs;
 - avoid implicit fallback to similarly named columns;
-- avoid mutating caller-owned data.
+- avoid mutating caller-owned data;
+- preserve one scenario-consistent view of observation dates and aligned values.
 
-### 6.2 Input preparation
+The same resolved raw input MAY feed multiple declared feature calculations. Input resolution MUST NOT impose exclusive ownership of a raw series by a particular component or feature group.
 
-Input preparation applies operations to individual source inputs before aggregation.
+### 6.2 Derived-feature calculation
+
+Derived-feature calculation converts resolved raw observations into model-ready features.
+
+Derived features MAY include both:
+
+- macro features, such as growth momentum, inflation pressure, policy direction, policy restrictiveness, and real-rate condition;
+- bond-market features, such as yield changes, curve spreads, credit-spread changes, and Treasury-policy gaps.
+
+Feature operators SHOULD be reusable and bounded. Supported operators MAY include:
+
+- level;
+- change;
+- percentage change;
+- spread or difference;
+- rolling trend;
+- bounded domain-specific operators with explicit contracts.
+
+A feature MUST have one authoritative declared definition. Historical review, stance calculation, and other consumers MUST reuse that definition rather than reimplementing equivalent feature logic.
+
+### 6.3 Input or feature preparation
+
+Preparation applies operations to individual source inputs or calculated features before aggregation.
 
 Examples:
 
@@ -297,9 +404,9 @@ Examples:
 - missing-value treatment where formally defined;
 - alignment or frequency preparation.
 
-Input preparation MUST be distinguished from score-level post-processing.
+Preparation MUST be distinguished from score-level post-processing.
 
-### 6.3 Input transformation
+### 6.4 Input transformation
 
 Input transformation changes the semantic representation of each prepared input.
 
@@ -317,9 +424,9 @@ The configuration and resolved specification MUST make clear whether a transform
 - instead of another transformation;
 - in a fixed relationship to another stage.
 
-### 6.4 Aggregation
+### 6.5 Aggregation
 
-Aggregation combines one or more transformed inputs into a score.
+Aggregation combines one or more transformed inputs into a component score.
 
 The generalized weighted aggregation capability MUST support:
 
@@ -331,7 +438,9 @@ The generalized weighted aggregation capability MUST support:
 
 A one-input score SHOULD be represented as the one-input case of the same mechanism unless it requires genuinely different behavior.
 
-### 6.5 Score-level post-processing
+A composite macro feature such as growth momentum or inflation pressure MAY use this mechanism when its inputs measure the same underlying concept. The architecture SHOULD NOT introduce a separate macro aggregation engine for that case.
+
+### 6.6 Score-level post-processing
 
 Post-processing applies to the aggregate score rather than individual inputs.
 
@@ -343,7 +452,7 @@ Examples:
 
 The stage order MUST be fixed and documented. For example, if score smoothing occurs before clipping, that order MUST be enforced consistently rather than inferred from YAML key order.
 
-### 6.6 Classification
+### 6.7 Classification
 
 Classification converts a continuous score or a set of input states into a discrete raw bucket or state.
 
@@ -357,11 +466,13 @@ Supported classifier families MAY include:
 
 Classifier behavior MUST be selected explicitly by capability, not inferred from a component or stance name.
 
-### 6.7 Stabilization
+Shared macro features MAY expose both continuous scores and classified states where both are useful. Those values MUST remain distinct.
+
+### 6.8 Stabilization
 
 Stabilization converts raw classified states into stabilized states.
 
-Stabilization MUST be a reusable block independent of Curve, Credit, or Duration names.
+Stabilization MUST be a reusable block independent of Curve, Credit, Duration, or macro-feature names.
 
 Supported stabilization blocks MAY include:
 
@@ -372,9 +483,9 @@ Supported stabilization blocks MAY include:
 
 YAML MUST be able to enable, disable, or configure supported stabilization blocks without requiring Python changes.
 
-For example, adding or removing hysteresis from a Curve configuration SHOULD be a YAML-only model change when the generic hysteresis capability already exists.
+For example, adding or removing hysteresis from a Curve or inflation-state configuration SHOULD be a YAML-only model change when the generic hysteresis capability already exists.
 
-### 6.8 Rule or stance composition
+### 6.9 Rule or stance composition
 
 Stance composition combines component scores or classified states.
 
@@ -382,11 +493,14 @@ Supported forms MAY include:
 
 - weighted score composition;
 - rule-table lookup;
-- rule-table lookup with a formally defined adjustment block.
+- rule-table lookup with a formally defined adjustment block;
+- weighted composition with an explicitly configured gate or override.
 
 Rule lookup MUST preserve configured state-input order. Rule-case construction and rule-score lookup MUST use the same resolved state vocabulary validated by Schema.
 
-### 6.9 Labels and output construction
+The model MAY select different composition forms for Duration, Curve, and Credit. That difference MUST arise from the declared model structure, not from hidden stance-name branching.
+
+### 6.10 Labels and output construction
 
 Labels and strengths MUST be derived from declared output rules.
 
@@ -396,6 +510,7 @@ Output construction MUST:
 - prevent output collisions;
 - preserve deterministic column ordering;
 - keep raw states and stabilized states distinguishable where both are produced;
+- keep shared macro features distinguishable from stance-specific interpretations;
 - retain enough metadata to explain which model specification produced the result.
 
 ---
@@ -555,7 +670,88 @@ The supported condition vocabulary MUST be bounded and schema-validated. YAML SH
 
 ---
 
-## 10. YAML Design Rules
+## 10. Shared Macro Feature Contract
+
+Shared macro-feature calculation is an internal production capability of Module 1. It is upstream of stance composition and is not conceptually equivalent to historical context or another downstream consumer.
+
+Conceptually:
+
+```text
+raw economic observations
+        ↓
+shared macro features
+        ├── growth
+        ├── inflation
+        ├── policy
+        └── real-rate or related conditions
+        ↓
+stance-specific interpretation
+        ├── Duration
+        ├── Curve
+        └── Credit
+        ↓
+Module1Result
+```
+
+### 10.1 One calculation, multiple stance uses
+
+Shared macro features SHOULD be calculated once for a complete Module 1 scenario and reused by each stance.
+
+A stance MAY use only a subset of the available features. The Calculator MUST NOT require every stance to consume every macro feature.
+
+The shared layer describes the economic condition. It does not assign one universal bond implication.
+
+For example:
+
+```text
+growth weakening
+    → may support longer Duration
+    → may imply a Curve transition associated with future easing
+    → may reduce Credit attractiveness
+```
+
+### 10.2 Generic mechanics remain authoritative
+
+Macro features SHOULD use the same feature, score, classification, and stabilization capabilities as other Module 1 features.
+
+Typical forms include:
+
+- single-feature scoring for realized policy direction;
+- weighted feature scoring for composite growth or inflation measures;
+- a derived difference or spread for real-rate or policy-restrictiveness measures;
+- threshold or bucket classification for feature states.
+
+A separate macro-specific weighted-sum engine, bucket engine, smoothing path, normalization path, or stabilization path MUST NOT be created when the existing generic capability can express the required behavior.
+
+### 10.3 Stance composition choices
+
+The contract does not require one composition operator for all stances.
+
+A likely model structure MAY use:
+
+- rule-mapped composition for Duration where growth, inflation, policy, rate shocks, and market confirmation interact;
+- rule-mapped composition for Curve where macro state, current curve shape, curve change, and yield-move driver interact;
+- rule-mapped composition for Credit where spread-change and spread-state combinations have distinct meanings, optionally followed by a formally configured post-lookup adjustment. Relevant macro conditions MAY be represented as additional rule states or through a separate declared adjustment or gate when the model explicitly requires them.
+
+These are model-design choices rather than hard-coded Calculator behavior. YAML and Schema MUST declare and validate whichever supported operator and optional adjustment blocks are selected.
+
+### 10.4 Public-result boundary
+
+The initial architecture SHOULD NOT require an independently consumable `MacroResult`.
+
+An internal typed structure such as `MacroContext` MAY be used to pass shared feature values during calculation. It MAY also be retained inside `Module1Result` for explanation, reproducibility, and comparison.
+
+Downstream consumers SHOULD continue to use `Module1Result` as the formal boundary. They SHOULD NOT be required to separately reconstruct or consume the internal macro context unless a future interface explicitly establishes that need.
+
+### 10.5 Consumer reuse
+
+Shared macro-feature and stance definitions remain production-owned even when another consumer evaluates prior dates, alternative scenarios, or explanatory views.
+
+Such consumers MUST use completed `Module1Result` objects or the same authoritative Calculator capabilities. They MUST NOT maintain parallel implementations of growth, inflation, policy, real-rate, or stance logic.
+
+---
+
+## 11. YAML Design Rules
 
 YAML SHOULD be declarative, bounded, and readable.
 
@@ -580,7 +776,7 @@ YAML aliases MAY reduce duplication, but semantic correctness MUST NOT rely on o
 
 ---
 
-## 11. Schema and Calculator Synchronization
+## 12. Schema and Calculator Synchronization
 
 Schema and Calculator MUST share one capability contract.
 
@@ -605,7 +801,7 @@ Schema MAY apply stricter model-specific invariants after generic capability val
 
 ---
 
-## 12. Calculator Execution Contract
+## 13. Calculator Execution Contract
 
 Calculator execution MUST be deterministic for identical:
 
@@ -633,7 +829,7 @@ This separation permits repeated scenario calculation without forcing unrelated 
 
 ---
 
-## 13. Module1Result Contract
+## 14. Module1Result Contract
 
 `Module1Result` is the completed calculation boundary.
 
@@ -642,7 +838,8 @@ It SHOULD contain a coherent snapshot of the outputs and model information neede
 A complete result MAY include:
 
 - source data used by the calculation;
-- calculated features;
+- calculated macro and bond-market features;
+- an internal macro context or equivalent explanatory structure;
 - component scores;
 - component labels;
 - stance scores;
@@ -660,15 +857,41 @@ A result MUST NOT combine:
 - baseline stance outputs;
 - unrelated configuration metadata.
 
-Downstream consumers SHOULD operate from `Module1Result` or a deliberately derived narrower result contract. They SHOULD NOT reconstruct hidden Calculator state or reload current YAML to reinterpret an existing result.
+Downstream consumers SHOULD operate from `Module1Result` or a deliberately derived narrower result contract. They SHOULD NOT reconstruct hidden Calculator state, recalculate shared macro features, or reload current YAML to reinterpret an existing result.
+
+Macro features retained in the result are explanatory and reproducibility data unless a downstream interface explicitly declares otherwise. The formal investment-facing outputs remain the Duration, Curve, and Credit results and any other declared Module 1 stances.
 
 Scenario workflows SHOULD request separate complete results for separate scenarios and compare those results rather than manually replacing isolated intermediate columns.
 
 ---
 
-## 14. Extension Contract
+## 15. Downstream Consumer Reference
 
-Adding a new component or stance SHOULD follow this decision order:
+The macro-feature extension primarily changes Module 1. Other modules SHOULD retain their existing role as consumers of a completed `Module1Result`.
+
+ETF review or selection SHOULD preserve the joint meaning of the separate Duration, Curve, and Credit outputs. It SHOULD NOT collapse them into one overall bond score unless a future model explicitly defines and validates that aggregation.
+
+For example:
+
+```text
+Duration: favorable
+Curve: prefer intermediate maturities
+Credit: unfavorable
+```
+
+A downstream selector may interpret this combination as support for an intermediate-maturity government-bond ETF while rejecting:
+
+- an ultra-long government-bond ETF because its Duration exposure is excessive;
+- an intermediate corporate-bond ETF because its Credit exposure conflicts with the result;
+- a short-duration high-yield ETF because both its Duration and Credit characteristics conflict.
+
+This is a downstream interpretation requirement, not a reason for the downstream module to recalculate growth, inflation, policy, real-rate, Curve, Credit, or Duration logic.
+
+---
+
+## 16. Extension Contract
+
+Adding a new feature, component, or stance SHOULD follow this decision order:
 
 1. Can the requirement be expressed by existing YAML fields and existing blocks?
 2. Does it require a new reusable block or operator?
@@ -685,11 +908,11 @@ A new reusable capability MUST define:
 - missing-value behavior;
 - tests.
 
-Adding a new Curve, Credit, or Duration configuration SHOULD NOT automatically imply adding a new Calculator branch.
+Adding a new macro feature, Curve, Credit, or Duration configuration SHOULD NOT automatically imply adding a new Calculator branch.
 
 ---
 
-## 15. Development and Validation Strategy
+## 17. Development and Validation Strategy
 
 The architecture SHOULD be built through narrow end-to-end slices rather than implementing every block before any calculation runs.
 
@@ -705,21 +928,23 @@ one feature
 
 Later blocks can be added individually:
 
-1. input smoothing;
-2. normalization;
-3. fixed-anchor transformation;
-4. score smoothing;
-5. clipping;
-6. generalized range buckets;
-7. multi-input condition buckets;
-8. hysteresis;
-9. persistence;
-10. rule-table composition;
-11. labels and strengths.
+1. reusable derived-feature operators;
+2. shared macro-feature calculation;
+3. input smoothing;
+4. normalization;
+5. fixed-anchor transformation;
+6. score smoothing;
+7. clipping;
+8. generalized range buckets;
+9. multi-input condition buckets;
+10. hysteresis;
+11. persistence;
+12. rule-table composition;
+13. labels and strengths.
 
 Each block SHOULD be independently testable.
 
-### 15.1 Required validation categories
+### 17.1 Required validation categories
 
 Validation SHOULD cover:
 
@@ -735,9 +960,12 @@ Validation SHOULD cover:
 - persistence transitions;
 - deterministic output order;
 - caller-input and configuration immutability;
+- one authoritative calculation of each shared macro feature;
+- stance-specific use of macro features without duplicated feature logic;
+- consumer reuse of production feature definitions;
 - complete result coherence.
 
-### 15.2 Generality test
+### 17.2 Generality test
 
 Generality is proven by configuration reuse, not by generic names.
 
@@ -745,7 +973,7 @@ After implementing multiple model areas, the repository SHOULD verify that Curve
 
 ---
 
-## 16. Prohibited Design Patterns
+## 18. Prohibited Design Patterns
 
 The following patterns violate this contract unless explicitly justified and documented:
 
@@ -754,47 +982,62 @@ The following patterns violate this contract unless explicitly justified and doc
 - stance-name whitelists used as capability dispatch;
 - one-feature and n-feature scoring paths with duplicated mechanics;
 - stance-specific smoothing, hysteresis, or persistence implementations when generic blocks apply;
+- a parallel macro-specific score, bucket, normalization, smoothing, or stabilization engine when generic blocks apply;
+- Duration, Curve, and Credit independently recalculating the same authoritative macro feature;
+- consumer-specific code reimplementing production macro-feature or stance logic;
+- treating a raw data series as exclusively owned by one feature group when another declared calculation legitimately requires it;
 - schema rules that validate names rather than executable capabilities without a model-invariant reason;
 - Calculator fallback behavior that hides invalid configuration;
 - partial scenario reconstruction that creates internally inconsistent result objects;
 - downstream consumers constructing incomplete Calculator shells;
 - configuration fields accepted by Schema but ignored by Calculator;
 - unrestricted YAML expression languages;
+- downstream reduction of Duration, Curve, and Credit into one overall score without an explicit validated model contract;
 - excessive thin wrappers that do not establish a real ownership boundary.
 
 ---
 
-## 17. Architectural Acceptance Criteria
+## 19. Architectural Acceptance Criteria
 
 The architecture is compliant when all of the following are true:
 
 1. YAML is the authoritative model-definition layer for configurable structure.
 2. Schema rejects declarations the Calculator cannot execute unambiguously.
 3. Calculator executes a resolved specification through explicit ordered stages.
-4. One-input and multi-input weighted calculations share one generalized mechanism.
-5. Bucket classification and stabilization are reusable blocks.
-6. Supported hysteresis and persistence can be enabled or disabled through YAML.
-7. Curve, Credit, and Duration do not require separate execution branches when they use equivalent mechanics.
-8. New capabilities are added through explicit operator contracts rather than hidden special cases.
-9. Calculator produces coherent complete `Module1Result` objects.
-10. Scenario calculations produce separate complete results rather than manually combining inconsistent intermediate outputs.
-11. Configuration-only model changes do not require Calculator source changes when the required capability already exists.
-12. Generic capability validation and model-specific invariants remain distinguishable.
+4. Raw inputs may be reused by multiple declared feature calculations without creating competing derived meanings.
+5. Shared macro features are calculated once per scenario and reused by Duration, Curve, and Credit.
+6. Macro features and bond-market features use the same generic mechanics when their execution semantics are equivalent.
+7. One-input and multi-input weighted calculations share one generalized mechanism.
+8. Bucket classification and stabilization are reusable blocks.
+9. Supported hysteresis and persistence can be enabled or disabled through YAML.
+10. Duration, Curve, and Credit do not require separate execution branches when they use equivalent mechanics.
+11. Their different macro interpretations are expressed through declared stance configuration rather than duplicated feature calculations.
+12. Other consumers reuse the authoritative production feature and stance definitions.
+13. New capabilities are added through explicit operator contracts rather than hidden special cases.
+14. Calculator produces coherent complete `Module1Result` objects.
+15. Scenario calculations produce separate complete results rather than manually combining inconsistent intermediate outputs.
+16. Downstream consumers use `Module1Result` and preserve the separate Duration, Curve, and Credit meanings unless a validated aggregation contract exists.
+17. Configuration-only model changes do not require Calculator source changes when the required capability already exists.
+18. Generic capability validation and model-specific invariants remain distinguishable.
 
 ---
 
-## 18. Summary
+## 20. Summary
 
 The central architecture is:
 
 ```text
-YAML defines the model
+YAML defines macro features, bond-market features, components, and stances
         ↓
 Schema validates and resolves the model
         ↓
 Calculator executes reusable ordered blocks
         ↓
+shared macro and bond-market features are calculated once
+        ↓
+Duration, Curve, and Credit interpret those features through declared stance logic
+        ↓
 Module1Result records one coherent completed calculation
 ```
 
-The design goal is not abstraction for its own sake. The goal is to make model variation primarily configuration-driven, keep execution mechanics reusable, preserve explicit stage semantics, and prevent Curve, Credit, Duration, or later model areas from developing separate accidental architectures.
+The design goal is not abstraction for its own sake. The goal is to make model variation primarily configuration-driven, keep execution mechanics reusable, preserve explicit stage semantics, calculate shared macro conditions once, and prevent Duration, Curve, Credit, or downstream consumers from developing separate accidental architectures. Other modules remain consumers of the completed `Module1Result`; they should preserve its distinct exposure dimensions rather than reconstructing or collapsing Module 1 logic without an explicit model contract.
