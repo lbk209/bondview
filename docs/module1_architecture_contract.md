@@ -114,11 +114,13 @@ The Calculator SHOULD NOT repeatedly interpret loosely structured YAML throughou
 
 When two model paths differ only by configuration values, they MUST use the same runtime capability.
 
-For example:
+A single-input score without a declared weight MUST use direct single-input scoring semantics and MUST NOT be routed through weighted aggregation. A distinct single-input operator MAY implement that path because no aggregation is required. The transformed input is passed directly into score-level post-processing.
 
-- one-input and n-input weighted scoring SHOULD use the same weighted calculation mechanism;
-- Curve, Credit, and Duration bucket classification SHOULD use the same classifier when their classification semantics are equivalent;
-- hysteresis and persistence SHOULD be reusable stabilization blocks rather than stance-specific implementations.
+A one-input weighted score and an n-input weighted score MUST use the same weighted-aggregation capability. Weighted scoring requires an explicit validated weight for every declared input.
+
+Single-input and weighted scoring SHOULD reuse the same preparation, transformation, post-processing, classification, stabilization, and output capabilities wherever their execution semantics are equivalent.
+
+Curve, Credit, and Duration bucket classification SHOULD use the same classifier when their classification semantics are equivalent. Hysteresis and persistence SHOULD be reusable stabilization blocks rather than stance-specific implementations.
 
 ### 3.5 Stance names do not determine execution
 
@@ -137,21 +139,19 @@ elif stance_name == "duration":
 
 unless those stances genuinely require distinct named operators that are explicitly declared in configuration.
 
-### 3.6 Raw-data reuse is permitted
+### 3.6 Raw-data reuse within Module 1 is permitted
 
-A raw series is not exclusively owned by one feature group or calculation path.
+Within one Module 1 calculation, a raw series is not exclusively owned by one feature group or calculation path.
 
-The same aligned source observation MAY be used by:
-
-- shared macro-feature calculations;
-- bond-market feature calculations;
-- more than one component where each use has a distinct declared meaning.
-
-For example, the policy rate MAY contribute to both a policy-restrictiveness feature and a Treasury-policy spread feature. This is not duplication by itself.
+The same aligned source observation MAY be used by shared macro-feature calculations, bond-market feature calculations, and more than one component where each use has a distinct declared meaning.
 
 The prohibited duplication is competing ownership of the same derived meaning. Two calculations MUST NOT independently claim to produce the authoritative policy-restrictiveness state, inflation trend, or another equivalent derived concept unless their distinction is explicit in the model contract.
 
 Shared raw inputs SHOULD come from one scenario-consistent data snapshot so that observation dates, revisions, frequency alignment, and preparation choices remain coherent.
+
+This permission applies only inside Module 1. Downstream decision modules MUST use the declared `Module1Result` interface and MUST NOT independently load Module 1 raw inputs or use retained source-data tables to reconstruct, replace, or reinterpret Module 1 features, components, states, or stances.
+
+Raw data retained in `Module1Result` MAY be inspected for audit, reproducibility, or presentation where explicitly allowed, but it is not an alternative downstream calculation interface.
 
 ### 3.7 Macro interpretation is internal to Module 1 unless independently justified
 
@@ -261,6 +261,8 @@ Calculator MUST:
 
 Calculator MAY provide named operators for specialized domain logic, but each operator MUST have an explicit input/output/configuration contract.
 
+Each authoritative derived feature, component score, classified or stabilized state, and stance output SHOULD be calculated once per scenario. Later Calculator layers SHOULD consume the already calculated output rather than reconstructing an equivalent value.
+
 Calculator SHOULD calculate shared macro features once per scenario and reuse the resulting values across Duration, Curve, and Credit. A stance calculator SHOULD NOT independently reconstruct a shared macro feature when an authoritative feature already exists.
 
 ### 4.4 Shared macro-feature responsibility
@@ -278,10 +280,11 @@ Examples MAY include:
 
 These features SHOULD be produced through existing generic feature and scoring capabilities wherever possible.
 
-Examples include:
+Applicable capabilities include:
 
 - `change`, `pct_change`, `spread`, or `difference` feature operators;
-- one-input or multi-input weighted scoring;
+- single-input scoring when no weight is declared;
+- one-input or multi-input weighted scoring when every input declares an explicit weight;
 - normalization, smoothing, clipping, thresholds, and buckets.
 
 A new operator MAY be introduced for a genuinely new relationship, such as a formally defined real-rate or policy-restrictiveness calculation. The operator MUST remain reusable and MUST NOT create a parallel macro-specific scoring framework.
@@ -348,8 +351,8 @@ A recommended canonical sequence is:
 2. Calculate derived features
 3. Prepare each feature or direct input
 4. Transform each feature or input
-5. Aggregate inputs into component scores
-6. Post-process the aggregate score
+5. Calculate component scores, using direct single-input flow or declared aggregation
+6. Post-process the component score
 7. Classify the score or input state
 8. Stabilize the classified state
 9. Apply rule or stance composition
@@ -372,6 +375,8 @@ It MUST:
 - preserve one scenario-consistent view of observation dates and aligned values.
 
 The same resolved raw input MAY feed multiple declared feature calculations. Input resolution MUST NOT impose exclusive ownership of a raw series by a particular component or feature group.
+
+This reuse contract applies within Module 1 execution only. Downstream modules MUST NOT treat resolved or retained raw inputs as an alternative to the declared `Module1Result` interface.
 
 ### 6.2 Derived-feature calculation
 
@@ -424,25 +429,29 @@ The configuration and resolved specification MUST make clear whether a transform
 - instead of another transformation;
 - in a fixed relationship to another stage.
 
-### 6.5 Aggregation
+### 6.5 Component-score calculation and aggregation
 
-Aggregation combines one or more transformed inputs into a component score.
+Component-score calculation consumes one or more transformed inputs.
 
-The generalized weighted aggregation capability MUST support:
+A single transformed input without a declared weight MUST use direct single-input flow. No numerical aggregation is performed; the transformed value becomes the component score before score-level post-processing.
 
-- one input with an explicit or resolved weight;
-- multiple inputs with explicit weights;
+A declared weighted score MUST use the generalized weighted-aggregation capability. It MUST support:
+
+- one or more declared inputs;
+- an explicit validated weight for every input;
 - ordered input processing;
 - deterministic missing-value semantics;
 - input-level metadata sufficient for validation and traceability.
 
-A one-input score SHOULD be represented as the one-input case of the same mechanism unless it requires genuinely different behavior.
+One-input and n-input weighted calculations MUST use the same weighted-aggregation mechanism. Schema MUST reject a weighted operator whose input omits its required weight rather than silently inferring a weight of `1.0`.
 
-A composite macro feature such as growth momentum or inflation pressure MAY use this mechanism when its inputs measure the same underlying concept. The architecture SHOULD NOT introduce a separate macro aggregation engine for that case.
+A composite macro feature MAY use weighted aggregation when its inputs measure the same underlying concept and their weights are declared explicitly. The architecture SHOULD NOT introduce a separate macro aggregation engine for that case.
+
+Single-input and weighted score paths SHOULD reuse equivalent preparation, transformation, post-processing, classification, stabilization, and output blocks.
 
 ### 6.6 Score-level post-processing
 
-Post-processing applies to the aggregate score rather than individual inputs.
+Post-processing applies to the component score after direct single-input flow or declared aggregation, rather than to the individual source inputs.
 
 Examples:
 
@@ -534,7 +543,8 @@ Conceptual interfaces may resemble:
 ```python
 prepare_input(series, spec, context) -> Series
 transform_input(series, spec, context) -> Series
-aggregate_inputs(inputs, spec, context) -> Series
+score_single_input(series, spec, context) -> Series
+aggregate_weighted_inputs(inputs, spec, context) -> Series
 postprocess_score(score, spec, context) -> Series
 classify_score(score, spec, context) -> Series
 stabilize_state(raw_state, score, spec, context) -> Series
@@ -576,24 +586,46 @@ Examples:
 
 A no-op block MAY be represented by absence, `null`, or an explicit `none` operator, but the interpretation MUST be unambiguous and validated.
 
+### 7.3 Semantic execution layers and output ownership
+
+Calculator orchestration SHOULD distinguish the following semantic execution layers:
+
+1. derived-feature calculation;
+2. component-score calculation;
+3. state classification and stabilization;
+4. stance composition;
+5. result assembly.
+
+Macro features and bond-market features belong to the same derived-feature layer. They SHOULD use the same reusable mechanics where their execution semantics are equivalent.
+
+Every declared output MUST have one authoritative owner and one unique output identity. Within one scenario, an authoritative feature, component score, classified state, stabilized state, or stance SHOULD be calculated at most once.
+
+Later layers MUST consume the already calculated output rather than invoke an equivalent calculation again. Calculator orchestration MAY use a dependency graph, calculation registry, or scenario-local execution context to resolve dependencies, preserve ordering, and prevent recalculation.
+
+These semantic layer boundaries do not require one Python file, class, or thin wrapper per layer. Implementation boundaries SHOULD be introduced only where they clarify ownership, isolate substantial reusable behavior, or make the calculate-once contract enforceable.
+
 ---
 
 ## 8. Generalized Weighted Score Contract
 
-The generalized weighted score capability is the standard mechanism for combining one or more numerical inputs.
+The generalized weighted-score capability is the standard mechanism for combining one or more explicitly weighted numerical inputs.
 
 It MUST support:
 
 - one or more declared inputs;
+- an explicit validated weight for every input;
 - explicit input ordering;
-- validated numeric weights;
 - input-level preparation;
 - input-level transformation;
 - weighted aggregation;
 - score-level post-processing;
 - deterministic output naming.
 
-The architecture MUST NOT create separate ordinary one-feature and weighted-feature execution paths when they differ only in input count.
+A single-input score without a declared weight is not weighted aggregation. It MUST bypass weighted aggregation and use direct single-input scoring semantics. A separate single-input operator MAY pass the transformed input directly into score-level post-processing.
+
+A one-input weighted score and an n-input weighted score MUST use the same weighted-aggregation capability. Schema MUST NOT silently supply a missing weight merely because a weighted operator has one input.
+
+Single-input and weighted scoring SHOULD reuse equivalent preparation, transformation, post-processing, classification, stabilization, label, and output-construction blocks. They SHOULD differ only where their aggregation semantics genuinely differ.
 
 Special transformations such as fixed-anchor scoring MAY be supported as input-transform blocks or a clearly defined scoring operator. Their stage relationship to normalization, sign, smoothing, and clipping MUST be explicit.
 
@@ -848,6 +880,8 @@ A complete result MAY include:
 - horizons and other calculation metadata;
 - validation or specification metadata where useful.
 
+Source data retained in `Module1Result` is supporting audit, reproducibility, or presentation information. Downstream decision modules MUST NOT use it to reconstruct or replace the declared feature, component, state, or stance outputs.
+
 All included tables MUST describe the same calculation scenario.
 
 A result MUST NOT combine:
@@ -868,6 +902,8 @@ Scenario workflows SHOULD request separate complete results for separate scenari
 ## 15. Downstream Consumer Reference
 
 The macro-feature extension primarily changes Module 1. Other modules SHOULD retain their existing role as consumers of a completed `Module1Result`.
+
+Downstream decision modules MUST NOT independently acquire Module 1 raw data or treat source-data tables retained in `Module1Result` as a calculation interface. They MUST consume declared completed outputs or a deliberately defined narrower result contract.
 
 ETF review or selection SHOULD preserve the joint meaning of the separate Duration, Curve, and Credit outputs. It SHOULD NOT collapse them into one overall bond score unless a future model explicitly defines and validates that aggregation.
 
@@ -916,15 +952,7 @@ Adding a new macro feature, Curve, Credit, or Duration configuration SHOULD NOT 
 
 The architecture SHOULD be built through narrow end-to-end slices rather than implementing every block before any calculation runs.
 
-A recommended first slice is:
-
-```text
-one feature
-→ generalized weighted score
-→ simple range classification
-→ one stance output
-→ Module1Result
-```
+A recommended first slice SHOULD cover one derived feature, one direct single-input score, simple classification, one stance output, and `Module1Result` construction. One-input and multi-input weighted aggregation SHOULD then be added and validated through the same weighted capability.
 
 Later blocks can be added individually:
 
@@ -951,7 +979,11 @@ Validation SHOULD cover:
 - canonical valid configuration;
 - malformed configuration;
 - unsupported block combinations;
-- one-input and multi-input weighted calculations;
+- direct single-input scoring without a weight;
+- one-input weighted calculation with an explicit weight;
+- multi-input weighted calculation with explicit weights;
+- rejection of missing weights for weighted operators;
+- shared block behavior across single-input and weighted score paths;
 - block ordering;
 - no-op behavior;
 - missing-value behavior;
@@ -960,8 +992,10 @@ Validation SHOULD cover:
 - persistence transitions;
 - deterministic output order;
 - caller-input and configuration immutability;
+- one authoritative calculation of each derived feature, component, state, and stance per scenario;
 - one authoritative calculation of each shared macro feature;
 - stance-specific use of macro features without duplicated feature logic;
+- prevention of downstream raw-data bypass;
 - consumer reuse of production feature definitions;
 - complete result coherence.
 
@@ -980,12 +1014,17 @@ The following patterns violate this contract unless explicitly justified and doc
 - duplicating YAML model structure in Calculator constants;
 - changing Calculator code for a supported parameter-only YAML change;
 - stance-name whitelists used as capability dispatch;
-- one-feature and n-feature scoring paths with duplicated mechanics;
+- silently treating a weightless single input as a weighted score;
+- silently supplying an undeclared weight for a weighted operator;
+- separate weighted-aggregation implementations for one-input and n-input weighted scores;
+- duplicating preparation, transformation, post-processing, classification, stabilization, label, or output mechanics between single-input and weighted score paths when their semantics are equivalent;
 - stance-specific smoothing, hysteresis, or persistence implementations when generic blocks apply;
 - a parallel macro-specific score, bucket, normalization, smoothing, or stabilization engine when generic blocks apply;
+- later Calculator layers recalculating an authoritative feature, component, state, or stance already produced for the same scenario;
 - Duration, Curve, and Credit independently recalculating the same authoritative macro feature;
 - consumer-specific code reimplementing production macro-feature or stance logic;
-- treating a raw data series as exclusively owned by one feature group when another declared calculation legitimately requires it;
+- treating a raw data series as exclusively owned by one Module 1 feature group when another declared Module 1 calculation legitimately requires it;
+- downstream decision modules independently loading Module 1 raw inputs or using retained source data to bypass declared `Module1Result` outputs;
 - schema rules that validate names rather than executable capabilities without a model-invariant reason;
 - Calculator fallback behavior that hides invalid configuration;
 - partial scenario reconstruction that creates internally inconsistent result objects;
@@ -1004,21 +1043,26 @@ The architecture is compliant when all of the following are true:
 1. YAML is the authoritative model-definition layer for configurable structure.
 2. Schema rejects declarations the Calculator cannot execute unambiguously.
 3. Calculator executes a resolved specification through explicit ordered stages.
-4. Raw inputs may be reused by multiple declared feature calculations without creating competing derived meanings.
-5. Shared macro features are calculated once per scenario and reused by Duration, Curve, and Credit.
-6. Macro features and bond-market features use the same generic mechanics when their execution semantics are equivalent.
-7. One-input and multi-input weighted calculations share one generalized mechanism.
-8. Bucket classification and stabilization are reusable blocks.
-9. Supported hysteresis and persistence can be enabled or disabled through YAML.
-10. Duration, Curve, and Credit do not require separate execution branches when they use equivalent mechanics.
-11. Their different macro interpretations are expressed through declared stance configuration rather than duplicated feature calculations.
-12. Other consumers reuse the authoritative production feature and stance definitions.
-13. New capabilities are added through explicit operator contracts rather than hidden special cases.
-14. Calculator produces coherent complete `Module1Result` objects.
-15. Scenario calculations produce separate complete results rather than manually combining inconsistent intermediate outputs.
-16. Downstream consumers use `Module1Result` and preserve the separate Duration, Curve, and Credit meanings unless a validated aggregation contract exists.
-17. Configuration-only model changes do not require Calculator source changes when the required capability already exists.
-18. Generic capability validation and model-specific invariants remain distinguishable.
+4. Raw inputs may be reused by multiple declared feature calculations within Module 1 without creating competing derived meanings.
+5. Downstream decision modules use declared `Module1Result` outputs and do not use raw data as an alternative calculation interface.
+6. Each authoritative derived feature, component score, classified or stabilized state, and stance is calculated once per scenario and reused by later Calculator layers.
+7. Shared macro features are calculated once per scenario and reused by Duration, Curve, and Credit.
+8. Macro features and bond-market features use the same generic mechanics when their execution semantics are equivalent.
+9. Direct single-input scoring without a weight is distinguishable from weighted aggregation.
+10. One-input and n-input weighted calculations require explicit weights and share one generalized weighted-aggregation mechanism.
+11. Single-input and weighted score paths reuse equivalent preparation, transformation, post-processing, classification, stabilization, label, and output capabilities.
+12. Bucket classification and stabilization are reusable blocks.
+13. Supported hysteresis and persistence can be enabled or disabled through YAML.
+14. Duration, Curve, and Credit do not require separate execution branches when they use equivalent mechanics.
+15. Their different macro interpretations are expressed through declared stance configuration rather than duplicated feature calculations.
+16. Semantic execution layers and authoritative output ownership are explicit enough to prevent accidental recalculation.
+17. Other consumers reuse the authoritative production feature and stance definitions.
+18. New capabilities are added through explicit operator contracts rather than hidden special cases.
+19. Calculator produces coherent complete `Module1Result` objects.
+20. Scenario calculations produce separate complete results rather than manually combining inconsistent intermediate outputs.
+21. Downstream consumers preserve the separate Duration, Curve, and Credit meanings unless a validated aggregation contract exists.
+22. Configuration-only model changes do not require Calculator source changes when the required capability already exists.
+23. Generic capability validation and model-specific invariants remain distinguishable.
 
 ---
 
@@ -1040,4 +1084,4 @@ Duration, Curve, and Credit interpret those features through declared stance log
 Module1Result records one coherent completed calculation
 ```
 
-The design goal is not abstraction for its own sake. The goal is to make model variation primarily configuration-driven, keep execution mechanics reusable, preserve explicit stage semantics, calculate shared macro conditions once, and prevent Duration, Curve, Credit, or downstream consumers from developing separate accidental architectures. Other modules remain consumers of the completed `Module1Result`; they should preserve its distinct exposure dimensions rather than reconstructing or collapsing Module 1 logic without an explicit model contract.
+The design goal is not abstraction for its own sake. The goal is to make model variation primarily configuration-driven, keep execution mechanics reusable, preserve explicit stage semantics, distinguish direct single-input scoring from explicitly weighted aggregation, calculate every authoritative output once per scenario, and prevent Duration, Curve, Credit, or downstream consumers from developing separate accidental architectures. Raw-data reuse is an internal Module 1 permission; other modules remain consumers of the completed `Module1Result` and should preserve its distinct exposure dimensions rather than reconstructing or collapsing Module 1 logic without an explicit model contract.
